@@ -122,21 +122,42 @@ fn main() -> anyhow::Result<()> {
 /// Copies the runtime snapshot and the newest picture into the view.
 fn start_ui_pump(cx: &mut App, view: gpui::Entity<AppView>, runtime: std::sync::Arc<Runtime>) {
     cx.spawn(async move |cx| {
+        let mut last_state_version = 0u64;
         loop {
-            cx.background_executor().timer(Duration::from_millis(50)).await;
+            cx.background_executor().timer(Duration::from_millis(8)).await;
 
-            let snapshot = runtime.state.lock().clone();
+            let current_version = runtime.state_version.load(Ordering::Relaxed);
+            let state_changed = current_version != last_state_version;
             let frame = runtime.frames.lock().take();
 
+            if !state_changed && frame.is_none() {
+                continue;
+            }
+
+            let snapshot = if state_changed {
+                Some(runtime.state.lock().clone())
+            } else {
+                None
+            };
+
+            let rt = runtime.clone();
             let updated = view.update(cx, |app, cx| {
-                app.set_state(snapshot);
+                if let Some(snapshot) = snapshot {
+                    app.set_state(snapshot);
+                }
                 if let Some(frame) = frame {
-                    app.set_preview(frame.bgra, frame.width, frame.height);
+                    if let Some(recycled) = app.set_preview(frame.bgra, frame.width, frame.height) {
+                        rt.return_buffer(recycled);
+                    }
                 }
                 cx.notify();
             });
             if updated.is_err() {
                 break;
+            }
+
+            if state_changed {
+                last_state_version = current_version;
             }
         }
     })
@@ -184,6 +205,7 @@ fn apply_effect(
                 state.clone()
             };
             let _ = settings::save(&snapshot.settings);
+            runtime.bump_state_version();
         }
         SideEffect::RefreshState => runtime.broadcast_state(),
         SideEffect::RefreshUsb => runtime.refresh_usb(),
@@ -200,6 +222,7 @@ fn apply_effect(
                     state.clone()
                 };
                 let _ = settings::save(&snapshot.settings);
+                runtime.bump_state_version();
             }
         }
         SideEffect::SetTab(tab) => {
@@ -254,6 +277,7 @@ fn apply_effect(
                 state.clone()
             };
             let _ = settings::save(&snapshot.settings);
+            runtime.bump_state_version();
         }
         SideEffect::SetVideo { fps, bitrate } => {
             let snapshot = {
@@ -263,6 +287,7 @@ fn apply_effect(
                 state.clone()
             };
             let _ = settings::save(&snapshot.settings);
+            runtime.bump_state_version();
         }
         SideEffect::SetQualityMode(auto) => {
             let snapshot = {
@@ -276,6 +301,7 @@ fn apply_effect(
             };
             runtime.quality.lock().set_enabled(auto);
             let _ = settings::save(&snapshot.settings);
+            runtime.bump_state_version();
         }
         SideEffect::SetScreenMode(mode) => {
             let snapshot = {
@@ -284,6 +310,7 @@ fn apply_effect(
                 state.clone()
             };
             let _ = settings::save(&snapshot.settings);
+            runtime.bump_state_version();
         }
         SideEffect::SetTorch(_) | SideEffect::SetZoom(_) => {
             // Phone-owned controls: sent on the next start batch. Recording them
@@ -297,12 +324,15 @@ fn apply_effect(
                 state.clone()
             };
             let _ = settings::save(&snapshot.settings);
+            runtime.bump_state_version();
         }
         SideEffect::DismissNotice(id) => {
             runtime.state.lock().dismiss_notice_by_id(id);
+            runtime.bump_state_version();
         }
         SideEffect::ClearLogs => {
             runtime.state.lock().logs.clear();
+            runtime.bump_state_version();
         }
         SideEffect::ToggleAlwaysOnTop => {
             let snapshot = {
@@ -311,10 +341,16 @@ fn apply_effect(
                 state.clone()
             };
             let _ = settings::save(&snapshot.settings);
+            runtime.bump_state_version();
         }
-        SideEffect::ExportDiagnostics => {
-            runtime.log_info("diagnostics export is not wired in this build");
-        }
+        SideEffect::ExportDiagnostics => match runtime.export_diagnostics(None) {
+            Ok(path) => {
+                runtime.log_info(&format!("diagnostics exported to {}", path.display()));
+            }
+            Err(err) => {
+                runtime.log_error("diagnostics_failed", &format!("could not export diagnostics: {err}"));
+            }
+        },
         SideEffect::SelectPairingNetwork(index) => {
             view.update(cx, |app, cx| {
                 app.pairing_network = index;

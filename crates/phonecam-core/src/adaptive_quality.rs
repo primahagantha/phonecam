@@ -269,7 +269,7 @@ impl AdaptiveQuality {
         let dropped = sample.dropped_percent > BAD_DROP_PERCENT;
         // A round trip of 0 is "not measured", which is no evidence either way.
         // Reading it as a perfect link made an unmeasured stream look clean.
-        let slow = sample.rtt_us > 0 && sample.rtt_us > SLOW_RTT_US;
+        let slow = sample.rtt_us > SLOW_RTT_US;
         let thermal = sample.thermal.is_stressed();
 
         let struggling = dropped || slow || thermal || sample.decode_struggling;

@@ -70,12 +70,28 @@ impl DecodedFrame {
             return false;
         }
 
-        dst[..luma_len].copy_from_slice(&self.yuv[..luma_len]);
+        let (dst_luma, dst_chroma) = dst.split_at_mut(luma_len);
+        dst_luma.copy_from_slice(&self.yuv[..luma_len]);
 
         let (u_plane, v_plane) = self.yuv[luma_len..luma_len + chroma_len].split_at(chroma_len / 2);
-        for i in 0..chroma_len / 2 {
-            dst[luma_len + i * 2] = u_plane[i];
-            dst[luma_len + i * 2 + 1] = v_plane[i];
+        let u_chunks = u_plane.chunks_exact(2);
+        let v_chunks = v_plane.chunks_exact(2);
+        let mut dst_chunks = dst_chroma.chunks_exact_mut(4);
+        let u_rem = u_chunks.remainder();
+        let v_rem = v_chunks.remainder();
+
+        for ((u, v), out) in u_chunks.zip(v_chunks).zip(&mut dst_chunks) {
+            let packed = (u[0] as u32)
+                | ((v[0] as u32) << 8)
+                | ((u[1] as u32) << 16)
+                | ((v[1] as u32) << 24);
+            out.copy_from_slice(&packed.to_le_bytes());
+        }
+
+        let dst_rem = dst_chunks.into_remainder();
+        for i in 0..u_rem.len() {
+            dst_rem[i * 2] = u_rem[i];
+            dst_rem[i * 2 + 1] = v_rem[i];
         }
         true
     }
@@ -93,7 +109,7 @@ impl DecodedFrame {
         if self.yuv.len() < luma_len + chroma_len {
             return false;
         }
-        if dst.len() < stride_pixels * height * 4 {
+        if stride_pixels < width || dst.len() < stride_pixels * height * 4 {
             return false;
         }
 
@@ -113,35 +129,53 @@ impl DecodedFrame {
         const GU: i32 = 400;
         const BU: i32 = 2066;
 
-        let clamp = |value: i32| -> u8 {
-            if value < 0 {
-                0
-            } else if value > 255 {
-                255
-            } else {
-                value as u8
-            }
-        };
+        #[inline(always)]
+        fn clamp(value: i32) -> u8 {
+            let non_neg = value & !(value >> 31);
+            (non_neg | ((255 - non_neg) >> 31)) as u8
+        }
+
+        const Y_OFFSET: i32 = Y_GAIN * 16;
 
         for y in 0..height {
-            let luma_row = y * width;
-            let chroma_row = (y / 2) * chroma_width;
-            let mut offset = y * stride_pixels * 4;
+            let luma_start = y * width;
+            let luma_row = &self.yuv[luma_start..luma_start + width];
+            let chroma_start = (y / 2) * chroma_width;
+            let u_row = &u_plane[chroma_start..chroma_start + chroma_width];
+            let v_row = &v_plane[chroma_start..chroma_start + chroma_width];
+            let row_dst = &mut dst[y * stride_pixels * 4..y * stride_pixels * 4 + width * 4];
 
-            for x in 0..width {
-                let luma = self.yuv[luma_row + x] as i32 - 16;
-                let chroma_index = chroma_row + (x / 2);
-                let u = u_plane[chroma_index] as i32 - 128;
-                let v = v_plane[chroma_index] as i32 - 128;
+            let luma_chunks = luma_row.chunks_exact(2);
+            let dst_chunks = row_dst.chunks_exact_mut(8);
 
-                let c = Y_GAIN * luma;
-                // + HALF rounds to nearest rather than truncating, which the
-                // float path did implicitly.
-                dst[offset] = clamp((c + BU * u + HALF) >> SCALE);
-                dst[offset + 1] = clamp((c - GV * v - GU * u + HALF) >> SCALE);
-                dst[offset + 2] = clamp((c + RV * v + HALF) >> SCALE);
-                dst[offset + 3] = 255;
-                offset += 4;
+            for (((&u_byte, &v_byte), y_pair), dst_pair) in
+                u_row.iter().zip(v_row.iter()).zip(luma_chunks).zip(dst_chunks)
+            {
+                let &[y0, y1] = y_pair else { continue };
+                let Ok(dst_8): Result<&mut [u8; 8], _> = dst_pair.try_into() else { continue };
+
+                let u = u_byte as i32 - 128;
+                let v = v_byte as i32 - 128;
+
+                let bu = BU * u;
+                let g_chroma = GV * v + GU * u;
+                let rv = RV * v;
+
+                let b_term = bu + HALF - Y_OFFSET;
+                let g_term = HALF - g_chroma - Y_OFFSET;
+                let r_term = rv + HALF - Y_OFFSET;
+
+                let y0_gain = Y_GAIN * y0 as i32;
+                let b0 = clamp((y0_gain + b_term) >> SCALE);
+                let g0 = clamp((y0_gain + g_term) >> SCALE);
+                let r0 = clamp((y0_gain + r_term) >> SCALE);
+
+                let y1_gain = Y_GAIN * y1 as i32;
+                let b1 = clamp((y1_gain + b_term) >> SCALE);
+                let g1 = clamp((y1_gain + g_term) >> SCALE);
+                let r1 = clamp((y1_gain + r_term) >> SCALE);
+
+                *dst_8 = [b0, g0, r0, 255, b1, g1, r1, 255];
             }
         }
         true
@@ -343,6 +377,80 @@ mod tests {
         let frame = grey_frame();
         let mut tiny = vec![0u8; 8];
         assert!(!frame.write_bgra(&mut tiny, 4));
+    }
+
+    #[test]
+    fn bgra_matches_reference_bt601_math() {
+        // Test frame with a variety of luma and chroma values
+        let (w, h) = (6usize, 4usize);
+        let mut yuv = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                yuv.push(((x * 40 + y * 50) % 256) as u8);
+            }
+        }
+        // U plane (w*h/4 = 6)
+        yuv.extend_from_slice(&[16, 64, 128, 180, 220, 240]);
+        // V plane (w*h/4 = 6)
+        yuv.extend_from_slice(&[240, 200, 128, 90, 50, 16]);
+
+        let frame = DecodedFrame { width: w as u32, height: h as u32, yuv: yuv.clone(), pts_us: 0 };
+        let mut bgra = vec![0u8; w * h * 4];
+        assert!(frame.write_bgra(&mut bgra, w));
+
+        // Reference scalar calculation
+        let (u_plane, v_plane) = yuv[w * h..].split_at(w * h / 4);
+        let chroma_w = w / 2;
+        const SCALE: i32 = 10;
+        const HALF: i32 = 1 << (SCALE - 1);
+        const Y_GAIN: i32 = 1192;
+        const RV: i32 = 1634;
+        const GV: i32 = 833;
+        const GU: i32 = 400;
+        const BU: i32 = 2066;
+
+        let clamp_ref = |v: i32| -> u8 {
+            if v < 0 { 0 } else if v > 255 { 255 } else { v as u8 }
+        };
+
+        for y in 0..h {
+            for x in 0..w {
+                let luma = yuv[y * w + x] as i32 - 16;
+                let c_idx = (y / 2) * chroma_w + (x / 2);
+                let u = u_plane[c_idx] as i32 - 128;
+                let v = v_plane[c_idx] as i32 - 128;
+                let c = Y_GAIN * luma;
+
+                let b_ref = clamp_ref((c + BU * u + HALF) >> SCALE);
+                let g_ref = clamp_ref((c - GV * v - GU * u + HALF) >> SCALE);
+                let r_ref = clamp_ref((c + RV * v + HALF) >> SCALE);
+
+                let offset = (y * w + x) * 4;
+                assert_eq!(bgra[offset], b_ref, "B mismatch at ({x},{y})");
+                assert_eq!(bgra[offset + 1], g_ref, "G mismatch at ({x},{y})");
+                assert_eq!(bgra[offset + 2], r_ref, "R mismatch at ({x},{y})");
+                assert_eq!(bgra[offset + 3], 255, "A mismatch at ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn nv12_matches_reference_interleave() {
+        let (w, h) = (6usize, 4usize);
+        let mut yuv = vec![42u8; w * h];
+        let u_data: Vec<u8> = (0..(w * h / 4)).map(|i| (i * 30 + 10) as u8).collect();
+        let v_data: Vec<u8> = (0..(w * h / 4)).map(|i| (i * 30 + 50) as u8).collect();
+        yuv.extend(&u_data);
+        yuv.extend(&v_data);
+
+        let frame = DecodedFrame { width: w as u32, height: h as u32, yuv, pts_us: 0 };
+        let mut nv12 = vec![0u8; w * h * 3 / 2];
+        assert!(frame.write_nv12(&mut nv12));
+
+        for i in 0..(w * h / 4) {
+            assert_eq!(nv12[w * h + i * 2], u_data[i], "U mismatch at {i}");
+            assert_eq!(nv12[w * h + i * 2 + 1], v_data[i], "V mismatch at {i}");
+        }
     }
 }
 

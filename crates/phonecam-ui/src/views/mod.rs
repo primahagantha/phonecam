@@ -93,15 +93,41 @@ impl AppView {
     }
 
     /// Installs a decoded picture. The pixels are BGRA.
-    pub fn set_preview(&mut self, pixels: Vec<u8>, width: u32, height: u32) {
+    ///
+    /// Returns the previously consumed preview buffer if it can be recycled.
+    pub fn set_preview(&mut self, pixels: Vec<u8>, width: u32, height: u32) -> Option<Vec<u8>> {
+        let recycled = self.preview_image.take().and_then(|arc_img| {
+            std::sync::Arc::try_unwrap(arc_img).ok().and_then(|render_img| {
+                let (ptr, len) = if let Some(bytes) = render_img.as_bytes(0) {
+                    (bytes.as_ptr() as *mut u8, bytes.len())
+                } else {
+                    return None;
+                };
+                std::mem::forget(render_img);
+                Some(unsafe { Vec::from_raw_parts(ptr, len, len) })
+            })
+        });
+
         if let Some(buffer) = image::RgbaImage::from_raw(width, height, pixels) {
             self.preview_image =
                 Some(std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buffer)])));
         }
+
+        recycled
     }
 
-    pub fn clear_preview(&mut self) {
-        self.preview_image = None;
+    pub fn clear_preview(&mut self) -> Option<Vec<u8>> {
+        self.preview_image.take().and_then(|arc_img| {
+            std::sync::Arc::try_unwrap(arc_img).ok().and_then(|render_img| {
+                let (ptr, len) = if let Some(bytes) = render_img.as_bytes(0) {
+                    (bytes.as_ptr() as *mut u8, bytes.len())
+                } else {
+                    return None;
+                };
+                std::mem::forget(render_img);
+                Some(unsafe { Vec::from_raw_parts(ptr, len, len) })
+            })
+        })
     }
 
     /// Renders the pairing code once per payload, not once per frame.
@@ -129,12 +155,8 @@ impl Default for AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // While a picture is on screen the window pulls frames rather than being
-        // pushed them, so a stalled decode cannot queue work in the UI.
-        if self.state.is_streaming() {
-            window.request_animation_frame();
-        }
-
+        // GPUI re-rendering is driven on demand via cx.notify() when new frames or state updates arrive,
+        // avoiding continuous spinning at 144Hz.
         let focus_handle = self.focus_handle.get_or_insert_with(|| cx.focus_handle()).clone();
 
         let content = preview::stage_content(&self.state, self.pairing_network);
@@ -374,6 +396,27 @@ mod tests {
         }
         view.toggle_stream();
         assert_eq!(drain_effects(), vec![SideEffect::StopStream]);
+    }
+
+    #[test]
+    fn set_preview_recycles_previous_buffer() {
+        let mut view = AppView::new();
+        let buf1 = vec![42u8; 100];
+        let r1 = view.set_preview(buf1, 5, 5);
+        assert!(r1.is_none());
+
+        let buf2 = vec![99u8; 100];
+        let r2 = view.set_preview(buf2, 5, 5);
+        assert!(r2.is_some());
+        let recycled = r2.unwrap();
+        assert_eq!(recycled.len(), 100);
+        assert_eq!(recycled[0], 42);
+
+        let r3 = view.clear_preview();
+        assert!(r3.is_some());
+        let recycled3 = r3.unwrap();
+        assert_eq!(recycled3.len(), 100);
+        assert_eq!(recycled3[0], 99);
     }
 }
 

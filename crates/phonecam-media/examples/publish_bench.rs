@@ -30,7 +30,7 @@ fn frame(width: u32, height: u32) -> DecodedFrame {
 
 fn bench(name: &str, iterations: usize, mut body: impl FnMut()) {
     // Warm the caches and the allocator first.
-    for _ in 0..10 {
+    for _ in 0..50 {
         body();
     }
     let started = Instant::now();

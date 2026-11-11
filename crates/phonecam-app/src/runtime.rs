@@ -146,6 +146,10 @@ pub struct Runtime {
     pub camera_retry: Arc<Mutex<phonecam_core::CameraRetryTracker>>,
     /// Generation counter used to cancel obsolete pending retry threads.
     pub camera_retry_generation: Arc<AtomicU64>,
+    /// Recycled BGRA buffers returned from the UI pump to prevent per-frame allocations.
+    pub spare_buffers: Arc<Mutex<Vec<Vec<u8>>>>,
+    /// Counter bumped on state mutations so the UI only clones AppState when changed.
+    pub state_version: Arc<AtomicU64>,
 }
 
 impl Runtime {
@@ -196,7 +200,174 @@ impl Runtime {
             vcam_registered: Arc::new(AtomicBool::new(false)),
             camera_retry: Arc::new(Mutex::new(phonecam_core::CameraRetryTracker::new())),
             camera_retry_generation: Arc::new(AtomicU64::new(0)),
+            spare_buffers: Arc::new(Mutex::new(Vec::new())),
+            state_version: Arc::new(AtomicU64::new(1)),
         })
+    }
+
+    /// Increments the state mutation version counter.
+    pub fn bump_state_version(&self) {
+        self.state_version.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Returns a consumed preview buffer back to the recycling pool.
+    pub fn return_buffer(&self, mut buffer: Vec<u8>) {
+        buffer.clear();
+        let mut pool = self.spare_buffers.lock();
+        if pool.len() < 4 {
+            pool.push(buffer);
+        }
+    }
+
+    /// Takes a recycled buffer from the pool if available.
+    pub fn take_spare_buffer(&self, min_capacity: usize) -> Option<Vec<u8>> {
+        let mut pool = self.spare_buffers.lock();
+        if let Some(pos) = pool.iter().position(|b| b.capacity() >= min_capacity) {
+            Some(pool.swap_remove(pos))
+        } else {
+            pool.pop()
+        }
+    }
+
+    /// Generates the diagnostics report matching the C++ layout.
+    pub fn generate_diagnostics_report(&self) -> String {
+        let state = self.state.lock();
+        let mut report = String::new();
+        report.push_str("PhoneCam Diagnostics\n\n");
+
+        report.push_str("Desktop:\n");
+        report.push_str(&format!("  {}\n", windows_os_name()));
+        report.push_str(&format!("  App Version: {}\n\n", env!("CARGO_PKG_VERSION")));
+
+        report.push_str("Device:\n");
+        let device_name = state
+            .core
+            .as_ref()
+            .and_then(|c| c.device.as_ref())
+            .map(|d| d.name.as_str())
+            .unwrap_or("");
+        report.push_str(&format!(
+            "  {}\n",
+            if device_name.is_empty() {
+                "(none)"
+            } else {
+                device_name
+            }
+        ));
+        if let Some(android_version) = state
+            .core
+            .as_ref()
+            .and_then(|c| c.device.as_ref())
+            .map(|d| d.android_version)
+            .filter(|&v| v > 0)
+        {
+            report.push_str(&format!("  Android API {}\n", android_version));
+        }
+        report.push('\n');
+
+        report.push_str("Connection:\n");
+        let transport_str = state
+            .core
+            .as_ref()
+            .map(|c| c.transport.as_str())
+            .unwrap_or("none");
+        let phase_str = state
+            .core
+            .as_ref()
+            .map(|c| c.phase.as_str())
+            .unwrap_or("idle");
+        report.push_str(&format!("  {} ({})\n", transport_str, phase_str));
+        let usb_active = self.session.transport.lock().as_str() == "usb";
+        report.push_str(&format!(
+            "  USB tunnel: {}\n\n",
+            if usb_active { "active" } else { "inactive" }
+        ));
+
+        report.push_str("Video:\n");
+        if let Some(phone) = state.core.as_ref().and_then(|c| c.phone.as_ref()) {
+            let res = if phone.actual_resolution.is_empty() {
+                "unknown"
+            } else {
+                &phone.actual_resolution
+            };
+            report.push_str(&format!("  {}\n", res));
+            report.push_str(&format!("  {} FPS\n", phone.actual_fps));
+        }
+        let is_streaming = state
+            .core
+            .as_ref()
+            .map(|c| c.phase == StreamPhase::Streaming)
+            .unwrap_or(false);
+        let bitrate = state.core.as_ref().map(|c| c.stats.bitrate).unwrap_or(0);
+        if is_streaming && bitrate > 0 {
+            report.push_str(&format!("  {}\n\n", human_bitrate(bitrate)));
+        } else {
+            report.push_str("  (none)\n\n");
+        }
+
+        report.push_str("Decoder:\n");
+        report.push_str("  OpenH264\n\n");
+
+        report.push_str("Virtual Camera:\n");
+        let vcam_reg = self.vcam_registered.load(Ordering::Relaxed);
+        report.push_str(&format!(
+            "  {}\n",
+            if vcam_reg { "Installed" } else { "Not installed" }
+        ));
+        let vcam_state = if self.vcam_enabled.load(Ordering::Relaxed) {
+            "running"
+        } else {
+            "stopped"
+        };
+        report.push_str(&format!("  {}\n\n", vcam_state));
+
+        report.push_str("Latency:\n");
+        let latency = state
+            .core
+            .as_ref()
+            .map(|c| c.stats.latency_ms)
+            .unwrap_or(-1.0);
+        if is_streaming && latency >= 0.0 {
+            report.push_str(&format!("  {} ms\n\n", latency as i32));
+        } else {
+            report.push_str("  (none)\n\n");
+        }
+
+        report.push_str("Dropped Frames:\n");
+        if is_streaming {
+            let dropped_pct = state
+                .core
+                .as_ref()
+                .map(|c| c.stats.dropped_percent)
+                .unwrap_or(0.0);
+            report.push_str(&format!("  {:.1}%\n", dropped_pct));
+        } else {
+            report.push_str("  (none)\n");
+        }
+
+        report
+    }
+
+    /// Exports diagnostics report to `%APPDATA%\\PhoneCam\\diagnostics.txt` or a custom path.
+    pub fn export_diagnostics(
+        &self,
+        custom_path: Option<&std::path::Path>,
+    ) -> Result<std::path::PathBuf, std::io::Error> {
+        let path = match custom_path {
+            Some(p) => p.to_path_buf(),
+            None => dirs::data_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_else(|_| ".".into())))
+                .join("PhoneCam")
+                .join("diagnostics.txt"),
+        };
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let report = self.generate_diagnostics_report();
+        std::fs::write(&path, report)?;
+        Ok(path)
     }
 
     /// Starts every background thread on the protocol's port.
@@ -654,6 +825,15 @@ impl Runtime {
         // --- the window: BGRA, double-buffered so the mailbox never holds a
         // buffer this thread is still writing into.
         let needed = frame.width as usize * frame.height as usize * 4;
+        if scratch.bgra.capacity() < needed {
+            if scratch.spare.capacity() >= needed {
+                std::mem::swap(&mut scratch.bgra, &mut scratch.spare);
+            } else if let Some(buf) = self.take_spare_buffer(needed) {
+                scratch.bgra = buf;
+            } else {
+                scratch.bgra = Vec::with_capacity(needed);
+            }
+        }
         scratch.bgra.resize(needed, 0);
         if !frame.write_bgra(&mut scratch.bgra, frame.width as usize) {
             return;
@@ -668,7 +848,11 @@ impl Runtime {
             height: frame.height,
         });
         if let Some(previous) = previous {
-            scratch.spare = previous.bgra;
+            if scratch.spare.capacity() >= needed {
+                self.return_buffer(previous.bgra);
+            } else {
+                scratch.spare = previous.bgra;
+            }
         }
 
         // The size only changes on a reconfigure, so it is compared rather than
@@ -676,6 +860,8 @@ impl Runtime {
         if scratch.last_size != Some((frame.width, frame.height)) {
             scratch.last_size = Some((frame.width, frame.height));
             self.state.lock().frame_size = Some((frame.width, frame.height));
+            self.spare_buffers.lock().clear();
+            self.bump_state_version();
         }
     }
 
@@ -1063,6 +1249,8 @@ impl Runtime {
             core.pairing.hosts = hosts;
             core.pairing.qr_payloads = payloads.clone();
         }
+        drop(state);
+        self.bump_state_version();
         payloads
     }
 
@@ -1075,6 +1263,8 @@ impl Runtime {
             core.pairing.expires_at = None;
             core.pairing.qr_payloads.clear();
         }
+        drop(state);
+        self.bump_state_version();
     }
 
     /// Approves or denies the standing request.
@@ -1102,6 +1292,8 @@ impl Runtime {
         let mut state = self.state.lock();
         state.pairing_prompt = None;
         state.dismiss_notice("pair-request");
+        drop(state);
+        self.bump_state_version();
     }
 
     pub fn set_pairing_prompt(&self, device_id: &str) {
@@ -1120,6 +1312,8 @@ impl Runtime {
         let mut state = self.state.lock();
         state.pairing_prompt = None;
         state.dismiss_notice("pair-request");
+        drop(state);
+        self.bump_state_version();
     }
 
     pub fn set_notice(
@@ -1129,6 +1323,7 @@ impl Runtime {
         key: &str,
     ) {
         self.state.lock().add_notice(code, values, key.to_string());
+        self.bump_state_version();
     }
 
     pub fn log_info(&self, message: &str) {
@@ -1136,6 +1331,7 @@ impl Runtime {
         self.state
             .lock()
             .push_log(LogLevel::Info, LogSource::Core, message);
+        self.bump_state_version();
     }
 
     pub fn log_error(&self, code: &str, message: &str) {
@@ -1150,6 +1346,7 @@ impl Runtime {
                 format!("core-error:{code}"),
             );
         }
+        self.bump_state_version();
         self.session.set_error(code, &redacted);
     }
 
@@ -1255,6 +1452,8 @@ impl Runtime {
             connects: state.status.connects,
         };
         state.reconcile_notices();
+        drop(state);
+        self.bump_state_version();
     }
 }
 
@@ -1262,6 +1461,53 @@ impl Runtime {
 /// An empty remainder, kept so the retry path has one place to change.
 fn commands_remaining(_last: &[u8]) -> Vec<DesktopToPhone> {
     Vec::new()
+}
+
+#[cfg(windows)]
+fn windows_os_name() -> String {
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    #[repr(C)]
+    struct OSVERSIONINFOEXW {
+        dw_os_version_info_size: u32,
+        dw_major_version: u32,
+        dw_minor_version: u32,
+        dw_build_number: u32,
+        dw_platform_id: u32,
+        sz_csd_version: [u16; 128],
+        w_service_pack_major: u16,
+        w_service_pack_minor: u16,
+        w_suite_mask: u16,
+        w_product_type: u8,
+        w_reserved: u8,
+    }
+    type RtlGetVersionFn = unsafe extern "system" fn(*mut OSVERSIONINFOEXW) -> i32;
+    unsafe {
+        if let Ok(ntdll) = GetModuleHandleA(windows::core::s!("ntdll.dll")) {
+            if let Some(proc) = GetProcAddress(ntdll, windows::core::s!("RtlGetVersion")) {
+                let rtl_get_version: RtlGetVersionFn = std::mem::transmute(proc);
+                let mut info = std::mem::zeroed::<OSVERSIONINFOEXW>();
+                info.dw_os_version_info_size = std::mem::size_of::<OSVERSIONINFOEXW>() as u32;
+                if rtl_get_version(&mut info) == 0 {
+                    let name = if info.dw_build_number >= 22000 { "11" } else { "10" };
+                    return format!("Windows {} (build {})", name, info.dw_build_number);
+                }
+            }
+        }
+    }
+    "Windows".into()
+}
+
+#[cfg(not(windows))]
+fn windows_os_name() -> String {
+    "Windows (emulated)".into()
+}
+
+fn human_bitrate(bits_per_second: u64) -> String {
+    if bits_per_second >= 1_000_000 {
+        format!("{:.1} Mbps", bits_per_second as f64 / 1_000_000.0)
+    } else {
+        format!("{} kbps", bits_per_second / 1000)
+    }
 }
 
 
@@ -1893,6 +2139,70 @@ mod tests {
             .expect("an error line");
         assert!(!line.message.contains(&secret), "the secret must not survive");
         assert!(line.message.contains("[redacted]"));
+    }
+
+    #[test]
+    fn buffer_recycling_and_spare_pool() {
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+
+        assert!(runtime.take_spare_buffer(1024).is_none());
+
+        let mut buf = Vec::with_capacity(1024);
+        buf.resize(1024, 42);
+        runtime.return_buffer(buf);
+
+        let taken = runtime.take_spare_buffer(512);
+        assert!(taken.is_some());
+        let taken = taken.unwrap();
+        assert!(taken.capacity() >= 1024);
+        assert_eq!(taken.len(), 0);
+    }
+
+    #[test]
+    fn state_version_bumps_on_mutations() {
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+
+        let v1 = runtime.state_version.load(Ordering::SeqCst);
+        runtime.bump_state_version();
+        let v2 = runtime.state_version.load(Ordering::SeqCst);
+        assert!(v2 > v1);
+
+        runtime.broadcast_state();
+        let v3 = runtime.state_version.load(Ordering::SeqCst);
+        assert!(v3 > v2);
+
+        runtime.set_notice(FailureCode::Generic, vec![], "test-notice");
+        let v4 = runtime.state_version.load(Ordering::SeqCst);
+        assert!(v4 > v3);
+    }
+
+    #[test]
+    fn diagnostics_report_generation_and_export() {
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+        runtime.broadcast_state();
+
+        let report = runtime.generate_diagnostics_report();
+        assert!(report.contains("PhoneCam Diagnostics"));
+        assert!(report.contains("Desktop:"));
+        assert!(report.contains("Device:"));
+        assert!(report.contains("Connection:"));
+        assert!(report.contains("Video:"));
+        assert!(report.contains("Decoder:"));
+        assert!(report.contains("OpenH264"));
+        assert!(report.contains("Virtual Camera:"));
+        assert!(report.contains("Latency:"));
+        assert!(report.contains("Dropped Frames:"));
+
+        let temp_dir = std::env::temp_dir().join(format!("phonecam-test-diag-{}", std::process::id()));
+        let temp_file = temp_dir.join("test_diagnostics.txt");
+        let result = runtime.export_diagnostics(Some(&temp_file));
+        assert!(result.is_ok());
+        let written = std::fs::read_to_string(&temp_file).expect("diagnostics file should exist");
+        assert_eq!(written, report);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }
 
