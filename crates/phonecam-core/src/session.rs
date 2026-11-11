@@ -84,6 +84,14 @@ pub struct SessionState {
     pub decode_struggling: AtomicBool,
     /// True once a decoded frame has been published for the current stream.
     pub live_frame_seen: AtomicBool,
+    /// Whether the user last asked the phone to stream.
+    ///
+    /// Set by `start_stream` and cleared by `stop_stream`. A reconnect (a Wi-Fi
+    /// blink, a phone that went to sleep) reopens the control channel with nothing
+    /// asking the phone to encode again, so the desktop would sit at "Connected"
+    /// with a black preview until the user pressed Start a second time. The core
+    /// resumes on their behalf when this is still set.
+    pub stream_wanted: AtomicBool,
     pub error_code: Mutex<String>,
     pub error_message: Mutex<String>,
     /// Latest measured round trip in microseconds; 0 until the first `pong`.
@@ -117,6 +125,7 @@ impl Default for SessionState {
             }),
             decode_struggling: AtomicBool::new(false),
             live_frame_seen: AtomicBool::new(false),
+            stream_wanted: AtomicBool::new(false),
             error_code: Mutex::new(String::new()),
             error_message: Mutex::new(String::new()),
             rtt_us: AtomicI64::new(0),
@@ -141,6 +150,33 @@ impl SessionState {
 
     pub fn has_error(&self) -> bool {
         !self.error_code.lock().is_empty()
+    }
+
+    /// Called when starting a stream.
+    ///
+    /// Records user intent (`stream_wanted = true`) so reconnects will auto-resume
+    /// (upstream 220c3af), and resets `live_frame_seen = false` so the first
+    /// decoded frame promotes the phase from `connecting` to `streaming`
+    /// (upstream a3d8ccd).
+    pub fn note_start_stream(&self) {
+        self.stream_wanted.store(true, Ordering::Relaxed);
+        self.live_frame_seen.store(false, Ordering::Relaxed);
+        let mut phase = self.phase.lock();
+        if *phase != StreamPhase::Streaming {
+            *phase = StreamPhase::Connecting;
+        }
+    }
+
+    /// Called when stopping a stream.
+    ///
+    /// Clears user intent (`stream_wanted = false`) so a future reconnect
+    /// will not auto-resume.
+    pub fn note_stop_stream(&self) {
+        self.stream_wanted.store(false, Ordering::Relaxed);
+        let mut phase = self.phase.lock();
+        if matches!(*phase, StreamPhase::Streaming | StreamPhase::Connecting) {
+            *phase = StreamPhase::Connected;
+        }
     }
 
     /// Promotes the phase to `connecting` when a video channel opens.
@@ -204,6 +240,75 @@ impl SessionState {
 
     pub fn thermal(&self) -> ThermalState {
         *self.phone_thermal.lock()
+    }
+}
+
+/// Stepped retry delays for a camera that failed to start mid-stream or during startup.
+///
+/// A wedged HAL needs roughly a second of quiet before it will open a device again;
+/// retrying faster than that is what produced the endless open-fail loop (upstream 8f58170).
+/// The steps give it that quiet while keeping the first retry fast enough that a
+/// switch race is invisible on the desktop.
+pub const CAMERA_RETRY_DELAYS_MS: [u64; 4] = [500, 1000, 2000, 4000];
+pub const MAX_CAMERA_START_FAILURES: usize = 4;
+
+/// Stepped retry manager for camera start attempts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraRetryTracker {
+    failures: usize,
+    delays_ms: Vec<u64>,
+    max_failures: usize,
+}
+
+impl Default for CameraRetryTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CameraRetryTracker {
+    pub fn new() -> Self {
+        Self {
+            failures: 0,
+            delays_ms: CAMERA_RETRY_DELAYS_MS.to_vec(),
+            max_failures: MAX_CAMERA_START_FAILURES,
+        }
+    }
+
+    pub fn with_delays(delays_ms: Vec<u64>, max_failures: usize) -> Self {
+        Self {
+            failures: 0,
+            delays_ms,
+            max_failures,
+        }
+    }
+
+    pub fn failures(&self) -> usize {
+        self.failures
+    }
+
+    pub fn max_failures(&self) -> usize {
+        self.max_failures
+    }
+
+    pub fn reset(&mut self) {
+        self.failures = 0;
+    }
+
+    /// Records a failure. Returns `Some(delay)` for the next retry attempt,
+    /// or `None` if the retry limit has been reached.
+    pub fn record_failure(&mut self) -> Option<std::time::Duration> {
+        if self.failures >= self.max_failures {
+            return None;
+        }
+        let idx = self.failures.min(self.delays_ms.len().saturating_sub(1));
+        let delay_ms = self.delays_ms.get(idx).copied().unwrap_or(1000);
+        self.failures += 1;
+        Some(std::time::Duration::from_millis(delay_ms))
+    }
+
+    pub fn can_retry(&self) -> bool {
+        self.failures < self.max_failures
     }
 }
 
@@ -982,6 +1087,83 @@ mod tests {
         assert!(auth.is_busy_for("android-b"));
         // An unbound token cannot prove it is a different phone.
         assert!(!auth.is_busy_for(""));
+    }
+
+    #[test]
+    fn start_stream_tracks_stream_wanted_and_clears_live_frame_seen() {
+        let state = session();
+        state.note_decoded_frame();
+        assert!(state.live_frame_seen.load(Ordering::Relaxed));
+        assert_eq!(state.phase(), StreamPhase::Streaming);
+
+        // Restarting stream clears live_frame_seen and sets stream_wanted to true
+        state.note_start_stream();
+        assert!(!state.live_frame_seen.load(Ordering::Relaxed));
+        assert!(state.stream_wanted.load(Ordering::Relaxed));
+
+        // When the next frame decodes, it properly promotes to streaming
+        state.note_decoded_frame();
+        assert!(state.live_frame_seen.load(Ordering::Relaxed));
+        assert_eq!(state.phase(), StreamPhase::Streaming);
+    }
+
+    #[test]
+    fn stop_stream_clears_stream_wanted() {
+        let state = session();
+        state.note_start_stream();
+        assert!(state.stream_wanted.load(Ordering::Relaxed));
+
+        state.note_stop_stream();
+        assert!(!state.stream_wanted.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn control_channel_close_preserves_stream_wanted_for_reconnect() {
+        let state = session();
+        state.note_start_stream();
+        assert!(state.stream_wanted.load(Ordering::Relaxed));
+
+        // When the control channel drops (e.g. Wi-Fi blink), stream_wanted must stay true
+        // so the desktop can automatically resume the stream when it comes back.
+        state.note_control_closed();
+        assert!(state.stream_wanted.load(Ordering::Relaxed));
+        assert_eq!(state.phase(), StreamPhase::Reconnecting);
+        assert!(!state.live_frame_seen.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn stepped_camera_retry_tracks_delays_and_exhaustion() {
+        let mut tracker = CameraRetryTracker::new();
+        assert_eq!(tracker.failures(), 0);
+        assert!(tracker.can_retry());
+
+        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(500)));
+        assert_eq!(tracker.failures(), 1);
+
+        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(1000)));
+        assert_eq!(tracker.failures(), 2);
+
+        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(2000)));
+        assert_eq!(tracker.failures(), 3);
+
+        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(4000)));
+        assert_eq!(tracker.failures(), 4);
+
+        // Exhausted after 4 failures
+        assert!(!tracker.can_retry());
+        assert_eq!(tracker.record_failure(), None);
+    }
+
+    #[test]
+    fn camera_retry_tracker_resets_failures() {
+        let mut tracker = CameraRetryTracker::new();
+        tracker.record_failure();
+        tracker.record_failure();
+        assert_eq!(tracker.failures(), 2);
+
+        tracker.reset();
+        assert_eq!(tracker.failures(), 0);
+        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(500)));
     }
 }
 

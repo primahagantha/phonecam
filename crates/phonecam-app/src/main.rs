@@ -60,14 +60,18 @@ fn main() -> anyhow::Result<()> {
         runtime.check_vcam();
         runtime.broadcast_state();
 
+        // Register GPUI keyboard shortcuts (Space, F11, Esc, Ctrl+1..4, Tab/Shift-Tab)
+        phonecam_ui::bind_keys(cx);
+
         let bounds = Bounds::centered(
             None,
             size(px(settings.window_width), px(settings.window_height)),
             cx,
         );
 
-        let view = cx.new(|_| {
+        let view = cx.new(|cx| {
             let mut app = AppView::new();
+            app.set_focus_handle(cx.focus_handle());
             app.set_state(runtime.state.lock().clone());
             app
         });
@@ -87,6 +91,15 @@ fn main() -> anyhow::Result<()> {
                 |_, _cx| view.clone(),
             )
             .expect("could not open the window");
+
+        // Focus the root view on open so shortcuts and navigation work immediately
+        window
+            .update(cx, |view, window, _cx| {
+                if let Some(focus_handle) = view.focus_handle.as_ref() {
+                    window.focus(focus_handle);
+                }
+            })
+            .ok();
 
         // The window pulls state and frames on a timer: a push per decoded frame
         // would re-render the whole window 30 times a second for a change that
@@ -483,6 +496,12 @@ mod tests {
     #[test]
     fn the_title_names_the_phone_when_there_is_one() {
         assert_eq!(title_for(&AppState::default()), "PhoneCam");
+    }
+
+    #[test]
+    fn default_keybindings_are_defined() {
+        let bindings = phonecam_ui::default_keybindings();
+        assert!(!bindings.is_empty());
     }
 }
 

@@ -20,8 +20,8 @@ pub use adaptive_quality::{
 };
 pub use pairing::{DeviceRecord, PairingManager, PendingRequest};
 pub use session::{
-    Authenticator, HandshakeOutcome, SessionState, StatsWindow, APPROVAL_TOKEN_TTL_MS,
-    APPROVAL_WAIT_MS,
+    Authenticator, CameraRetryTracker, HandshakeOutcome, SessionState, StatsWindow,
+    APPROVAL_TOKEN_TTL_MS, APPROVAL_WAIT_MS, CAMERA_RETRY_DELAYS_MS, MAX_CAMERA_START_FAILURES,
 };
 pub use transport::{Connection, DiscoverySocket, Listener, ReadResult, TransportError};
 

@@ -511,3 +511,182 @@ fn pressing_start_asks_the_phone_to_stream() {
         "set_video must come before start_stream; it saw {seen:?}"
     );
 }
+
+#[test]
+fn stream_auto_resumes_when_phone_reconnects() {
+    let (runtime, port) = runtime();
+    let payloads = runtime.arm_pairing();
+    let payload: serde_json::Value = serde_json::from_str(&payloads[0]).unwrap();
+    let token = payload["token"].as_str().unwrap().to_string();
+
+    let mut first = Phone::dial(port);
+    first.read_greeting();
+    first.handshake(ChannelRole::Control, AuthMode::PairingToken, 100, &token);
+    let paired = first.read_response();
+    let device_id = paired.json["deviceId"].as_str().unwrap().to_string();
+    let secret = paired.json["deviceSecret"].as_str().unwrap().to_string();
+
+    let welcome = first.read_control().expect("welcome");
+    assert_eq!(welcome["t"], "welcome");
+
+    // User starts stream:
+    runtime.start_stream();
+    assert!(runtime.session.stream_wanted.load(std::sync::atomic::Ordering::Relaxed));
+
+    // Drain start stream commands from first connection
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        if let Some(msg) = first.read_control() {
+            let t = msg["t"].as_str().unwrap_or_default().to_string();
+            seen.push(t.clone());
+            if t == "start_stream" {
+                break;
+            }
+        }
+    }
+    assert!(seen.contains(&"start_stream".to_string()));
+
+    // Wi-Fi drops: drop first phone connection
+    drop(first);
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Phone reconnects on its own using device secret
+    let mut second = Phone::dial(port);
+    let greeting = second.read_greeting();
+    let auth = phonecam_protocol::device_secret_auth(&device_id, &secret, &greeting.server_nonce, 200).unwrap();
+    second.handshake(ChannelRole::Control, AuthMode::DeviceSecret, 200, &auth);
+    assert_eq!(second.read_response().status as u8, 0);
+
+    let welcome2 = second.read_control().expect("welcome after reconnect");
+    assert_eq!(welcome2["t"], "welcome");
+
+    // Because stream_wanted was still true, the desktop automatically resumes streaming!
+    let mut resumed_commands = Vec::new();
+    for _ in 0..8 {
+        if let Some(msg) = second.read_control() {
+            let t = msg["t"].as_str().unwrap_or_default().to_string();
+            resumed_commands.push(t.clone());
+            if t == "start_stream" {
+                break;
+            }
+        }
+    }
+    assert!(
+        resumed_commands.contains(&"start_stream".to_string()),
+        "stream must auto-resume on reconnect without pressing start; got {resumed_commands:?}"
+    );
+
+    // Now user stops the stream
+    runtime.stop_stream();
+    assert!(!runtime.session.stream_wanted.load(std::sync::atomic::Ordering::Relaxed));
+    drop(second);
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Third connection after stream was stopped must not auto-resume
+    let mut third = Phone::dial(port);
+    let greeting3 = third.read_greeting();
+    let auth3 = phonecam_protocol::device_secret_auth(&device_id, &secret, &greeting3.server_nonce, 300).unwrap();
+    third.handshake(ChannelRole::Control, AuthMode::DeviceSecret, 300, &auth3);
+    assert_eq!(third.read_response().status as u8, 0);
+
+    let welcome3 = third.read_control().expect("welcome");
+    assert_eq!(welcome3["t"], "welcome");
+
+    // Set a short timeout: no stream commands should arrive
+    third.stream.set_read_timeout(Some(Duration::from_millis(400))).unwrap();
+    let mut unexpected = Vec::new();
+    for _ in 0..3 {
+        if let Some(msg) = third.read_control() {
+            unexpected.push(msg["t"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    assert!(!unexpected.contains(&"start_stream".to_string()), "a stopped stream must stay stopped on reconnect");
+}
+
+#[test]
+fn start_stream_clears_live_frame_seen_so_next_frame_promotes_phase() {
+    let (runtime, _port) = runtime();
+
+    // 1. First start
+    runtime.start_stream();
+    assert_eq!(runtime.session.phase(), phonecam_protocol::StreamPhase::Connecting);
+    assert!(!runtime.session.live_frame_seen.load(std::sync::atomic::Ordering::Relaxed));
+
+    // Frame decoded
+    runtime.session.note_decoded_frame();
+    assert_eq!(runtime.session.phase(), phonecam_protocol::StreamPhase::Streaming);
+    assert!(runtime.session.live_frame_seen.load(std::sync::atomic::Ordering::Relaxed));
+
+    // 2. Restart / reconfigure on same channel
+    // Phone state pauses or reconfigures, demoting phase to Connected
+    runtime.session.note_phone_state(false);
+    assert_eq!(runtime.session.phase(), phonecam_protocol::StreamPhase::Connected);
+
+    runtime.start_stream();
+    assert_eq!(runtime.session.phase(), phonecam_protocol::StreamPhase::Connecting);
+    assert!(!runtime.session.live_frame_seen.load(std::sync::atomic::Ordering::Relaxed));
+
+    // 3. Next decoded frame promotes back to Streaming
+    runtime.session.note_decoded_frame();
+    assert_eq!(runtime.session.phase(), phonecam_protocol::StreamPhase::Streaming);
+    assert!(runtime.session.live_frame_seen.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
+fn stepped_camera_retries_on_initial_camera_start_failure() {
+    let (runtime, port) = runtime();
+    let payloads = runtime.arm_pairing();
+    let payload: serde_json::Value = serde_json::from_str(&payloads[0]).unwrap();
+    let token = payload["token"].as_str().unwrap().to_string();
+
+    let mut phone = Phone::dial(port);
+    phone.read_greeting();
+    phone.handshake(ChannelRole::Control, AuthMode::PairingToken, 1, &token);
+    assert_eq!(phone.read_response().status as u8, 0);
+    phone.read_control(); // welcome
+
+    runtime.start_stream();
+    assert_eq!(runtime.camera_retry.lock().failures(), 0);
+
+    // Drain initial start_stream
+    for _ in 0..6 {
+        if let Some(msg) = phone.read_control() {
+            if msg["t"] == "start_stream" {
+                break;
+            }
+        }
+    }
+
+    // Camera fails to start initially (e.g. HAL busy)
+    // Send error frame as raw JSON packet
+    let error_msg = serde_json::json!({
+        "t": "error",
+        "code": "stream_failed",
+        "message": "Camera is currently locked by another process"
+    });
+    let err_bytes = serde_json::to_vec(&error_msg).unwrap();
+    let mut packet = (err_bytes.len() as u32).to_be_bytes().to_vec();
+    packet.extend_from_slice(&err_bytes);
+    phone.stream.write_all(&packet).unwrap();
+    phone.stream.flush().unwrap();
+
+    // Give runtime thread a moment to process error and schedule stepped retry
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(runtime.camera_retry.lock().failures(), 1);
+
+    // Wait for the 500ms stepped retry delay to elapse and trigger retry
+    std::thread::sleep(Duration::from_millis(500));
+
+    // A fresh start_stream command must have been sent to the phone on retry!
+    phone.stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut retry_seen = false;
+    for _ in 0..8 {
+        if let Some(msg) = phone.read_control() {
+            if msg["t"] == "start_stream" {
+                retry_seen = true;
+                break;
+            }
+        }
+    }
+    assert!(retry_seen, "stepped retry must issue start_stream again after delay");
+}

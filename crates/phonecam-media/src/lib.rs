@@ -11,8 +11,12 @@
 //! installed. The output is I420, which is NV12's planar sibling â€” the frame bus
 //! wants NV12, so the interleave happens once, at publish time.
 
+pub mod flicker;
+pub mod pacer;
 pub mod sps;
 
+pub use flicker::{FlickerDetector, FlickerEvent, LUMA_JUMP_THRESHOLD};
+pub use pacer::{FramePacer, PaceAction, TARGET_FPS, TARGET_FRAME_DURATION_US};
 pub use sps::{parse_avc_dimensions, Dimensions};
 
 use openh264::decoder::Decoder;
@@ -34,9 +38,23 @@ pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
     pub yuv: Vec<u8>,
+    pub pts_us: u64,
 }
 
 impl DecodedFrame {
+    pub fn new(width: u32, height: u32, yuv: Vec<u8>, pts_us: u64) -> Self {
+        Self { width, height, yuv, pts_us }
+    }
+
+    /// Computes the mean luma of this decoded frame.
+    pub fn mean_luma(&self) -> u8 {
+        flicker::FlickerDetector::compute_mean_luma(
+            &self.yuv,
+            self.width as usize,
+            self.height as usize,
+        )
+    }
+
     /// Interleaves the chroma planes into NV12: luma, then UV pairs.
     ///
     /// Written into a caller-owned buffer so a streaming decode does not
@@ -179,11 +197,15 @@ impl H264Decoder {
         &self.parameter_sets
     }
 
-    /// Decodes one Annex-B access unit.
+    /// Decodes one Annex-B access unit with a presentation timestamp (PTS).
     ///
     /// On failure the caller should treat the stream as needing a new keyframe;
     /// `reset` returns the decoder to that state.
-    pub fn decode(&mut self, access_unit: &[u8]) -> Result<DecodedFrame, DecodeError> {
+    pub fn decode_with_pts(
+        &mut self,
+        access_unit: &[u8],
+        pts_us: u64,
+    ) -> Result<DecodedFrame, DecodeError> {
         if access_unit.is_empty() {
             return Err(DecodeError::Rejected);
         }
@@ -219,7 +241,12 @@ impl H264Decoder {
         buffer.extend_from_slice(u_plane);
         buffer.extend_from_slice(v_plane);
 
-        Ok(DecodedFrame { width: w, height: h, yuv: buffer })
+        Ok(DecodedFrame { width: w, height: h, yuv: buffer, pts_us })
+    }
+
+    /// Decodes one Annex-B access unit.
+    pub fn decode(&mut self, access_unit: &[u8]) -> Result<DecodedFrame, DecodeError> {
+        self.decode_with_pts(access_unit, 0)
     }
 
     /// Drops the current picture state so the next keyframe re-syncs.
@@ -260,7 +287,13 @@ mod tests {
         let mut yuv = vec![126u8; w * h];
         yuv.extend(std::iter::repeat(128u8).take(w * h / 2));
         yuv.extend(std::iter::repeat(128u8).take(w * h / 2));
-        DecodedFrame { width: w as u32, height: h as u32, yuv }
+        DecodedFrame { width: w as u32, height: h as u32, yuv, pts_us: 0 }
+    }
+
+    #[test]
+    fn decoded_frame_mean_luma_matches_y_plane() {
+        let frame = grey_frame();
+        assert_eq!(frame.mean_luma(), 126);
     }
 
     #[test]
@@ -284,7 +317,7 @@ mod tests {
     #[test]
     fn bgra_emits_blue_then_green_then_red() {
         // Pure red in limited-range YUV601: Y=81, U=90, V=240.
-        let frame = DecodedFrame { width: 2, height: 2, yuv: vec![81, 81, 81, 81, 90, 240] };
+        let frame = DecodedFrame { width: 2, height: 2, yuv: vec![81, 81, 81, 81, 90, 240], pts_us: 0 };
         let mut bgra = vec![0u8; 2 * 2 * 4];
         assert!(frame.write_bgra(&mut bgra, 2));
         let (b, g, r, a) = (bgra[0], bgra[1], bgra[2], bgra[3]);

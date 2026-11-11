@@ -466,8 +466,6 @@ pub fn rail(state: &AppState, tab: Tab, narrow: bool) -> AnyElement {
                 .border_b_2()
                 .border_color(if selected { Accent::DEFAULT } else { gpui::transparent_black() })
                 .cursor_pointer()
-                // An unselected tab brightens on hover, so the row reads as four
-                // destinations rather than four words.
                 .hover(move |style| {
                     if selected {
                         style
@@ -475,6 +473,7 @@ pub fn rail(state: &AppState, tab: Tab, narrow: bool) -> AnyElement {
                         style.text_color(Text::HEADING).border_color(SHELL.border)
                     }
                 })
+                .focus(|style| style.border_color(Accent::DEFAULT))
                 .child(entry.label())
                 .on_click(move |_event, _window, _cx| push_effect(SideEffect::SetTab(target)))
                 .into_any_element()
@@ -673,18 +672,30 @@ fn usb_list(state: &AppState) -> AnyElement {
         return column.into_any_element();
     }
 
-    let (chip_label, body) = match readiness {
+    let (chip_label, body): (&'static str, AnyElement) = match readiness {
         rules::UsbReadiness::ToolsMissing => (
             "Cable tools missing",
-            "PhoneCam ships Google's Android platform tools, but they are missing from this copy. Reinstall PhoneCam, or install them yourself and check again.",
+            div()
+                .mt(px(Space::MD))
+                .font_family(Fonts::SANS)
+                .text_size(px(Type::XS))
+                .text_color(Text::MUTED)
+                .child("PhoneCam ships Google's Android platform tools, but they are missing from this copy. Reinstall PhoneCam, or install them yourself and check again.")
+                .into_any_element(),
         ),
         rules::UsbReadiness::Unknown => (
             "Not checked yet",
-            "Connect the phone with a data cable and turn on USB debugging, then check again.",
+            div()
+                .mt(px(Space::MD))
+                .font_family(Fonts::SANS)
+                .text_size(px(Type::XS))
+                .text_color(Text::MUTED)
+                .child("Connect the phone with a data cable and turn on USB debugging, then check again.")
+                .into_any_element(),
         ),
         _ => (
             "No phone detected",
-            "Connect the phone with a data cable and turn on USB debugging, then check again.",
+            usb_debugging_guide(),
         ),
     };
 
@@ -711,14 +722,7 @@ fn usb_list(state: &AppState) -> AnyElement {
                 )
                 .child(chip(chip_label, Tone::Neutral)),
         )
-        .child(
-            div()
-                .mt(px(Space::MD))
-                .font_family(Fonts::SANS)
-                .text_size(px(Type::XS))
-                .text_color(Text::MUTED)
-                .child(body),
-        )
+        .child(body)
         .child(
             div()
                 .mt(px(Space::MD))
@@ -726,6 +730,48 @@ fn usb_list(state: &AppState) -> AnyElement {
                     push_effect(SideEffect::RefreshUsb)
                 })),
         )
+        .into_any_element()
+}
+
+/// The step-by-step instructions for turning on USB debugging.
+/// Matching upstream commit 8194295.
+pub const USB_DEBUGGING_STEPS: [&str; 4] = [
+    "Settings \u{203a} About phone \u{203a} tap OS version 7 times to unlock Developer options.",
+    "Settings \u{203a} Additional settings \u{203a} Developer options \u{203a} turn on USB debugging.",
+    "On MIUI/HyperOS, also enable Install via USB and USB debugging (Security settings); both must be on for the cable to work.",
+    "Plug in the cable, unlock the phone, and tap Allow on the debugging prompt.",
+];
+
+/// The full path, not just the name of the setting: "turn on USB
+/// debugging" assumes the reader knows where developer options live,
+/// and on MIUI/HyperOS two extra switches also gate adb. Numbered so
+/// the order is explicit; step 3 is the one users skip on Xiaomi.
+pub fn usb_debugging_guide() -> AnyElement {
+    div()
+        .mt(px(Space::MD))
+        .flex()
+        .flex_col()
+        .gap(px(Space::XS))
+        .font_family(Fonts::SANS)
+        .text_size(px(Type::XS))
+        .text_color(Text::MUTED)
+        .children(USB_DEBUGGING_STEPS.iter().enumerate().map(|(i, step)| {
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(Space::SM))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(Text::BODY)
+                        .child(format!("{}.", i + 1)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .child(*step),
+                )
+        }))
         .into_any_element()
 }
 
@@ -1550,6 +1596,11 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
                 key_value("Space", "Start or stop streaming", false),
                 key_value("F11", "Full-window preview", false),
                 key_value("Esc", "Leave full-window preview", false),
+                key_value("Ctrl+1", "Setup tab", false),
+                key_value("Ctrl+2", "Capture tab", false),
+                key_value("Ctrl+3", "Publish tab", false),
+                key_value("Ctrl+4", "Diagnostics tab", false),
+                key_value("Tab / Shift+Tab", "Navigate controls", false),
             ],
         ))
         .into_element()
@@ -1580,6 +1631,24 @@ fn key_value_toned(label: &str, value: &str, tone: Option<Tone>) -> AnyElement {
                 .child(value.to_string()),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usb_debugging_guide_has_four_steps_matching_upstream() {
+        assert_eq!(USB_DEBUGGING_STEPS.len(), 4);
+        assert!(USB_DEBUGGING_STEPS[0].contains("About phone"));
+        assert!(USB_DEBUGGING_STEPS[0].contains("7 times"));
+        assert!(USB_DEBUGGING_STEPS[1].contains("Developer options"));
+        assert!(USB_DEBUGGING_STEPS[1].contains("USB debugging"));
+        assert!(USB_DEBUGGING_STEPS[2].contains("MIUI/HyperOS"));
+        assert!(USB_DEBUGGING_STEPS[2].contains("Install via USB"));
+        assert!(USB_DEBUGGING_STEPS[2].contains("USB debugging (Security settings)"));
+        assert!(USB_DEBUGGING_STEPS[3].contains("debugging prompt"));
+    }
 }
 
 

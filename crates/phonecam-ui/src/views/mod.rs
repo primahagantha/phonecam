@@ -1,11 +1,13 @@
 ﻿//! The window: shell, panels, and the pure rules they read.
 
+pub mod actions;
 pub mod effects;
 pub mod panels;
 pub mod preview;
 pub mod state;
 pub mod widgets;
 
+pub use actions::*;
 pub use effects::{drain_effects, push_effect, SideEffect, Tab};
 pub use state::{
     format_bytes, format_duration, format_log_time, now_ms, stream_phase_label, thermal_label,
@@ -37,7 +39,7 @@ pub struct AppView {
     /// The pairing code, regenerated only when its payload changes.
     pub qr_image: Option<std::sync::Arc<gpui::RenderImage>>,
     qr_payload_cached: Option<String>,
-    
+    pub focus_handle: Option<gpui::FocusHandle>,
 }
 
 impl AppView {
@@ -50,7 +52,33 @@ impl AppView {
             preview_image: None,
             qr_image: None,
             qr_payload_cached: None,
+            focus_handle: None,
         }
+    }
+
+    pub fn set_focus_handle(&mut self, handle: gpui::FocusHandle) {
+        self.focus_handle = Some(handle);
+    }
+
+    /// Space shortcut: starts/stops streaming or shows toast when no device connected.
+    pub fn toggle_stream(&mut self) {
+        if self.state.is_streaming() {
+            push_effect(SideEffect::StopStream);
+        } else if self.state.has_device() {
+            push_effect(SideEffect::StartStream);
+        } else {
+            self.state.toast = Some("Connect a phone before starting the camera".into());
+        }
+    }
+
+    /// F11 shortcut: full-window preview toggle.
+    pub fn toggle_focus_preview(&mut self) {
+        self.focus_preview = !self.focus_preview;
+    }
+
+    /// Ctrl+1..4 shortcuts: switch tab.
+    pub fn set_tab(&mut self, tab: Tab) {
+        self.tab = tab;
     }
 
     /// Replaces the state and re-derives anything that depends on it.
@@ -100,12 +128,14 @@ impl Default for AppView {
 }
 
 impl Render for AppView {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // While a picture is on screen the window pulls frames rather than being
         // pushed them, so a stalled decode cannot queue work in the UI.
         if self.state.is_streaming() {
             window.request_animation_frame();
         }
+
+        let focus_handle = self.focus_handle.get_or_insert_with(|| cx.focus_handle()).clone();
 
         let content = preview::stage_content(&self.state, self.pairing_network);
         if let StageContent::Pairing { payload, .. } = &content {
@@ -174,6 +204,52 @@ impl Render for AppView {
         }
 
         let mut root = div()
+            .id("phonecam-root")
+            .track_focus(&focus_handle)
+            .on_action(cx.listener(|this, _: &ToggleStream, _window, cx| {
+                this.toggle_stream();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFocusPreview, _window, cx| {
+                this.toggle_focus_preview();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ExitFocusPreview, _window, cx| {
+                if this.focus_preview {
+                    this.focus_preview = false;
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SelectTabSetup, _window, cx| {
+                this.set_tab(Tab::Setup);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectTabCapture, _window, cx| {
+                this.set_tab(Tab::Capture);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectTabStream, _window, cx| {
+                this.set_tab(Tab::Capture);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectTabPublish, _window, cx| {
+                this.set_tab(Tab::Publish);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectTabVideo, _window, cx| {
+                this.set_tab(Tab::Publish);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectTabDiagnostics, _window, cx| {
+                this.set_tab(Tab::Diagnostics);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|_this, _: &TabNext, window, _cx| {
+                window.focus_next();
+            }))
+            .on_action(cx.listener(|_this, _: &TabPrev, window, _cx| {
+                window.focus_prev();
+            }))
             .flex()
             .flex_col()
             .size_full()
@@ -240,6 +316,64 @@ mod tests {
         state.add_notice(FailureCode::UsbMissing, vec![], "usb".into());
         view.set_state(state);
         assert_eq!(view.tab, Tab::Capture);
+    }
+
+    #[test]
+    fn f11_toggles_focus_preview() {
+        let mut view = AppView::new();
+        assert!(!view.focus_preview);
+        view.toggle_focus_preview();
+        assert!(view.focus_preview);
+        view.toggle_focus_preview();
+        assert!(!view.focus_preview);
+    }
+
+    #[test]
+    fn set_tab_switches_active_tab() {
+        let mut view = AppView::new();
+        view.set_tab(Tab::Diagnostics);
+        assert_eq!(view.tab, Tab::Diagnostics);
+        view.set_tab(Tab::Capture);
+        assert_eq!(view.tab, Tab::Capture);
+        view.set_tab(Tab::Publish);
+        assert_eq!(view.tab, Tab::Publish);
+        view.set_tab(Tab::Setup);
+        assert_eq!(view.tab, Tab::Setup);
+    }
+
+    #[test]
+    fn space_shortcut_behavior() {
+        drain_effects();
+        let mut view = AppView::new();
+
+        // No device connected -> shows toast
+        view.toggle_stream();
+        assert_eq!(view.state.toast.as_deref(), Some("Connect a phone before starting the camera"));
+        assert!(drain_effects().is_empty());
+
+        // Device present but not streaming -> pushes StartStream effect
+        let mut state = AppState::default();
+        state.status.connected = true;
+        state.core = Some(phonecam_protocol::CoreState {
+            phase: phonecam_protocol::StreamPhase::Connected,
+            device: Some(phonecam_protocol::DeviceIdentity {
+                device_id: "phone-1".into(),
+                name: "Pixel 8".into(),
+                model: "Pixel 8".into(),
+                android_version: 34,
+            }),
+            ..Default::default()
+        });
+        view.set_state(state);
+        view.toggle_stream();
+        assert_eq!(drain_effects(), vec![SideEffect::StartStream]);
+
+        // Streaming -> pushes StopStream effect
+        if let Some(core) = view.state.core.as_mut() {
+            core.phase = phonecam_protocol::StreamPhase::Streaming;
+        }
+        view.toggle_stream();
+        assert_eq!(drain_effects(), vec![SideEffect::StopStream]);
     }
 }
 

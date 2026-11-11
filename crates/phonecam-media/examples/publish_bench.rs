@@ -25,7 +25,7 @@ fn frame(width: u32, height: u32) -> DecodedFrame {
     for i in 0..(w * h / 2) {
         yuv[chroma + i] = if i % 2 == 0 { 90 } else { 160 };
     }
-    DecodedFrame { width, height, yuv }
+    DecodedFrame { width, height, yuv, pts_us: 0 }
 }
 
 fn bench(name: &str, iterations: usize, mut body: impl FnMut()) {

@@ -13,7 +13,7 @@
 //! `phonecam-core` and `phonecam-ui`, where they are unit tested; this file only
 //! moves bytes and state between them.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -23,7 +23,7 @@ use phonecam_core::session::{
     control_frame, now_ms, now_us, phase_after_phone_state, read_video_packet, Authenticator,
     SessionState, StatsWindow,
 };
-use phonecam_core::transport::{Connection, DiscoverySocket, Listener, ReadResult};
+use phonecam_core::transport::{Connection, DiscoverySocket, Listener};
 use phonecam_framebus::{FrameState, FrameWriter};
 use phonecam_media::H264Decoder;
 use phonecam_protocol::{
@@ -142,6 +142,10 @@ pub struct Runtime {
     /// evidence, and the UI must be able to say "not checked yet" rather than
     /// sending the user to reinstall something they already have.
     pub adb_checked: Arc<AtomicBool>,
+    /// Stepped retry state for camera start attempts.
+    pub camera_retry: Arc<Mutex<phonecam_core::CameraRetryTracker>>,
+    /// Generation counter used to cancel obsolete pending retry threads.
+    pub camera_retry_generation: Arc<AtomicU64>,
 }
 
 impl Runtime {
@@ -190,6 +194,8 @@ impl Runtime {
             stage_max_us: Arc::new(Mutex::new([0; 3])),
             log: Arc::new(crate::settings::DesktopLog::new()),
             vcam_registered: Arc::new(AtomicBool::new(false)),
+            camera_retry: Arc::new(Mutex::new(phonecam_core::CameraRetryTracker::new())),
+            camera_retry_generation: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -360,6 +366,15 @@ impl Runtime {
         *self.session.phase.lock() = StreamPhase::Connected;
         self.broadcast_state();
 
+        // Stream auto-resume on reconnect (upstream commit 220c3af):
+        // If stream_wanted is true, the stream was running before the reconnect.
+        // Ask the phone to resume!
+        if self.session.stream_wanted.load(Ordering::Relaxed) {
+            self.log_info("the stream was running before the reconnect; asking the phone to resume");
+            tracing::info!("the stream was running before the reconnect; asking the phone to resume");
+            self.start_stream();
+        }
+
         loop {
             if !self.running.load(Ordering::Relaxed) {
                 break;
@@ -447,6 +462,13 @@ impl Runtime {
                     // The phone already has its token; nothing to do here.
                 }
                 PhoneToDesktop::Error { code, message } => {
+                    if self.is_camera_start_failure(&code, &message)
+                        && self.session.stream_wanted.load(Ordering::Relaxed)
+                    {
+                        if self.retry_camera_start(&code, &message) {
+                            continue;
+                        }
+                    }
                     self.log_error(&code, &message);
                 }
             }
@@ -523,6 +545,8 @@ impl Runtime {
                     self.publish(frame, &mut scratch);
                     self.note_stage(2, now_us() - publish_started);
                     self.session.note_decoded_frame();
+                    self.camera_retry.lock().reset();
+                    self.camera_retry_generation.fetch_add(1, Ordering::SeqCst);
                 }
                 Err(_) => {
                     dropped += 1;
@@ -758,8 +782,25 @@ impl Runtime {
     /// command arriving once the stream is up is treated as a reconfigure that
     /// tears the encoder down and re-dials.
     pub fn start_stream(&self) {
+        self.send_start_stream(true);
+    }
+
+    /// Internal stream starter. `reset_retries` is true for user/desktop initiated
+    /// starts, and false for internal stepped retry attempts.
+    pub fn send_start_stream(&self, reset_retries: bool) {
+        if reset_retries {
+            self.camera_retry.lock().reset();
+            self.camera_retry_generation.fetch_add(1, Ordering::SeqCst);
+        }
+
         let settings = self.state.lock().settings.clone();
         self.want_stream.store(true, Ordering::Relaxed);
+        self.session.note_start_stream();
+        self.last_frame_at_ms.store(0, Ordering::Relaxed);
+
+        // Clear any previous error reported for the earlier stream attempt.
+        self.session.clear_error();
+        self.broadcast_state();
 
         self.queue_command(DesktopToPhone::SetCamera { camera: settings.camera.clone() });
         self.queue_command(DesktopToPhone::SetVideo {
@@ -779,7 +820,69 @@ impl Runtime {
     /// Asks the phone to stop, leaving the virtual camera running.
     pub fn stop_stream(&self) {
         self.want_stream.store(false, Ordering::Relaxed);
+        self.session.note_stop_stream();
+        self.camera_retry.lock().reset();
+        self.camera_retry_generation.fetch_add(1, Ordering::SeqCst);
         self.queue_command(DesktopToPhone::StopStream);
+        self.broadcast_state();
+    }
+
+    /// Checks whether an error is a camera startup failure eligible for stepped retry.
+    pub fn is_camera_start_failure(&self, code: &str, message: &str) -> bool {
+        if self.session.live_frame_seen.load(Ordering::Relaxed) {
+            return false;
+        }
+        code == "stream_failed"
+            || code.contains("camera")
+            || message.to_lowercase().contains("camera")
+    }
+
+    /// Retries a camera start failure with stepped delays (upstream 8f58170).
+    pub fn retry_camera_start(self: &Arc<Self>, code: &str, message: &str) -> bool {
+        let delay_opt = {
+            let mut retry = self.camera_retry.lock();
+            retry.record_failure()
+        };
+
+        if let Some(delay) = delay_opt {
+            let (attempt, max) = {
+                let retry = self.camera_retry.lock();
+                (retry.failures(), retry.max_failures())
+            };
+            let delay_ms = delay.as_millis();
+            let log_msg = format!(
+                "camera start failed ({message}); retry {attempt}/{max} in {delay_ms}ms"
+            );
+            self.log_info(&log_msg);
+            tracing::warn!("{log_msg}");
+
+            self.session.set_error(code, message);
+            *self.session.phase.lock() = StreamPhase::Connecting;
+            self.broadcast_state();
+
+            let generation = self.camera_retry_generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let runtime = self.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(delay);
+                if runtime.running.load(Ordering::Relaxed)
+                    && runtime.camera_retry_generation.load(Ordering::SeqCst) == generation
+                    && runtime.session.stream_wanted.load(Ordering::Relaxed)
+                    && !runtime.session.live_frame_seen.load(Ordering::Relaxed)
+                {
+                    tracing::info!("retrying camera start now");
+                    runtime.send_start_stream(false);
+                }
+            });
+            true
+        } else {
+            let max = self.camera_retry.lock().max_failures();
+            let log_msg = format!(
+                "camera start failed ({message}); retry limit reached ({max} attempts)"
+            );
+            self.log_info(&log_msg);
+            tracing::error!("{log_msg}");
+            false
+        }
     }
 
     /// Queues a command for the control channel, from any thread.
@@ -1636,7 +1739,7 @@ mod tests {
 
     #[test]
     fn the_tray_menu_tracks_the_state() {
-        use phonecam_protocol::{CoreState, DeviceIdentity, StreamPhase, TransportKind};
+        use phonecam_protocol::{DeviceIdentity, StreamPhase, TransportKind};
 
         let settings = phonecam_ui::views::state::Settings::default();
         let runtime = Runtime::new(&settings);

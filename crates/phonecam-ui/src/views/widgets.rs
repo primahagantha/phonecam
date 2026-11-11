@@ -204,6 +204,11 @@ pub fn unavailable_field(label: impl Into<SharedString>, reason: impl Into<Share
         .into_any_element()
 }
 
+/// The standard focus ring style: accent border marking what is active/focused.
+pub fn focus_ring(style: gpui::StyleRefinement) -> gpui::StyleRefinement {
+    style.border_color(Accent::DEFAULT)
+}
+
 /// The variants a button can take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonVariant {
@@ -221,6 +226,8 @@ pub struct Button {
     disabled: bool,
     selected: bool,
     on_click: Option<Box<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
+    focus_handle: Option<gpui::FocusHandle>,
+    tab_index: Option<isize>,
 }
 
 impl Button {
@@ -231,6 +238,8 @@ impl Button {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
+            tab_index: None,
         }
     }
 
@@ -254,6 +263,16 @@ impl Button {
     /// Draws the button in its "selected" state, which the accent marks.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    pub fn track_focus(mut self, handle: &gpui::FocusHandle) -> Self {
+        self.focus_handle = Some(handle.clone());
+        self
+    }
+
+    pub fn tab_index(mut self, index: isize) -> Self {
+        self.tab_index = Some(index);
         self
     }
 
@@ -326,7 +345,16 @@ impl IntoElement for Button {
                 .cursor_pointer()
                 .hover(move |style| style.border_color(hover_border).bg(hover_bg))
                 // A press should look like a press: one pixel down, no more.
-                .active(|style| style.opacity(0.85));
+                .active(|style| style.opacity(0.85))
+                .focus(|style| style.border_color(Accent::DEFAULT));
+
+            if let Some(ref handle) = self.focus_handle {
+                element = element.track_focus(handle);
+            }
+
+            if let Some(index) = self.tab_index {
+                element = element.tab_index(index);
+            }
 
             if let Some(handler) = self.on_click {
                 element = element.on_click(move |_event, window, cx| {
@@ -461,11 +489,21 @@ pub struct Toggle {
     detail: Option<SharedString>,
     disabled: bool,
     on_change: Option<Box<dyn Fn(bool, &mut gpui::Window, &mut gpui::App) + 'static>>,
+    focus_handle: Option<gpui::FocusHandle>,
+    tab_index: Option<isize>,
 }
 
 impl Toggle {
     pub fn new(label: impl Into<SharedString>, checked: bool) -> Self {
-        Self { label: label.into(), checked, detail: None, disabled: false, on_change: None }
+        Self {
+            label: label.into(),
+            checked,
+            detail: None,
+            disabled: false,
+            on_change: None,
+            focus_handle: None,
+            tab_index: None,
+        }
     }
 
     pub fn detail(mut self, detail: Option<impl Into<SharedString>>) -> Self {
@@ -475,6 +513,16 @@ impl Toggle {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    pub fn track_focus(mut self, handle: &gpui::FocusHandle) -> Self {
+        self.focus_handle = Some(handle.clone());
+        self
+    }
+
+    pub fn tab_index(mut self, index: isize) -> Self {
+        self.tab_index = Some(index);
         self
     }
 
@@ -549,10 +597,24 @@ impl IntoElement for Toggle {
 
         if self.disabled {
             row = row.opacity(0.4);
-        } else if let Some(handler) = self.on_change {
-            row = row.cursor_pointer().on_click(move |_event, window, cx| {
-                handler(!checked, window, cx);
-            });
+        } else {
+            row = row
+                .cursor_pointer()
+                .focus(|style| style.border_color(Accent::DEFAULT));
+
+            if let Some(ref handle) = self.focus_handle {
+                row = row.track_focus(handle);
+            }
+
+            if let Some(index) = self.tab_index {
+                row = row.tab_index(index);
+            }
+
+            if let Some(handler) = self.on_change {
+                row = row.on_click(move |_event, window, cx| {
+                    handler(!checked, window, cx);
+                });
+            }
         }
         row.into_any_element()
     }
@@ -742,5 +804,21 @@ mod interaction_tests {
     fn a_panel_groups_and_a_control_acts() {
         // The shape lock: a panel is rounded-lg, a control is rounded-md.
         assert!(Radius::LG > Radius::MD, "a panel groups, a control acts");
+    }
+
+    #[test]
+    fn button_focus_ring_uses_accent_color() {
+        // Focus ring styling uses Accent::DEFAULT to clearly mark the focused control
+        let style = focus_ring(gpui::StyleRefinement::default());
+        assert_eq!(style.border_color, Some(Accent::DEFAULT));
+    }
+
+    #[test]
+    fn button_and_toggle_support_focus_config() {
+        let btn = Button::new("Test").tab_index(1);
+        assert_eq!(btn.tab_index, Some(1));
+
+        let tgl = Toggle::new("Test", false).tab_index(2);
+        assert_eq!(tgl.tab_index, Some(2));
     }
 }

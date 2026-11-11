@@ -31,12 +31,17 @@ pub enum WriterError {
     NotWindows,
 }
 
+/// Brightness difference threshold (> 24/255) to trigger flicker warning.
+pub const LUMA_JUMP_THRESHOLD: u8 = 24;
+
 /// A mapped frame buffer, ready to publish into.
 pub struct FrameWriter {
     inner: imp::Inner,
     width: u32,
     height: u32,
     frame_index: u64,
+    last_mean_luma: Option<u8>,
+    flicker_reported: bool,
 }
 
 impl std::fmt::Debug for FrameWriter {
@@ -45,18 +50,32 @@ impl std::fmt::Debug for FrameWriter {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("frame_index", &self.frame_index)
+            .field("last_mean_luma", &self.last_mean_luma)
+            .field("flicker_reported", &self.flicker_reported)
             .finish()
     }
 }
 
 impl FrameWriter {
-    /// Opens (or grows) the buffer at `width` x `height`.
+    /// Opens (or grows) the default buffer at `width` x `height`.
     pub fn open(width: u32, height: u32) -> Result<Self, WriterError> {
+        Self::open_at(crate::BUFFER_PATH, width, height)
+    }
+
+    /// Opens (or grows) the buffer at `path` for `width` x `height`.
+    pub fn open_at(path: &str, width: u32, height: u32) -> Result<Self, WriterError> {
         if !crate::dimensions_are_valid(width, height) {
             return Err(WriterError::BadDimensions { width, height });
         }
-        let inner = imp::Inner::open(width, height)?;
-        Ok(Self { inner, width, height, frame_index: 0 })
+        let inner = imp::Inner::open(path, width, height)?;
+        Ok(Self {
+            inner,
+            width,
+            height,
+            frame_index: 0,
+            last_mean_luma: None,
+            flicker_reported: false,
+        })
     }
 
     pub fn width(&self) -> u32 {
@@ -96,7 +115,67 @@ impl FrameWriter {
         if frame.len() != capacity {
             return Err(PublishRejection::SizeMismatch { expected: capacity, actual: frame.len() });
         }
-        self.inner.publish(frame, pts_us, state, &mut self.frame_index)
+        self.inner.publish(frame, pts_us, state, &mut self.frame_index)?;
+
+        // Brightness watchdog for flicker (upstream commit 5e6b22d).
+        if state == FrameState::Live {
+            let mean = Self::compute_mean_luma(frame, self.width, self.height);
+            self.observe_mean_luma(mean);
+        }
+
+        Ok(())
+    }
+
+    /// Computes the mean luma of an NV12 frame by sampling every 16th pixel.
+    pub fn compute_mean_luma(frame: &[u8], width: u32, height: u32) -> u8 {
+        let luma_samples = (width as usize) * (height as usize);
+        if luma_samples == 0 || frame.len() < luma_samples {
+            return 0;
+        }
+        let mut sum: u64 = 0;
+        let mut count: u64 = 0;
+        for i in (0..luma_samples).step_by(16) {
+            sum += frame[i] as u64;
+            count += 1;
+        }
+        if count == 0 {
+            0
+        } else {
+            (sum / count) as u8
+        }
+    }
+
+    /// Evaluates brightness change between consecutive frames and logs warnings/info
+    /// on transition into/out of flicker, avoiding per-frame log spam.
+    fn observe_mean_luma(&mut self, mean: u8) {
+        if let Some(previous) = self.last_mean_luma {
+            let jump = (mean as i16 - previous as i16).abs() as u8;
+            let flickering = jump > LUMA_JUMP_THRESHOLD;
+            if flickering && !self.flicker_reported {
+                self.flicker_reported = true;
+                tracing::warn!(
+                    "picture brightness jumped {}/255 between frames; this is what flicker looks like (check anti-banding and exposure)",
+                    jump
+                );
+            } else if !flickering && self.flicker_reported {
+                self.flicker_reported = false;
+                tracing::info!("picture brightness is stable again");
+            }
+        }
+        self.last_mean_luma = Some(mean);
+    }
+
+    pub fn last_mean_luma(&self) -> Option<u8> {
+        self.last_mean_luma
+    }
+
+    pub fn is_flicker_reported(&self) -> bool {
+        self.flicker_reported
+    }
+
+    pub fn reset_flicker(&mut self) {
+        self.last_mean_luma = None;
+        self.flicker_reported = false;
     }
 
     /// Publishes the "PhoneCam disconnected" placeholder.
@@ -175,19 +254,19 @@ mod imp {
     unsafe impl Send for Inner {}
 
     impl Inner {
-        pub fn open(width: u32, height: u32) -> Result<Self, WriterError> {
+        pub fn open(path: &str, width: u32, height: u32) -> Result<Self, WriterError> {
             let capacity = crate::nv12_size(width, height) as u64;
             let needed = HEADER_SIZE as u64 + capacity;
 
-            let path = wide(crate::BUFFER_PATH);
-            if let Some(parent) = std::path::Path::new(crate::BUFFER_PATH).parent() {
+            let path_w = wide(path);
+            if let Some(parent) = std::path::Path::new(path).parent() {
                 let dir = wide(&parent.to_string_lossy());
                 let _ = unsafe { CreateDirectoryW(PCWSTR(dir.as_ptr()), None) };
             }
 
             let file = unsafe {
                 CreateFileW(
-                    PCWSTR(path.as_ptr()),
+                    PCWSTR(path_w.as_ptr()),
                     FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
                     FILE_SHARE_READ | FILE_SHARE_WRITE,
                     None,
@@ -212,7 +291,7 @@ mod imp {
                 }
             }
 
-            apply_acl(crate::BUFFER_PATH)?;
+            apply_acl(path)?;
 
             let file_size_now = file_size(file)?;
             if file_size_now < needed {
@@ -406,7 +485,7 @@ mod imp {
     pub struct Inner;
 
     impl Inner {
-        pub fn open(_width: u32, _height: u32) -> Result<Self, WriterError> {
+        pub fn open(_path: &str, _width: u32, _height: u32) -> Result<Self, WriterError> {
             Err(WriterError::NotWindows)
         }
         pub fn reader_count(&self) -> u32 {
@@ -422,5 +501,82 @@ mod imp {
             Err(PublishRejection::NoBuffer)
         }
         pub fn set_transform(&self, _mirror: bool, _rotation: u32) {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_mean_luma_samples_every_16th_pixel() {
+        let (w, h) = (32u32, 16u32);
+        let capacity = crate::nv12_size(w, h) as usize;
+        let mut frame = vec![100u8; capacity];
+        // If all luma pixels are 100, mean should be 100
+        assert_eq!(FrameWriter::compute_mean_luma(&frame, w, h), 100);
+
+        // Modify only every 16th pixel to 200
+        for i in (0..(w as usize * h as usize)).step_by(16) {
+            frame[i] = 200;
+        }
+        assert_eq!(FrameWriter::compute_mean_luma(&frame, w, h), 200);
+
+        // Modify non-sampled pixels to 0 (sampling every 16th should ignore them)
+        for i in 0..(w as usize * h as usize) {
+            if i % 16 != 0 {
+                frame[i] = 0;
+            }
+        }
+        assert_eq!(FrameWriter::compute_mean_luma(&frame, w, h), 200);
+    }
+
+    #[test]
+    fn observe_mean_luma_detects_flicker_threshold() {
+        let mut last_mean_luma = None;
+        let mut flicker_reported = false;
+
+        let observe = |mean: u8, last: &mut Option<u8>, reported: &mut bool| -> (bool, bool, bool) {
+            let mut event_started = false;
+            let mut event_stopped = false;
+            if let Some(previous) = *last {
+                let jump = (mean as i16 - previous as i16).abs() as u8;
+                let flickering = jump > LUMA_JUMP_THRESHOLD;
+                if flickering && !*reported {
+                    *reported = true;
+                    event_started = true;
+                } else if !flickering && *reported {
+                    *reported = false;
+                    event_stopped = true;
+                }
+            }
+            *last = Some(mean);
+            (event_started, event_stopped, *reported)
+        };
+
+        // Frame 1: mean 100
+        let (s, e, rep) = observe(100, &mut last_mean_luma, &mut flicker_reported);
+        assert!(!s && !e);
+        assert!(!rep);
+
+        // Frame 2: mean 120 (delta 20 <= 24): not flickering
+        let (s, e, rep) = observe(120, &mut last_mean_luma, &mut flicker_reported);
+        assert!(!s && !e);
+        assert!(!rep);
+
+        // Frame 3: mean 145 (delta 25 > 24): flicker starts!
+        let (s, e, rep) = observe(145, &mut last_mean_luma, &mut flicker_reported);
+        assert!(s && !e);
+        assert!(rep);
+
+        // Frame 4: mean 180 (delta 35 > 24): still flickering, no duplicate warning
+        let (s, e, rep) = observe(180, &mut last_mean_luma, &mut flicker_reported);
+        assert!(!s && !e, "must not re-report flicker on every frame");
+        assert!(rep);
+
+        // Frame 5: mean 185 (delta 5 <= 24): brightness stable again!
+        let (s, e, rep) = observe(185, &mut last_mean_luma, &mut flicker_reported);
+        assert!(!s && e, "must report stable transition");
+        assert!(!rep);
     }
 }

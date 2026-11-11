@@ -18,9 +18,11 @@
 //! * `readers` is written **only** by readers
 
 pub mod nv12;
+pub mod reader;
 pub mod writer;
 
-pub use writer::{FrameWriter, WriterError};
+pub use reader::{FrameReader, FrameSnapshot, ReaderError, VcamTimestampTracker};
+pub use writer::{FrameWriter, WriterError, LUMA_JUMP_THRESHOLD};
 
 pub const MAGIC: u32 = 0x5043_414D;
 pub const LAYOUT_VERSION: u32 = 2;

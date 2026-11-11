@@ -315,9 +315,13 @@ pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::Re
             .flex_row()
             .gap(px(Space::LG))
             .child(if *expired {
-                crate::views::widgets::Button::primary("Show a new code").into_any_element()
+                crate::views::widgets::Button::primary("Show a new code")
+                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::ArmPairing))
+                    .into_any_element()
             } else {
-                crate::views::widgets::Button::new("Cancel").into_any_element()
+                crate::views::widgets::Button::new("Cancel")
+                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::DisarmPairing))
+                    .into_any_element()
             }),
     );
 
@@ -355,6 +359,7 @@ fn empty_body(content: &StageContent) -> AnyElement {
             .child(
                 crate::views::widgets::Button::primary("Start streaming")
                     .disabled(!enabled)
+                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::StartStream))
                     .into_any_element(),
             )
             .into_any_element(),
@@ -364,7 +369,11 @@ fn empty_body(content: &StageContent) -> AnyElement {
             .flex_col()
             .items_center()
             .gap(px(Space::LG))
-            .child(crate::views::widgets::Button::primary("Show a pairing code").into_any_element())
+            .child(
+                crate::views::widgets::Button::primary("Show a pairing code")
+                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::ArmPairing))
+                    .into_any_element(),
+            )
             .children(remembered.then(|| {
                 div()
                     .font_family(Fonts::SANS)
@@ -717,7 +726,7 @@ mod tests {
     #[test]
     fn the_qr_has_a_quiet_zone() {
         let payload = r#"{"protocol":"phonecam","version":1,"host":"10.0.0.2","port":48721,"token":"0123456789abcdef0123456789abcdef","name":"PC","serverId":"pc-2"}"#;
-        let (buffer, w, _h) = qr_pixels(payload, 264).unwrap();
+        let (buffer, _w, _h) = qr_pixels(payload, 264).unwrap();
         // The top-left corner is quiet zone, so it must be light (near-white).
         assert!(buffer[0] > 200, "the quiet zone should be light, got {}", buffer[0]);
     }

@@ -17,6 +17,10 @@ pub mod theme;
 pub mod views;
 
 pub use theme::rules;
-pub use views::{drain_effects, push_effect, AppView, SideEffect, Tab};
+pub use views::{
+    bind_keys, default_keybindings, drain_effects, push_effect, AppView, ExitFocusPreview,
+    SelectTabCapture, SelectTabDiagnostics, SelectTabPublish, SelectTabSetup, SelectTabStream,
+    SelectTabVideo, SideEffect, Tab, TabNext, TabPrev, ToggleFocusPreview, ToggleStream,
+};
 
 
