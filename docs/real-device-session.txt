@@ -1,0 +1,25 @@
+listening on 48791
+2026-10-20T06:00:32.318358Z  WARN phonecam_app::runtime: discovery unavailable; pair by QR code instead
+PAIRED: Android phone
+asking the phone to start
+2026-10-20T06:00:33.468298Z  INFO phonecam_media: stream resized to 1280x720
+2026-10-20T06:00:33.476331Z  INFO phonecam_app::runtime: frame bus opened at 1920x1080
+
+=== result ===
+phase        : streaming
+transport    : Some(Lan)
+frames drawn : 59
+frame size   : Some((1280, 720))
+stats.fps    : 29.8
+stats.bitrate: 519474
+stats.latency: -1 ms
+stats.quality: excellent
+phone actual : 1280x720 @ 30 fps
+phone stream : true
+
+=== log ===
+  PhoneCam PhoneCam started
+  Service Android phone connected
+  Service Android phone connected
+
+PASS: a picture reached the desktop

@@ -1,0 +1,25 @@
+﻿[package]
+name = "phonecam-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+phonecam-protocol = { workspace = true }
+phonecam-core = { workspace = true }
+phonecam-media = { workspace = true }
+
+gpui = { workspace = true }
+image = "0.25"
+qrcode = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
+

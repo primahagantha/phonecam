@@ -1,0 +1,79 @@
+﻿[workspace]
+resolver = "2"
+members = [
+    "crates/phonecam-protocol",
+    "crates/phonecam-framebus",
+    "crates/phonecam-media",
+    "crates/phonecam-core",
+    "crates/phonecam-ui",
+    "crates/phonecam-app",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/phonecam/phonecam"
+
+[workspace.dependencies]
+# Internal
+phonecam-protocol = { path = "crates/phonecam-protocol" }
+phonecam-framebus = { path = "crates/phonecam-framebus" }
+phonecam-media = { path = "crates/phonecam-media" }
+phonecam-core = { path = "crates/phonecam-core" }
+phonecam-ui = { path = "crates/phonecam-ui" }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Crypto
+hmac = "0.13"
+sha2 = "0.11"
+rand = "0.10"
+
+# Networking
+socket2 = { version = "0.6", features = ["all"] }
+
+# Errors / logging
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Media
+openh264 = "0.9"
+
+# UI
+gpui = "0.2.2"
+
+# Windows platform
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_Security",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_Networking_WinSock",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_System_LibraryLoader",
+] }
+
+# Utilities
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
+image = "0.25"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+dirs = "6"
+
+# The frame path is a tight per-pixel loop, so it is worth the build time.
+# Defaults are opt-level 3 with LTO off and 16 codegen units, which leaves the
+# colour conversion and the NV12 interleave un-inlined across unit boundaries.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,13 @@
+[package]
+name = "phonecam-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+phonecam-protocol = { workspace = true }
+phonecam-framebus = { workspace = true }
+
+openh264 = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

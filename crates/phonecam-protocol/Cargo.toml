@@ -1,0 +1,14 @@
+[package]
+name = "phonecam-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+hex = "0.4"
