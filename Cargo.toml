@@ -74,6 +74,7 @@ dirs = "6"
 # Defaults are opt-level 3 with LTO off and 16 codegen units, which leaves the
 # colour conversion and the NV12 interleave un-inlined across unit boundaries.
 [profile.release]
-lto = "thin"
-codegen-units = 1
+opt-level = 3
+lto = false
+codegen-units = 16
 panic = "abort"
