@@ -12,7 +12,9 @@ use gpui::{div, px, AnyElement, Hsla, SharedString};
 use crate::theme::rules;
 use crate::theme::{Accent, Fonts, Radius, SHELL, Space, Status, Text, Tone, Type};
 use crate::views::effects::{push_effect, SideEffect, Tab};
-use crate::views::state::{format_log_time, thermal_label, AppState, NoticeAction};
+use crate::views::state::{
+    format_log_time, resolution_label_of, thermal_label, AppState, LogSource, NoticeAction,
+};
 use crate::views::widgets::{
     chip, empty_state, key_value, metric, prose, section, status_dot, tinted_box, Button, Panel,
     Toggle,
@@ -254,7 +256,7 @@ fn action_button(action: NoticeAction, primary: bool) -> AnyElement {
                 NoticeAction::StopStream => SideEffect::StopStream,
                 NoticeAction::ArmPairing => SideEffect::ArmPairing,
                 NoticeAction::StartStream => SideEffect::StartStream,
-                NoticeAction::ConnectUsb => SideEffect::ConnectUsb,
+                NoticeAction::ConnectUsb => SideEffect::ConnectUsb(None),
                 NoticeAction::RestartVcam => SideEffect::SetVcam(true),
                 // The prompt itself is the affordance, so dismissing is enough.
                 NoticeAction::Dismiss => return,
@@ -627,6 +629,8 @@ fn usb_list(state: &AppState) -> AnyElement {
 
         for device in devices {
             let label = if device.model.is_empty() { device.serial.clone() } else { device.model.clone() };
+            let serial_for_connect = device.serial.clone();
+            let id_for_btn = device.serial.clone();
             column = column.child(
                 div()
                     .mt(px(Space::MD))
@@ -660,14 +664,36 @@ fn usb_list(state: &AppState) -> AnyElement {
                         Button::danger("Close tunnel").on_click(|_window, _cx| {
                             push_effect(SideEffect::DisconnectUsb)
                         })
+                        .into_any_element()
                     } else {
                         // Not primary: the cable is the fallback path.
-                        Button::new("Use this phone").on_click(|_window, _cx| {
-                            push_effect(SideEffect::ConnectUsb)
-                        })
+                        pill_button(
+                            format!("usb-use-{id_for_btn}"),
+                            "Use this phone",
+                            false,
+                            false,
+                            move |_window, _cx| {
+                                push_effect(SideEffect::ConnectUsb(Some(serial_for_connect.clone())))
+                            },
+                        )
                     }),
             );
         }
+
+        column = column.child(
+            div()
+                .mt(px(Space::MD))
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap(px(Space::MD))
+                .child(Button::new("Check again").on_click(|_window, _cx| {
+                    push_effect(SideEffect::RefreshUsb)
+                }))
+                .child(Button::new("Restart ADB").on_click(|_window, _cx| {
+                    push_effect(SideEffect::RestartAdb)
+                })),
+        );
 
         return column.into_any_element();
     }
@@ -699,6 +725,29 @@ fn usb_list(state: &AppState) -> AnyElement {
         ),
     };
 
+    let mut actions = div()
+        .mt(px(Space::MD))
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(Space::MD));
+
+    if matches!(readiness, rules::UsbReadiness::ToolsMissing) {
+        actions = actions.child(Button::new("Download platform-tools").on_click(|_window, _cx| {
+            push_effect(SideEffect::OpenPlatformToolsUrl)
+        }));
+    }
+
+    actions = actions.child(Button::new("Check again").on_click(|_window, _cx| {
+        push_effect(SideEffect::RefreshUsb)
+    }));
+
+    if !matches!(readiness, rules::UsbReadiness::ToolsMissing) {
+        actions = actions.child(Button::new("Restart ADB").on_click(|_window, _cx| {
+            push_effect(SideEffect::RestartAdb)
+        }));
+    }
+
     div()
         .flex()
         .flex_col()
@@ -723,13 +772,7 @@ fn usb_list(state: &AppState) -> AnyElement {
                 .child(chip(chip_label, Tone::Neutral)),
         )
         .child(body)
-        .child(
-            div()
-                .mt(px(Space::MD))
-                .child(Button::new("Check again").on_click(|_window, _cx| {
-                    push_effect(SideEffect::RefreshUsb)
-                })),
-        )
+        .child(actions)
         .into_any_element()
 }
 
@@ -876,18 +919,48 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
     let selected = state
         .pending_camera_id
         .clone()
+        .or_else(|| {
+            state
+                .core
+                .as_ref()
+                .and_then(|c| c.phone.as_ref())
+                .map(|p| p.camera.clone())
+                .filter(|c| !c.is_empty())
+        })
         .unwrap_or_else(|| state.settings.camera.clone());
 
-    let zoom_supported = cameras.iter().any(|c| c.zoom);
-    let torch_supported = cameras.iter().any(|c| c.torch);
-    let torch_on = state
-        .core
-        .as_ref()
-        .and_then(|c| c.phone.as_ref())
-        .map(|p| p.torch)
-        .unwrap_or(false);
+    let selected_cam = cameras
+        .iter()
+        .find(|c| c.id == selected || c.facing.as_str() == selected)
+        .or_else(|| cameras.first());
+
+    let zoom_supported = selected_cam.map(|c| c.zoom).unwrap_or(false);
+    let torch_supported = selected_cam.map(|c| c.torch).unwrap_or(false);
+    let phone = state.core.as_ref().and_then(|c| c.phone.as_ref());
+    let torch_on = phone.map(|p| p.torch).unwrap_or(false);
+    let current_fps_opt = if state.settings.fps == 0 {
+        None
+    } else {
+        Some(state.settings.fps)
+    };
+    let current_bitrate = state.settings.bitrate;
 
     let mut children: Vec<AnyElement> = Vec::new();
+
+    // Quick camera ID cycle list: known camera IDs plus fallback 0..=4.
+    let mut cycle_ids: Vec<String> = cameras.iter().map(|c| c.id.clone()).collect();
+    for fallback in ["0", "1", "2", "3", "4"] {
+        if !cycle_ids.iter().any(|id| id == fallback) {
+            cycle_ids.push(fallback.to_string());
+        }
+    }
+    let resolved_id = selected_cam
+        .map(|c| c.id.as_str())
+        .unwrap_or(selected.as_str())
+        .to_string();
+    let current_idx = cycle_ids.iter().position(|id| id == &resolved_id).unwrap_or(0);
+    let prev_id = cycle_ids[(current_idx + cycle_ids.len() - 1) % cycle_ids.len()].clone();
+    let next_id = cycle_ids[(current_idx + 1) % cycle_ids.len()].clone();
 
     children.push(section(
         "Which camera",
@@ -899,106 +972,255 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                 div()
                     .flex()
                     .flex_row()
-                    .gap(px(Space::MD))
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(Space::SM))
+                    .child(pill_button(
+                        "cam-id-prev",
+                        "<",
+                        false,
+                        false,
+                        move |_window, _cx| push_effect(SideEffect::SetCamera(prev_id.clone())),
+                    ))
                     .child(
                         div()
-                            .flex_1()
                             .rounded(px(Radius::MD))
                             .border_1()
                             .border_color(SHELL.border)
                             .bg(SHELL.base)
                             .px(px(Space::LG))
-                            .py(px(Space::MD))
-                            .font_family(Fonts::SANS)
-                            .text_size(px(Type::TWO_SM))
-                            .text_color(Text::MUTED)
-                            .child("e.g. 2"),
+                            .py(px(Space::SM))
+                            .font_family(Fonts::MONO)
+                            .text_size(px(Type::XS))
+                            .text_color(Text::HEADING)
+                            .child(format!("id {resolved_id}")),
                     )
+                    .child(pill_button(
+                        "cam-id-next",
+                        ">",
+                        false,
+                        false,
+                        move |_window, _cx| push_effect(SideEffect::SetCamera(next_id.clone())),
+                    ))
+                    .children(["0", "1", "2", "3"].into_iter().map(|id| {
+                        let active = resolved_id == id;
+                        pill_button(
+                            format!("cam-id-{id}"),
+                            id,
+                            active,
+                            false,
+                            move |_window, _cx| {
+                                push_effect(SideEffect::SetCamera(id.to_string()))
+                            },
+                        )
+                    }))
                     .into_any_element(),
                 None,
             ),
         ],
     ));
+
+    let res_options = resolution_presets(
+        selected_cam.map(|c| c.resolutions.as_slice()).unwrap_or(&[]),
+        &state.settings.resolution,
+    );
+    let res_hint: SharedString = phone
+        .map(|p| p.actual_resolution.clone())
+        .filter(|s| !s.is_empty())
+        .map(|actual| SharedString::from(format!("{} ({actual})", resolution_label_of(&actual))))
+        .unwrap_or_else(|| SharedString::from(resolution_label_of(&state.settings.resolution)));
+
+    let fps_options = fps_presets(
+        selected_cam.map(|c| c.fps.as_slice()).unwrap_or(&[]),
+        current_fps_opt,
+    );
+    let fps_hint: Option<SharedString> = if current_fps_opt.is_none() {
+        phone
+            .map(|p| p.actual_fps)
+            .filter(|&f| f > 0)
+            .map(|f| SharedString::from(format!("{f} fps")))
+            .or_else(|| Some("automatic".into()))
+    } else {
+        None
+    };
+
+    let bitrate_dec = current_bitrate.saturating_sub(1_000_000).max(1_000_000);
+    let bitrate_inc = (current_bitrate + 1_000_000).min(20_000_000);
 
     children.push(section(
         "What it captures",
         vec![
             crate::views::widgets::field(
                 "Resolution",
-                Some(crate::theme::EMPTY_VALUE.into()),
+                Some(res_hint),
                 div()
-                    .rounded(px(Radius::MD))
-                    .border_1()
-                    .border_color(SHELL.border)
-                    .bg(SHELL.base)
-                    .px(px(Space::LG))
-                    .py(px(Space::MD))
-                    .font_family(Fonts::SANS)
-                    .text_size(px(Type::TWO_SM))
-                    .text_color(Text::HEADING)
-                    .child(format!(
-                        "{} ({})",
-                        crate::views::state::resolution_label_of(&state.settings.resolution),
-                        state.settings.resolution
-                    ))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(Space::SM))
+                    .children(res_options.into_iter().map(|res| {
+                        let active = state.settings.resolution == res;
+                        let label = if res == "auto" {
+                            "Auto".to_string()
+                        } else {
+                            format!("{} ({})", resolution_label_of(&res), res)
+                        };
+                        let id = format!("res-{res}");
+                        pill_button(id, label, active, false, move |_window, _cx| {
+                            push_effect(SideEffect::SetResolution(res.clone()))
+                        })
+                    }))
                     .into_any_element(),
                 Some("The phone picks the nearest it supports and tells you what it used.".into()),
             ),
             crate::views::widgets::field(
                 "Frame rate",
-                None,
+                fps_hint,
                 div()
-                    .rounded(px(Radius::MD))
-                    .border_1()
-                    .border_color(SHELL.border)
-                    .bg(SHELL.base)
-                    .px(px(Space::LG))
-                    .py(px(Space::MD))
-                    .font_family(Fonts::SANS)
-                    .text_size(px(Type::TWO_SM))
-                    .text_color(Text::HEADING)
-                    .child(format!("{} fps", state.settings.fps))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(Space::SM))
+                    .children(fps_options.into_iter().map(|fps_opt| {
+                        let active = current_fps_opt == fps_opt;
+                        let label = match fps_opt {
+                            None => "Auto".to_string(),
+                            Some(f) => format!("{f} fps"),
+                        };
+                        let id = match fps_opt {
+                            None => "fps-auto".to_string(),
+                            Some(f) => format!("fps-{f}"),
+                        };
+                        pill_button(id, label, active, false, move |_window, _cx| {
+                            push_effect(SideEffect::SetVideo {
+                                fps: fps_opt,
+                                bitrate: current_bitrate,
+                            })
+                        })
+                    }))
                     .into_any_element(),
                 None,
             ),
             crate::views::widgets::field(
                 "Bitrate",
-                Some(format!("{:.1} Mbps", state.settings.bitrate as f64 / 1e6).into()),
+                Some(format!("{:.1} Mbps", current_bitrate as f64 / 1e6).into()),
                 div()
-                    .rounded(px(Radius::MD))
-                    .border_1()
-                    .border_color(SHELL.border)
-                    .bg(SHELL.base)
-                    .px(px(Space::LG))
-                    .py(px(Space::MD))
-                    .font_family(Fonts::SANS)
-                    .text_size(px(Type::TWO_SM))
-                    .text_color(Text::HEADING)
-                    .child(format!("{} Mbps", state.settings.bitrate / 1_000_000))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(Space::SM))
+                    .child(pill_button(
+                        "bitrate-dec",
+                        "-",
+                        false,
+                        current_bitrate <= 1_000_000,
+                        move |_window, _cx| {
+                            push_effect(SideEffect::SetVideo {
+                                fps: current_fps_opt,
+                                bitrate: bitrate_dec,
+                            })
+                        },
+                    ))
+                    .children([2u64, 4, 8, 12, 16, 20].into_iter().map(|mbps| {
+                        let bps = mbps * 1_000_000;
+                        let active = current_bitrate == bps;
+                        pill_button(
+                            format!("bitrate-{mbps}m"),
+                            format!("{mbps}M"),
+                            active,
+                            false,
+                            move |_window, _cx| {
+                                push_effect(SideEffect::SetVideo {
+                                    fps: current_fps_opt,
+                                    bitrate: bps,
+                                })
+                            },
+                        )
+                    }))
+                    .child(pill_button(
+                        "bitrate-inc",
+                        "+",
+                        false,
+                        current_bitrate >= 20_000_000,
+                        move |_window, _cx| {
+                            push_effect(SideEffect::SetVideo {
+                                fps: current_fps_opt,
+                                bitrate: bitrate_inc,
+                            })
+                        },
+                    ))
                     .into_any_element(),
                 Some("Higher is sharper and needs more Wi-Fi. 8 Mbps is a good 1080p default.".into()),
             ),
         ],
     ));
 
+    let zoom_element = if zoom_supported {
+        let min_zoom = selected_cam
+            .map(|c| if c.min_zoom > 0.0 { c.min_zoom } else { 1.0 })
+            .unwrap_or(1.0);
+        let max_zoom = selected_cam
+            .map(|c| if c.max_zoom > min_zoom { c.max_zoom } else { min_zoom + 1.0 })
+            .unwrap_or(8.0);
+        let live_zoom = phone
+            .map(|p| p.zoom)
+            .filter(|z| *z > 0.0)
+            .unwrap_or(1.0)
+            .clamp(min_zoom, max_zoom);
+        let zoom_dec = ((live_zoom - 0.5).max(min_zoom) * 10.0).round() / 10.0;
+        let zoom_inc = ((live_zoom + 0.5).min(max_zoom) * 10.0).round() / 10.0;
+        let zoom_presets: Vec<f32> = [1.0f32, 1.5, 2.0, 3.0, 5.0]
+            .into_iter()
+            .filter(|&z| z >= min_zoom - 0.01 && z <= max_zoom + 0.01)
+            .map(|z| z.clamp(min_zoom, max_zoom))
+            .collect();
+
+        crate::views::widgets::field(
+            "Zoom",
+            Some(format!("{live_zoom:.1}x of {max_zoom:.1}x").into()),
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(Space::SM))
+                .child(pill_button(
+                    "zoom-dec",
+                    "-",
+                    false,
+                    live_zoom <= min_zoom + 0.01,
+                    move |_window, _cx| push_effect(SideEffect::SetZoom(zoom_dec)),
+                ))
+                .children(zoom_presets.into_iter().map(|z| {
+                    let active = (live_zoom - z).abs() < 0.05;
+                    let label = format!("{z:.1}x");
+                    pill_button(
+                        format!("zoom-{z:.1}"),
+                        label,
+                        active,
+                        false,
+                        move |_window, _cx| push_effect(SideEffect::SetZoom(z)),
+                    )
+                }))
+                .child(pill_button(
+                    "zoom-inc",
+                    "+",
+                    false,
+                    live_zoom >= max_zoom - 0.01,
+                    move |_window, _cx| push_effect(SideEffect::SetZoom(zoom_inc)),
+                ))
+                .into_any_element(),
+            None,
+        )
+    } else {
+        crate::views::widgets::unavailable_field("Zoom", "This camera does not support zoom.")
+    };
+
     children.push(section(
         "How it behaves",
         vec![
-            if zoom_supported {
-                crate::views::widgets::field(
-                    "Zoom",
-                    Some("1.0x of 8.0x".into()),
-                    div()
-                        .font_family(Fonts::MONO)
-                        .text_size(px(Type::TWO_SM))
-                        .text_color(Text::HEADING)
-                        .child("1.0x")
-                        .into_any_element(),
-                    None,
-                )
-            } else {
-                crate::views::widgets::unavailable_field("Zoom", "This camera does not support zoom.")
-            },
+            zoom_element,
             if torch_supported {
                 Toggle::new("Torch", torch_on)
                     .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetTorch(enabled)))
@@ -1158,26 +1380,37 @@ pub fn publish_panel(state: &AppState) -> AnyElement {
 
     let sideways = state.settings.output_rotation == 90 || state.settings.output_rotation == 270;
 
+    let next_mirror = !state.settings.output_mirror;
+    let output_sizes: [(u32, u32); 5] = [
+        (1920, 1080),
+        (1280, 720),
+        (2560, 1440),
+        (3840, 2160),
+        (854, 480),
+    ];
+
     children.push(section(
         "Framing",
         vec![
             crate::views::widgets::field(
                 "Output size",
-                None,
+                Some(format!("{} × {}", state.settings.output_width, state.settings.output_height).into()),
                 div()
-                    .rounded(px(Radius::MD))
-                    .border_1()
-                    .border_color(SHELL.border)
-                    .bg(SHELL.base)
-                    .px(px(Space::LG))
-                    .py(px(Space::MD))
-                    .font_family(Fonts::MONO)
-                    .text_size(px(Type::TWO_SM))
-                    .text_color(Text::HEADING)
-                    .child(format!(
-                        "{} x {}",
-                        state.settings.output_width, state.settings.output_height
-                    ))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(Space::SM))
+                    .children(output_sizes.into_iter().map(|(w, h)| {
+                        let active =
+                            state.settings.output_width == w && state.settings.output_height == h;
+                        pill_button(
+                            format!("out-size-{w}x{h}"),
+                            format!("{w}x{h}"),
+                            active,
+                            false,
+                            move |_window, _cx| push_effect(SideEffect::SetOutputSize(w, h)),
+                        )
+                    }))
                     .into_any_element(),
                 Some(
                     "What apps receive. A sideways phone is fitted inside this frame, not stretched."
@@ -1195,18 +1428,24 @@ pub fn publish_panel(state: &AppState) -> AnyElement {
                         .min_w(px(0.0))
                         .child(crate::views::widgets::field(
                             "Rotation",
-                            Some("For a phone mounted sideways".into()),
+                            Some(rotation_label(state.settings.output_rotation).into()),
                             div()
-                                .rounded(px(Radius::MD))
-                                .border_1()
-                                .border_color(SHELL.border)
-                                .bg(SHELL.base)
-                                .px(px(Space::LG))
-                                .py(px(Space::MD))
-                                .font_family(Fonts::SANS)
-                                .text_size(px(Type::TWO_SM))
-                                .text_color(Text::HEADING)
-                                .child(rotation_label(state.settings.output_rotation))
+                                .flex()
+                                .flex_row()
+                                .flex_wrap()
+                                .gap(px(Space::SM))
+                                .children([0u32, 90, 180, 270].into_iter().map(|deg| {
+                                    let active = state.settings.output_rotation == deg;
+                                    pill_button(
+                                        format!("rot-{deg}"),
+                                        format!("{deg}°"),
+                                        active,
+                                        false,
+                                        move |_window, _cx| {
+                                            push_effect(SideEffect::SetRotation(deg))
+                                        },
+                                    )
+                                }))
                                 .into_any_element(),
                             Some("Rotate until the preview looks right.".into()),
                         )),
@@ -1222,8 +1461,8 @@ pub fn publish_panel(state: &AppState) -> AnyElement {
                                 "Mirror"
                             })
                             .selected(state.settings.output_mirror)
-                            .on_click(|_window, _cx| {
-                                push_effect(SideEffect::SetMirror(true))
+                            .on_click(move |_window, _cx| {
+                                push_effect(SideEffect::SetMirror(next_mirror))
                             }),
                         ),
                 )
@@ -1307,6 +1546,20 @@ pub fn connection_panel(state: &AppState) -> AnyElement {
         chip("No phone", Tone::Neutral)
     };
 
+    let mut usb_row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(Space::MD))
+        .child(usb_chip);
+
+    if forwarding {
+        usb_row = usb_row.child(Button::danger("Stop forwarding").on_click(|_window, _cx| {
+            push_effect(SideEffect::DisconnectUsb)
+        }));
+    }
+
     Panel::new("Connection")
         .child(key_value_toned("Phone link", link_label, link_tone))
         .child(key_value_toned(
@@ -1320,7 +1573,7 @@ pub fn connection_panel(state: &AppState) -> AnyElement {
             false,
         ))
         .child(key_value("Handshakes", state.status.connects.to_string(), false))
-        .child(section("USB", vec![usb_chip]))
+        .child(section("USB", vec![usb_row.into_any_element()]))
         .into_element()
 }
 
@@ -1336,6 +1589,9 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         }))
         .action(Button::new("Export").on_click(|_window, _cx| {
             push_effect(SideEffect::ExportDiagnostics)
+        }))
+        .action(Button::new("Copy report").on_click(|_window, _cx| {
+            push_effect(SideEffect::CopyDiagnosticsReport)
         }));
 
     let stats = state.core.as_ref().map(|c| &c.stats);
@@ -1425,7 +1681,7 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         "Being published",
         vec![
             key_value("Mirror", if state.settings.output_mirror { "On" } else { "Off" }, false),
-            key_value("Rotation", format!("{}Â°", state.settings.output_rotation), false),
+            key_value("Rotation", format!("{}°", state.settings.output_rotation), false),
             key_value(
                 "Output",
                 format!("{}x{}", state.settings.output_width, state.settings.output_height),
@@ -1453,6 +1709,7 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         ],
     ));
 
+    let matching_logs = filtered_logs(state);
     let log_body: Vec<AnyElement> = if state.logs.is_empty() {
         vec![div()
             .font_family(Fonts::SANS)
@@ -1460,12 +1717,16 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
             .text_color(Text::MUTED)
             .child("Nothing logged yet. Lines appear as the service and the phone report in.")
             .into_any_element()]
+    } else if matching_logs.is_empty() {
+        vec![div()
+            .font_family(Fonts::SANS)
+            .text_size(px(Type::XS))
+            .text_color(Text::MUTED)
+            .child("No lines match these filters.")
+            .into_any_element()]
     } else {
-        state
-            .logs
-            .iter()
-            .rev()
-            .take(60)
+        matching_logs
+            .into_iter()
             .map(|line| {
                 div()
                     .flex()
@@ -1508,9 +1769,65 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
             .collect()
     };
 
+    let level_filters: [(Option<phonecam_protocol::LogLevel>, &str, &str); 5] = [
+        (None, "All", "log-filter-lvl-all"),
+        (Some(phonecam_protocol::LogLevel::Error), "Error", "log-filter-lvl-error"),
+        (Some(phonecam_protocol::LogLevel::Warn), "Warn", "log-filter-lvl-warn"),
+        (Some(phonecam_protocol::LogLevel::Info), "Info", "log-filter-lvl-info"),
+        (Some(phonecam_protocol::LogLevel::Debug), "Debug", "log-filter-lvl-debug"),
+    ];
+    let source_filters: [(Option<LogSource>, &str, &str); 5] = [
+        (None, "All", "log-filter-src-all"),
+        (Some(LogSource::Core), "Core", "log-filter-src-core"),
+        (Some(LogSource::Media), "Media", "log-filter-src-media"),
+        (Some(LogSource::App), "App", "log-filter-src-app"),
+        (Some(LogSource::Phone), "Phone", "log-filter-src-phone"),
+    ];
+    let runtime_levels: [(phonecam_protocol::LogLevel, &str, &str); 5] = [
+        (phonecam_protocol::LogLevel::Error, "Error", "log-lvl-error"),
+        (phonecam_protocol::LogLevel::Warn, "Warn", "log-lvl-warn"),
+        (phonecam_protocol::LogLevel::Info, "Info", "log-lvl-info"),
+        (phonecam_protocol::LogLevel::Debug, "Debug", "log-lvl-debug"),
+        (phonecam_protocol::LogLevel::Trace, "Trace", "log-lvl-trace"),
+    ];
+
     children.push(section(
         "Log",
         vec![
+            div()
+                .mb(px(Space::SM))
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(Space::XS))
+                .children(level_filters.into_iter().map(|(lvl, label, id)| {
+                    pill_button(
+                        id,
+                        label,
+                        state.log_filter_level == lvl,
+                        false,
+                        move |_window, _cx| push_effect(SideEffect::SetLogFilterLevel(lvl)),
+                    )
+                }))
+                .into_any_element(),
+            div()
+                .mb(px(Space::MD))
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(Space::XS))
+                .children(source_filters.into_iter().map(|(src, label, id)| {
+                    pill_button(
+                        id,
+                        label,
+                        state.log_filter_source == src,
+                        false,
+                        move |_window, _cx| push_effect(SideEffect::SetLogFilterSource(src)),
+                    )
+                }))
+                .into_any_element(),
             div()
                 .id(gpui::ElementId::Name(SharedString::from("log-well")))
                 .rounded(px(Radius::MD))
@@ -1524,6 +1841,29 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                 .into_any_element(),
             div()
                 .mt(px(Space::LG))
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap(px(Space::SM))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(Space::XS))
+                        .children(runtime_levels.into_iter().map(|(lvl, label, id)| {
+                            pill_button(
+                                id,
+                                label,
+                                state.settings.log_level == lvl,
+                                false,
+                                move |_window, _cx| push_effect(SideEffect::SetLogLevel(lvl)),
+                            )
+                        })),
+                )
                 .child(
                     Button::new("Clear")
                         .disabled(state.logs.is_empty())
@@ -1541,6 +1881,37 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
     ));
 
     panel.children(children).into_element()
+}
+
+fn log_level_rank(level: phonecam_protocol::LogLevel) -> u8 {
+    match level {
+        phonecam_protocol::LogLevel::Error => 0,
+        phonecam_protocol::LogLevel::Warn => 1,
+        phonecam_protocol::LogLevel::Info => 2,
+        phonecam_protocol::LogLevel::Debug => 3,
+        phonecam_protocol::LogLevel::Trace => 4,
+    }
+}
+
+fn filtered_logs(state: &AppState) -> Vec<&crate::views::state::LogLine> {
+    state
+        .logs
+        .iter()
+        .rev()
+        .filter(|line| {
+            state
+                .log_filter_source
+                .map(|src| line.source == src)
+                .unwrap_or(true)
+        })
+        .filter(|line| {
+            state
+                .log_filter_level
+                .map(|max| log_level_rank(line.level) <= log_level_rank(max))
+                .unwrap_or(true)
+        })
+        .take(200)
+        .collect()
 }
 
 fn level_label(level: phonecam_protocol::LogLevel) -> &'static str {
@@ -1568,6 +1939,14 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
         .child(
             Toggle::new("Keep window on top", state.settings.always_on_top)
                 .on_change(|_enabled, _window, _cx| push_effect(SideEffect::ToggleAlwaysOnTop))
+                .into_element(),
+        )
+        .child(
+            Toggle::new("Show preview in this window", state.settings.preview_enabled)
+                .detail(Some("Off keeps virtual camera running"))
+                .on_change(|enabled, _window, _cx| {
+                    push_effect(SideEffect::SetPreviewEnabled(enabled))
+                })
                 .into_element(),
         )
         .child(
@@ -1633,6 +2012,106 @@ fn key_value_toned(label: &str, value: &str, tone: Option<Tone>) -> AnyElement {
         .into_any_element()
 }
 
+fn pill_button(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    disabled: bool,
+    on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let (border, background, text) = if selected {
+        (Accent::DEFAULT, SHELL.control, Accent::DEFAULT)
+    } else {
+        (SHELL.border, SHELL.control, Text::PRIMARY)
+    };
+
+    let mut el = div()
+        .id(gpui::ElementId::Name(id.into()))
+        .flex()
+        .flex_row()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .rounded(px(Radius::MD))
+        .border_1()
+        .border_color(border)
+        .bg(background)
+        .px(px(Space::LG))
+        .py(px(Space::SM))
+        .font_family(Fonts::SANS)
+        .text_size(px(Type::XS))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(text)
+        .child(label.into());
+
+    if disabled {
+        el = el.opacity(0.4).cursor_default();
+    } else {
+        let hover_border = if selected { Accent::DEFAULT } else { Text::MUTED };
+        let hover_bg = if selected { SHELL.control } else { SHELL.hover };
+        el = el
+            .cursor_pointer()
+            .hover(move |style| style.border_color(hover_border).bg(hover_bg))
+            .active(|style| style.opacity(0.85))
+            .focus(|style| style.border_color(Accent::DEFAULT))
+            .on_click(move |_event, window, cx| on_click(window, cx));
+    }
+
+    el.into_any_element()
+}
+
+fn resolution_presets(camera_resolutions: &[String], current: &str) -> Vec<String> {
+    let mut out = vec!["auto".to_string()];
+    let preferred = [
+        "3840x2160",
+        "2560x1440",
+        "1920x1080",
+        "1280x720",
+        "854x480",
+    ];
+    if camera_resolutions.is_empty() {
+        for res in ["3840x2160", "1920x1080", "1280x720", "854x480"] {
+            out.push(res.to_string());
+        }
+    } else {
+        for res in preferred {
+            if camera_resolutions.iter().any(|r| r == res) && out.len() < 7 {
+                out.push(res.to_string());
+            }
+        }
+        for res in camera_resolutions {
+            if out.len() >= 7 {
+                break;
+            }
+            if !out.iter().any(|existing| existing == res) {
+                out.push(res.clone());
+            }
+        }
+    }
+    if !current.is_empty() && !out.iter().any(|existing| existing == current) {
+        out.push(current.to_string());
+    }
+    out
+}
+
+fn fps_presets(camera_fps: &[u32], current: Option<u32>) -> Vec<Option<u32>> {
+    let mut fixed: Vec<u32> = if camera_fps.is_empty() {
+        vec![15, 24, 30, 60]
+    } else {
+        camera_fps.to_vec()
+    };
+    if let Some(f) = current {
+        if !fixed.contains(&f) {
+            fixed.push(f);
+        }
+    }
+    fixed.sort_unstable();
+    fixed.dedup();
+    let mut out = vec![None];
+    out.extend(fixed.into_iter().map(Some));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1648,6 +2127,53 @@ mod tests {
         assert!(USB_DEBUGGING_STEPS[2].contains("Install via USB"));
         assert!(USB_DEBUGGING_STEPS[2].contains("USB debugging (Security settings)"));
         assert!(USB_DEBUGGING_STEPS[3].contains("debugging prompt"));
+    }
+
+    #[test]
+    fn resolution_presets_include_auto_and_keep_selected() {
+        let cam = vec![
+            "3840x2160".to_string(),
+            "1920x1080".to_string(),
+            "1280x720".to_string(),
+            "854x480".to_string(),
+        ];
+        let presets = resolution_presets(&cam, "640x480");
+        assert_eq!(presets[0], "auto");
+        assert!(presets.contains(&"1920x1080".to_string()));
+        assert!(presets.contains(&"640x480".to_string()));
+    }
+
+    #[test]
+    fn fps_presets_include_auto_and_sort_unique() {
+        let presets = fps_presets(&[60, 30, 15, 30], Some(24));
+        assert_eq!(presets, vec![None, Some(15), Some(24), Some(30), Some(60)]);
+    }
+
+    #[test]
+    fn filtered_logs_respect_level_and_source_and_cap_at_200() {
+        use phonecam_protocol::LogLevel;
+        let mut state = AppState::default();
+        for i in 0..250 {
+            state.push_log(LogLevel::Info, LogSource::Core, format!("core {i}"));
+        }
+        state.push_log(LogLevel::Debug, LogSource::Media, "media debug".to_string());
+        state.push_log(LogLevel::Error, LogSource::Phone, "phone err".to_string());
+
+        // Default: all filters None -> capped at 200
+        assert_eq!(filtered_logs(&state).len(), 200);
+
+        // Filter Warn: Error and Warn only
+        state.log_filter_level = Some(LogLevel::Warn);
+        let warn_or_higher = filtered_logs(&state);
+        assert_eq!(warn_or_higher.len(), 1);
+        assert_eq!(warn_or_higher[0].source, LogSource::Phone);
+
+        // Filter Source Media
+        state.log_filter_level = None;
+        state.log_filter_source = Some(LogSource::Media);
+        let media_only = filtered_logs(&state);
+        assert_eq!(media_only.len(), 1);
+        assert_eq!(media_only[0].message, "media debug");
     }
 }
 

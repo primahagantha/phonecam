@@ -14,34 +14,31 @@
 //!   Frame Server, fed through the same `framebuffer-v2.bin` with the same
 //!   68-byte header.
 
-use phonecam_app::{runtime, settings, tray};
+use phonecam_app::{logging, runtime, settings, tray};
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use gpui::{
-    px, size, App, AppContext, Application, Bounds, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions,
+    px, size, App, AppContext, Application, Bounds, ClipboardItem, WindowBackgroundAppearance,
+    WindowBounds, WindowHandle, WindowOptions,
 };
 use phonecam_protocol::LogLevel;
-use phonecam_ui::views::state::{AppState, LogSource, Settings};
+use phonecam_ui::theme::Timing;
+use phonecam_ui::views::state::{now_ms, AppState, LogSource, Settings};
 use phonecam_ui::views::{AppView, SideEffect, Tab};
 
 use runtime::Runtime;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let settings = settings::load();
+    logging::init(settings.log_level);
     tracing::info!("PhoneCam starting");
 
     Application::new().run(move |cx: &mut App| {
         let runtime = Runtime::new(&settings);
+        logging::bind_runtime(runtime.clone());
+        runtime.set_preview_enabled(settings.preview_enabled);
 
         // Start the listeners before the window so the first frame of UI already
         // knows whether the service is reachable.
@@ -76,6 +73,7 @@ fn main() -> anyhow::Result<()> {
             app
         });
 
+        let initial_title = title_for(&runtime.state.lock());
         let window = cx
             .open_window(
                 WindowOptions {
@@ -83,7 +81,7 @@ fn main() -> anyhow::Result<()> {
                     window_min_size: Some(size(px(900.0), px(640.0))),
                     window_background: WindowBackgroundAppearance::Opaque,
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("PhoneCam".into()),
+                        title: Some(initial_title.into()),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -93,24 +91,29 @@ fn main() -> anyhow::Result<()> {
             .expect("could not open the window");
 
         // Focus the root view on open so shortcuts and navigation work immediately
-        window
+        let hwnd = window
             .update(cx, |view, window, _cx| {
                 if let Some(focus_handle) = view.focus_handle.as_ref() {
                     window.focus(focus_handle);
                 }
+                tray::hwnd_of(window)
             })
-            .ok();
+            .unwrap_or(None);
+
+        if let Some(hwnd) = hwnd {
+            tray::set_window_always_on_top(hwnd, settings.always_on_top);
+        }
 
         // The window pulls state and frames on a timer: a push per decoded frame
         // would re-render the whole window 30 times a second for a change that
         // only affects one image.
-        start_ui_pump(cx, view.clone(), runtime.clone());
+        start_ui_pump(cx, window, view.clone(), runtime.clone());
 
         // Drain the effects the panels asked for.
-        start_effect_pump(cx, view.clone(), runtime.clone());
+        start_effect_pump(cx, view.clone(), runtime.clone(), hwnd);
 
         // The tray, and the close-to-hide behaviour it exists for.
-        start_tray(cx, window.clone(), view.clone(), runtime.clone());
+        start_tray(cx, window, view.clone(), runtime.clone());
         start_tray_pump(cx, view.clone(), runtime.clone());
 
         cx.activate(true);
@@ -120,11 +123,25 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Copies the runtime snapshot and the newest picture into the view.
-fn start_ui_pump(cx: &mut App, view: gpui::Entity<AppView>, runtime: std::sync::Arc<Runtime>) {
+fn start_ui_pump(
+    cx: &mut App,
+    window: WindowHandle<AppView>,
+    view: gpui::Entity<AppView>,
+    runtime: std::sync::Arc<Runtime>,
+) {
     cx.spawn(async move |cx| {
         let mut last_state_version = 0u64;
+        let mut last_title = title_for(&runtime.state.lock());
         loop {
             cx.background_executor().timer(Duration::from_millis(8)).await;
+
+            let toast_expired = {
+                let mut state = runtime.state.lock();
+                state.toast_expires_at_ms.is_some() && state.expire_toast_if_due(now_ms())
+            };
+            if toast_expired {
+                runtime.bump_state_version();
+            }
 
             let current_version = runtime.state_version.load(Ordering::Relaxed);
             let state_changed = current_version != last_state_version;
@@ -140,14 +157,34 @@ fn start_ui_pump(cx: &mut App, view: gpui::Entity<AppView>, runtime: std::sync::
                 None
             };
 
+            if let Some(snapshot) = snapshot.as_ref() {
+                let next_title = title_for(snapshot);
+                if next_title != last_title {
+                    last_title = next_title.clone();
+                    let _ = window.update(cx, |_, window, _| {
+                        window.set_window_title(&next_title);
+                    });
+                }
+            }
+
             let rt = runtime.clone();
             let updated = view.update(cx, |app, cx| {
                 if let Some(snapshot) = snapshot {
+                    if !snapshot.settings.preview_enabled {
+                        if let Some(recycled) = app.clear_preview() {
+                            rt.return_buffer(recycled);
+                        }
+                    }
                     app.set_state(snapshot);
                 }
                 if let Some(frame) = frame {
-                    if let Some(recycled) = app.set_preview(frame.bgra, frame.width, frame.height) {
-                        rt.return_buffer(recycled);
+                    if app.state.settings.preview_enabled {
+                        if let Some(recycled) = app.set_preview(frame.bgra, frame.width, frame.height)
+                        {
+                            rt.return_buffer(recycled);
+                        }
+                    } else {
+                        rt.return_buffer(frame.bgra);
                     }
                 }
                 cx.notify();
@@ -165,7 +202,12 @@ fn start_ui_pump(cx: &mut App, view: gpui::Entity<AppView>, runtime: std::sync::
 }
 
 /// Performs whatever the user clicked.
-fn start_effect_pump(cx: &mut App, view: gpui::Entity<AppView>, runtime: std::sync::Arc<Runtime>) {
+fn start_effect_pump(
+    cx: &mut App,
+    view: gpui::Entity<AppView>,
+    runtime: std::sync::Arc<Runtime>,
+    hwnd: Option<isize>,
+) {
     cx.spawn(async move |cx| {
         loop {
             cx.background_executor().timer(Duration::from_millis(30)).await;
@@ -176,17 +218,43 @@ fn start_effect_pump(cx: &mut App, view: gpui::Entity<AppView>, runtime: std::sy
             }
 
             for effect in effects {
-                apply_effect(&runtime, effect, &view, cx);
+                apply_effect(&runtime, effect, &view, hwnd, cx);
             }
         }
     })
     .detach();
 }
 
+fn open_platform_tools_url(runtime: &Runtime) {
+    const URL: &str = "https://developer.android.com/tools/releases/platform-tools";
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Err(err) = std::process::Command::new("cmd")
+            .args(["/C", "start", "", URL])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+        {
+            runtime.log_error(
+                "open_url_failed",
+                &format!("could not open platform-tools download page: {err}"),
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        runtime.log_info(&format!("Open {URL} to install Android platform-tools"));
+    }
+}
+
 fn apply_effect(
     runtime: &std::sync::Arc<Runtime>,
     effect: SideEffect,
     view: &gpui::Entity<AppView>,
+    hwnd: Option<isize>,
     cx: &mut gpui::AsyncApp,
 ) {
     match effect {
@@ -209,8 +277,10 @@ fn apply_effect(
         }
         SideEffect::RefreshState => runtime.broadcast_state(),
         SideEffect::RefreshUsb => runtime.refresh_usb(),
-        SideEffect::ConnectUsb => runtime.connect_usb(),
+        SideEffect::ConnectUsb(serial) => runtime.connect_usb_device(serial),
         SideEffect::DisconnectUsb => runtime.disconnect_usb(),
+        SideEffect::RestartAdb => runtime.restart_adb(),
+        SideEffect::OpenPlatformToolsUrl => open_platform_tools_url(runtime),
         SideEffect::ForgetDevice => {
             let id = runtime.state.lock().settings.last_device_id.clone();
             if let Some(id) = id {
@@ -239,23 +309,31 @@ fn apply_effect(
             })
             .ok();
         }
-        SideEffect::SetMirror(mirror) => {
+        SideEffect::SetPreviewEnabled(enabled) => {
             let snapshot = {
                 let mut state = runtime.state.lock();
-                state.settings.output_mirror = mirror;
+                state.settings.preview_enabled = enabled;
                 state.clone()
             };
             let _ = settings::save(&snapshot.settings);
-            runtime.broadcast_state();
+            runtime.set_preview_enabled(enabled);
+            if !enabled {
+                view.update(cx, |app, cx| {
+                    if let Some(recycled) = app.clear_preview() {
+                        runtime.return_buffer(recycled);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+        }
+        SideEffect::SetMirror(mirror) => {
+            let rotation = runtime.state.lock().settings.output_rotation;
+            runtime.sync_output_transform(mirror, rotation);
         }
         SideEffect::SetRotation(rotation) => {
-            let snapshot = {
-                let mut state = runtime.state.lock();
-                state.settings.output_rotation = rotation;
-                state.clone()
-            };
-            let _ = settings::save(&snapshot.settings);
-            runtime.broadcast_state();
+            let mirror = runtime.state.lock().settings.output_mirror;
+            runtime.sync_output_transform(mirror, rotation);
         }
         SideEffect::SetOutputSize(width, height) => {
             let snapshot = {
@@ -269,61 +347,35 @@ fn apply_effect(
             *runtime.writer.lock() = None;
             runtime.broadcast_state();
         }
-        SideEffect::SetCamera(camera) => {
-            let snapshot = {
-                let mut state = runtime.state.lock();
-                state.settings.camera = camera;
-                state.pending_camera_id = Some(state.settings.camera.clone());
-                state.clone()
+        SideEffect::SetCamera(camera) => runtime.set_camera(camera),
+        SideEffect::SetResolution(resolution) => {
+            let (fps, bitrate) = {
+                let state = runtime.state.lock();
+                (
+                    (state.settings.fps > 0).then_some(state.settings.fps),
+                    state.settings.bitrate,
+                )
             };
-            let _ = settings::save(&snapshot.settings);
-            runtime.bump_state_version();
+            runtime.set_video(resolution, fps, bitrate);
         }
         SideEffect::SetVideo { fps, bitrate } => {
-            let snapshot = {
-                let mut state = runtime.state.lock();
-                state.settings.fps = fps;
-                state.settings.bitrate = bitrate;
-                state.clone()
-            };
-            let _ = settings::save(&snapshot.settings);
-            runtime.bump_state_version();
+            let resolution = runtime.state.lock().settings.resolution.clone();
+            runtime.set_video(resolution, fps, bitrate);
         }
-        SideEffect::SetQualityMode(auto) => {
-            let snapshot = {
-                let mut state = runtime.state.lock();
-                state.settings.quality_mode = if auto {
-                    phonecam_protocol::QualityMode::Auto
-                } else {
-                    phonecam_protocol::QualityMode::Manual
-                };
-                state.clone()
-            };
-            runtime.quality.lock().set_enabled(auto);
-            let _ = settings::save(&snapshot.settings);
-            runtime.bump_state_version();
-        }
-        SideEffect::SetScreenMode(mode) => {
-            let snapshot = {
-                let mut state = runtime.state.lock();
-                state.settings.screen_mode = mode;
-                state.clone()
-            };
-            let _ = settings::save(&snapshot.settings);
-            runtime.bump_state_version();
-        }
-        SideEffect::SetTorch(_) | SideEffect::SetZoom(_) => {
-            // Phone-owned controls: sent on the next start batch. Recording them
-            // as done here would be the claim-without-establishment the design
-            // rules exist to prevent.
-        }
+        SideEffect::SetQualityMode(auto) => runtime.set_quality_mode(auto),
+        SideEffect::SetScreenMode(mode) => runtime.set_screen_mode(mode),
+        SideEffect::SetTorch(enabled) => runtime.set_torch(enabled),
+        SideEffect::SetZoom(zoom) => runtime.set_zoom(zoom),
         SideEffect::SetLogLevel(level) => {
-            let snapshot = {
-                let mut state = runtime.state.lock();
-                state.settings.log_level = level;
-                state.clone()
-            };
-            let _ = settings::save(&snapshot.settings);
+            logging::set_level(level);
+            runtime.set_log_level(level);
+        }
+        SideEffect::SetLogFilterLevel(level) => {
+            runtime.state.lock().log_filter_level = level;
+            runtime.bump_state_version();
+        }
+        SideEffect::SetLogFilterSource(source) => {
+            runtime.state.lock().log_filter_source = source;
             runtime.bump_state_version();
         }
         SideEffect::DismissNotice(id) => {
@@ -340,17 +392,49 @@ fn apply_effect(
                 state.settings.always_on_top = !state.settings.always_on_top;
                 state.clone()
             };
+            if let Some(hwnd) = hwnd {
+                tray::set_window_always_on_top(hwnd, snapshot.settings.always_on_top);
+            }
             let _ = settings::save(&snapshot.settings);
             runtime.bump_state_version();
         }
         SideEffect::ExportDiagnostics => match runtime.export_diagnostics(None) {
             Ok(path) => {
                 runtime.log_info(&format!("diagnostics exported to {}", path.display()));
+                runtime
+                    .state
+                    .lock()
+                    .set_toast("Diagnostics exported", Timing::TOAST_MS as i64);
+                runtime.bump_state_version();
             }
             Err(err) => {
-                runtime.log_error("diagnostics_failed", &format!("could not export diagnostics: {err}"));
+                runtime.log_error(
+                    "diagnostics_failed",
+                    &format!("could not export diagnostics: {err}"),
+                );
             }
         },
+        SideEffect::CopyDiagnosticsReport => {
+            let report = runtime.generate_diagnostics_report();
+            let copied = cx
+                .update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(report)))
+                .is_ok();
+            {
+                let mut state = runtime.state.lock();
+                if copied {
+                    state.set_toast(
+                        "Diagnostics report copied to clipboard",
+                        Timing::TOAST_MS as i64,
+                    );
+                } else {
+                    state.set_toast(
+                        "Could not copy diagnostics report",
+                        Timing::TOAST_MS as i64,
+                    );
+                }
+            }
+            runtime.bump_state_version();
+        }
         SideEffect::SelectPairingNetwork(index) => {
             view.update(cx, |app, cx| {
                 app.pairing_network = index;

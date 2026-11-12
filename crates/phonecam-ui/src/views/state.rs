@@ -2,7 +2,7 @@
 //!
 //! The shipped renderer kept this shape deliberately, and the reason still
 //! holds. The loopback socket and the tray both push updates that must land in
-//! one coherent snapshot, and video packets must **not** re-render the window â€”
+//! one coherent snapshot, and video packets must **not** re-render the window —
 //! they go straight to the preview surface. Keeping the packet path out of the
 //! view model is what keeps preview latency low.
 
@@ -26,7 +26,7 @@ pub struct Notice {
     pub dedupe_key: String,
 }
 
-/// Every failure the desktop can name (Â§38 copy).
+/// Every failure the desktop can name (§38 copy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureCode {
     CoreUnreachable,
@@ -203,6 +203,8 @@ pub enum LogSource {
     Core,
     App,
     Renderer,
+    Media,
+    Phone,
 }
 
 impl LogSource {
@@ -211,6 +213,8 @@ impl LogSource {
             Self::Core => "Service",
             Self::App => "PhoneCam",
             Self::Renderer => "App",
+            Self::Media => "media",
+            Self::Phone => "phone",
         }
     }
 }
@@ -252,6 +256,8 @@ pub struct Settings {
     pub window_width: f32,
     pub window_height: f32,
     pub window_maximized: bool,
+    /// Whether the window renders the live preview.
+    pub preview_enabled: bool,
     /// Whether a phone has been paired here before, **not** whether one is here
     /// now. It decides whether the empty state says "pair one" or "wake yours".
     pub last_device_id: Option<String>,
@@ -277,6 +283,7 @@ impl Default for Settings {
             window_width: 1280.0,
             window_height: 840.0,
             window_maximized: false,
+            preview_enabled: true,
             last_device_id: None,
         }
     }
@@ -313,8 +320,11 @@ pub struct AppState {
     pub capabilities: Option<CapabilitiesPayload>,
     pub notices: Vec<Notice>,
     pub logs: Vec<LogLine>,
+    pub log_filter_level: Option<phonecam_protocol::LogLevel>,
+    pub log_filter_source: Option<LogSource>,
     pub pairing_prompt: Option<PairingPrompt>,
     pub toast: Option<String>,
+    pub toast_expires_at_ms: Option<i64>,
     /// The size of the picture this window is showing, if any.
     pub frame_size: Option<(u32, u32)>,
     pub phone_stats: Option<PhoneStats>,
@@ -458,6 +468,24 @@ impl AppState {
             self.logs.drain(..excess);
         }
     }
+
+    /// Shows a transient toast message that expires after `ttl_ms` milliseconds.
+    pub fn set_toast(&mut self, msg: impl Into<String>, ttl_ms: i64) {
+        self.toast = Some(msg.into());
+        self.toast_expires_at_ms = Some(now_ms().saturating_add(ttl_ms.max(0)));
+    }
+
+    /// Clears the active toast if `now_ms` has reached its expiration timestamp.
+    pub fn expire_toast_if_due(&mut self, now_ms: i64) -> bool {
+        if let Some(expires_at) = self.toast_expires_at_ms {
+            if now_ms >= expires_at {
+                self.toast = None;
+                self.toast_expires_at_ms = None;
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// Milliseconds since the Unix epoch.
@@ -532,7 +560,7 @@ pub fn format_log_time(ts_ms: i64) -> String {
     )
 }
 
-/// A resolution's label, e.g. `1920x1080` â†’ `1080p`.
+/// A resolution's label, e.g. `1920x1080` → `1080p`.
 pub fn resolution_label_of(value: &str) -> String {
     phonecam_protocol::resolution_label(value)
 }
@@ -674,6 +702,36 @@ mod tests {
         ]);
         assert!(body.contains("1080p"));
         assert!(body.contains("720p"));
+    }
+
+    #[test]
+    fn toast_expires_when_due() {
+        let mut state = AppState::default();
+        assert!(state.toast_expires_at_ms.is_none());
+        assert!(state.log_filter_level.is_none());
+        assert!(state.log_filter_source.is_none());
+
+        state.set_toast("Copied", 3_000);
+        assert_eq!(state.toast.as_deref(), Some("Copied"));
+        let expires_at = state.toast_expires_at_ms.unwrap();
+
+        assert!(!state.expire_toast_if_due(expires_at - 1));
+        assert!(state.toast.is_some());
+
+        assert!(state.expire_toast_if_due(expires_at));
+        assert!(state.toast.is_none());
+        assert!(state.toast_expires_at_ms.is_none());
+    }
+
+    #[test]
+    fn log_sources_have_expected_labels() {
+        assert_eq!(LogSource::Media.label(), "media");
+        assert_eq!(LogSource::Phone.label(), "phone");
+    }
+
+    #[test]
+    fn preview_is_enabled_by_default() {
+        assert!(Settings::default().preview_enabled);
     }
 }
 

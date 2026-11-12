@@ -5,6 +5,7 @@
 //! handshake, the real decoder — rather than a mock of it.
 
 pub mod adb;
+pub mod logging;
 pub mod runtime;
 pub mod settings;
 pub mod tray;

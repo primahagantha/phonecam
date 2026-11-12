@@ -3,12 +3,12 @@
 //! The C++ core muxed each group of pictures into a fragmented MP4 on disk and
 //! read it back through a Media Foundation Source Reader, because the bare
 //! H.264 decoder MFT produced zero frames on some machines. That path costs a
-//! temp-file write plus a read per group (â‰ˆ24 ms/batch) and is the single
+//! temp-file write plus a read per group (≈24 ms/batch) and is the single
 //! largest latency term in the old pipeline.
 //!
 //! This decodes in-process with openh264 instead: no temp file, no container, no
 //! second copy, and it works on any machine regardless of which MFTs are
-//! installed. The output is I420, which is NV12's planar sibling â€” the frame bus
+//! installed. The output is I420, which is NV12's planar sibling — the frame bus
 //! wants NV12, so the interleave happens once, at publish time.
 
 pub mod flicker;
@@ -210,7 +210,7 @@ impl H264Decoder {
     /// Replaces the held parameter sets from a `codecConfig` packet.
     ///
     /// Returns false when the buffer holds no readable SPS, which is the case
-    /// the C++ core warns about and discards â€” a codec-config packet that cannot
+    /// the C++ core warns about and discards — a codec-config packet that cannot
     /// size a decoder is not a codec-config packet.
     pub fn set_parameter_sets(&mut self, data: &[u8]) -> bool {
         match parse_avc_dimensions(data) {
@@ -288,6 +288,189 @@ impl H264Decoder {
         if let Ok(fresh) = Decoder::new() {
             self.inner = fresh;
         }
+    }
+}
+
+/// Applies clockwise `rotation` (`0`, `90`, `180`, `270`) and then horizontal
+/// `mirror` to a packed BGRA `u32` pixel buffer without allocating when `dst`
+/// already has capacity. Returns the output `(width, height)`.
+pub fn transform_bgra(
+    src: &[u32],
+    dst: &mut Vec<u32>,
+    width: u32,
+    height: u32,
+    mirror: bool,
+    rotation: u32,
+) -> (u32, u32) {
+    let w = width as usize;
+    let h = height as usize;
+    let count = w.saturating_mul(h);
+    if count == 0 || src.len() < count {
+        dst.clear();
+        return (width, height);
+    }
+    let rot = normalize_rotation(rotation);
+    let (out_w, out_h) = if matches!(rot, 90 | 270) { (height, width) } else { (width, height) };
+    dst.resize(count, 0);
+    transform_pixels(&src[..count], &mut dst[..count], w, h, mirror, rot);
+    (out_w, out_h)
+}
+
+/// Byte-slice variant of [`transform_bgra`] for 4-byte BGRA frame buffers.
+///
+/// Uses aligned `u32` pixel moves when both slices are 4-byte aligned and falls
+/// back to 4-byte pixel copies otherwise, reusing `dst` capacity with zero
+/// heap allocation once warmed.
+pub fn transform_bgra_bytes(
+    src: &[u8],
+    dst: &mut Vec<u8>,
+    width: u32,
+    height: u32,
+    mirror: bool,
+    rotation: u32,
+) -> (u32, u32) {
+    let w = width as usize;
+    let h = height as usize;
+    let count = w.saturating_mul(h);
+    let byte_len = count.saturating_mul(4);
+    if count == 0 || src.len() < byte_len {
+        dst.clear();
+        return (width, height);
+    }
+    let rot = normalize_rotation(rotation);
+    let (out_w, out_h) = if matches!(rot, 90 | 270) { (height, width) } else { (width, height) };
+    dst.resize(byte_len, 0);
+
+    // SAFETY: `align_to` / `align_to_mut` checks alignment dynamically; when
+    // both `src` and `dst` are 4-byte aligned (the standard allocator case),
+    // we operate directly on `&[u32]` / `&mut [u32]` pixel words.
+    let (s_pre, s_u32, _) = unsafe { src[..byte_len].align_to::<u32>() };
+    let (d_pre, d_u32, _) = unsafe { dst[..byte_len].align_to_mut::<u32>() };
+    if s_pre.is_empty() && d_pre.is_empty() && s_u32.len() == count && d_u32.len() == count {
+        transform_pixels(s_u32, d_u32, w, h, mirror, rot);
+    } else {
+        let (s_chunks, _) = src[..byte_len].as_chunks::<4>();
+        let (d_chunks, _) = dst[..byte_len].as_chunks_mut::<4>();
+        transform_pixels(s_chunks, d_chunks, w, h, mirror, rot);
+    }
+    (out_w, out_h)
+}
+
+#[inline]
+fn normalize_rotation(rotation: u32) -> u32 {
+    match (rotation % 360) / 90 * 90 {
+        90 => 90,
+        180 => 180,
+        270 => 270,
+        _ => 0,
+    }
+}
+
+fn transform_pixels<T: Copy>(
+    src: &[T],
+    dst: &mut [T],
+    w: usize,
+    h: usize,
+    mirror: bool,
+    rot: u32,
+) {
+    match (rot, mirror) {
+        (0, false) => {
+            dst.copy_from_slice(src);
+        }
+        (0, true) => {
+            for y in 0..h {
+                let row_start = y * w;
+                let src_row = &src[row_start..row_start + w];
+                let dst_row = &mut dst[row_start..row_start + w];
+                for (d, s) in dst_row.iter_mut().zip(src_row.iter().rev()) {
+                    *d = *s;
+                }
+            }
+        }
+        (180, false) => {
+            for dy in 0..h {
+                let sy = h - 1 - dy;
+                let src_row = &src[sy * w..sy * w + w];
+                let dst_row = &mut dst[dy * w..dy * w + w];
+                for (d, s) in dst_row.iter_mut().zip(src_row.iter().rev()) {
+                    *d = *s;
+                }
+            }
+        }
+        (180, true) => {
+            for dy in 0..h {
+                let sy = h - 1 - dy;
+                let src_row = &src[sy * w..sy * w + w];
+                let dst_row = &mut dst[dy * w..dy * w + w];
+                dst_row.copy_from_slice(src_row);
+            }
+        }
+        (90, false) => {
+            let (out_w, out_h) = (h, w);
+            for dy_block in (0..out_h).step_by(16) {
+                let dy_end = (dy_block + 16).min(out_h);
+                for dx_block in (0..out_w).step_by(16) {
+                    let dx_end = (dx_block + 16).min(out_w);
+                    for dy in dy_block..dy_end {
+                        let dst_row = &mut dst[dy * out_w..dy * out_w + out_w];
+                        for dx in dx_block..dx_end {
+                            let sy = h - 1 - dx;
+                            dst_row[dx] = src[sy * w + dy];
+                        }
+                    }
+                }
+            }
+        }
+        (90, true) => {
+            let (out_w, out_h) = (h, w);
+            for dy_block in (0..out_h).step_by(16) {
+                let dy_end = (dy_block + 16).min(out_h);
+                for dx_block in (0..out_w).step_by(16) {
+                    let dx_end = (dx_block + 16).min(out_w);
+                    for dy in dy_block..dy_end {
+                        let dst_row = &mut dst[dy * out_w..dy * out_w + out_w];
+                        for dx in dx_block..dx_end {
+                            dst_row[dx] = src[dx * w + dy];
+                        }
+                    }
+                }
+            }
+        }
+        (270, false) => {
+            let (out_w, out_h) = (h, w);
+            for dy_block in (0..out_h).step_by(16) {
+                let dy_end = (dy_block + 16).min(out_h);
+                for dx_block in (0..out_w).step_by(16) {
+                    let dx_end = (dx_block + 16).min(out_w);
+                    for dy in dy_block..dy_end {
+                        let dst_row = &mut dst[dy * out_w..dy * out_w + out_w];
+                        let sx = w - 1 - dy;
+                        for dx in dx_block..dx_end {
+                            dst_row[dx] = src[dx * w + sx];
+                        }
+                    }
+                }
+            }
+        }
+        (270, true) => {
+            let (out_w, out_h) = (h, w);
+            for dy_block in (0..out_h).step_by(16) {
+                let dy_end = (dy_block + 16).min(out_h);
+                for dx_block in (0..out_w).step_by(16) {
+                    let dx_end = (dx_block + 16).min(out_w);
+                    for dy in dy_block..dy_end {
+                        let dst_row = &mut dst[dy * out_w..dy * out_w + out_w];
+                        let sx = w - 1 - dy;
+                        for dx in dx_block..dx_end {
+                            let sy = h - 1 - dx;
+                            dst_row[dx] = src[sy * w + sx];
+                        }
+                    }
+                }
+            }
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -451,6 +634,79 @@ mod tests {
             assert_eq!(nv12[w * h + i * 2], u_data[i], "U mismatch at {i}");
             assert_eq!(nv12[w * h + i * 2 + 1], v_data[i], "V mismatch at {i}");
         }
+    }
+
+    #[test]
+    fn transform_bgra_mirror_and_rotations() {
+        // 3x2 image:
+        // [1, 2, 3]
+        // [4, 5, 6]
+        let src = [1u32, 2, 3, 4, 5, 6];
+        let mut dst = Vec::new();
+
+        // 0 deg + mirror
+        assert_eq!(transform_bgra(&src, &mut dst, 3, 2, true, 0), (3, 2));
+        assert_eq!(dst, vec![3, 2, 1, 6, 5, 4]);
+
+        // 90 deg CW -> 2x3:
+        // [4, 1]
+        // [5, 2]
+        // [6, 3]
+        assert_eq!(transform_bgra(&src, &mut dst, 3, 2, false, 90), (2, 3));
+        assert_eq!(dst, vec![4, 1, 5, 2, 6, 3]);
+
+        // 90 deg CW + mirror -> 2x3:
+        // [1, 4]
+        // [2, 5]
+        // [3, 6]
+        assert_eq!(transform_bgra(&src, &mut dst, 3, 2, true, 90), (2, 3));
+        assert_eq!(dst, vec![1, 4, 2, 5, 3, 6]);
+
+        // 180 deg -> 3x2:
+        // [6, 5, 4]
+        // [3, 2, 1]
+        assert_eq!(transform_bgra(&src, &mut dst, 3, 2, false, 180), (3, 2));
+        assert_eq!(dst, vec![6, 5, 4, 3, 2, 1]);
+
+        // 180 deg + mirror -> 3x2 (vertical flip):
+        // [4, 5, 6]
+        // [1, 2, 3]
+        assert_eq!(transform_bgra(&src, &mut dst, 3, 2, true, 180), (3, 2));
+        assert_eq!(dst, vec![4, 5, 6, 1, 2, 3]);
+
+        // 270 deg CW -> 2x3:
+        // [3, 6]
+        // [2, 5]
+        // [1, 4]
+        assert_eq!(transform_bgra(&src, &mut dst, 3, 2, false, 270), (2, 3));
+        assert_eq!(dst, vec![3, 6, 2, 5, 1, 4]);
+
+        // 270 deg CW + mirror -> 2x3:
+        // [6, 3]
+        // [5, 2]
+        // [4, 1]
+        assert_eq!(transform_bgra(&src, &mut dst, 3, 2, true, 270), (2, 3));
+        assert_eq!(dst, vec![6, 3, 5, 2, 4, 1]);
+    }
+
+    #[test]
+    fn transform_bgra_bytes_matches_u32_and_reuses_buffer() {
+        let src_u32 = [0x11223344u32, 0x55667788, 0x99AABBCC, 0xDDEEFF00, 0x01020304, 0x05060708];
+        let mut src_bytes = Vec::with_capacity(src_u32.len() * 4);
+        for px in src_u32 {
+            src_bytes.extend_from_slice(&px.to_ne_bytes());
+        }
+        let mut dst_bytes = Vec::with_capacity(64);
+        let initial_ptr = dst_bytes.as_ptr();
+
+        let dims = transform_bgra_bytes(&src_bytes, &mut dst_bytes, 3, 2, false, 90);
+        assert_eq!(dims, (2, 3));
+        assert_eq!(dst_bytes.as_ptr(), initial_ptr, "must reuse preallocated capacity");
+
+        let mut dst_u32 = Vec::new();
+        transform_bgra(&src_u32, &mut dst_u32, 3, 2, false, 90);
+        let expected_bytes: Vec<u8> = dst_u32.iter().flat_map(|p| p.to_ne_bytes()).collect();
+        assert_eq!(dst_bytes, expected_bytes);
     }
 }
 

@@ -30,7 +30,7 @@ pub enum TrayCommand {
 /// Pure data, so the wording is testable without a message loop.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrayMenu {
-    /// A disabled status row, e.g. "â— Streaming".
+    /// A disabled status row, e.g. "● Streaming".
     pub status: String,
     /// A disabled row naming the phone, or "No phone connected".
     pub device: String,
@@ -54,13 +54,13 @@ impl Default for TrayMenu {
 /// The phase glyph, so the tray can be read at a glance.
 pub fn phase_dot(phase: &str) -> &'static str {
     match phase {
-        "idle" => "â—‹",
-        "connecting" => "â—Œ",
-        "connected" => "â—‰",
-        "streaming" => "â—",
-        "reconnecting" => "â—",
-        "error" => "âŠ—",
-        _ => "â€¢",
+        "idle" => "○",
+        "connecting" => "◌",
+        "connected" => "◉",
+        "streaming" => "●",
+        "reconnecting" => "◍",
+        "error" => "⊗",
+        _ => "•",
     }
 }
 
@@ -154,8 +154,33 @@ pub fn hide_window(hwnd: isize) {
     }
 }
 
+/// Sets or clears the always-on-top (`HWND_TOPMOST`) window z-order flag.
+#[cfg(windows)]
+pub fn set_window_always_on_top(hwnd: isize, enabled: bool) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    if hwnd != 0 {
+        let insert_after = if enabled { HWND_TOPMOST } else { HWND_NOTOPMOST };
+        unsafe {
+            let _ = SetWindowPos(
+                HWND(hwnd as *mut _),
+                Some(insert_after),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
 #[cfg(not(windows))]
 pub fn hide_window(_hwnd: isize) {}
+#[cfg(not(windows))]
+pub fn set_window_always_on_top(_hwnd: isize, _enabled: bool) {}
 #[cfg(not(windows))]
 pub fn hwnd_of(_window: &gpui::Window) -> Option<isize> {
     None
@@ -469,7 +494,7 @@ mod tests {
             assert!(seen.insert(phase_dot(phase)), "{phase} reuses a glyph");
         }
         // An unknown phase still renders something rather than nothing.
-        assert_eq!(phase_dot("who-knows"), "â€¢");
+        assert_eq!(phase_dot("who-knows"), "•");
     }
 
     #[test]

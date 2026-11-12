@@ -86,7 +86,7 @@ pub fn summarise_status(input: &StatusInput) -> StatusSummary {
         // Only the stream's *identity* is stated here, never its live numbers.
         // Frame rate and latency used to appear in this line and again on the
         // preview overlay a second apart, so the header read "30 fps" while the
-        // overlay read "29.8 fps" â€” which looks like a bug rather than like two
+        // overlay read "29.8 fps" — which looks like a bug rather than like two
         // samplings of one counter.
         return StatusSummary {
             tone: StatusTone::Ok,
@@ -121,7 +121,7 @@ pub fn summarise_status(input: &StatusInput) -> StatusSummary {
     if input.phase == "connecting" {
         return StatusSummary {
             tone: StatusTone::Accent,
-            headline: "Startingâ€¦".into(),
+            headline: "Starting…".into(),
             detail: input.device_name.clone(),
             attention: false,
         };
@@ -184,7 +184,7 @@ pub fn usb_readiness(adb_available: Option<bool>, device_count: usize) -> UsbRea
 /// The virtual camera's status chip.
 ///
 /// Order matters: a failure is named first, then a running camera by name, then
-/// a registered-but-off camera as "Off" â€” **not** "Not installed", because a
+/// a registered-but-off camera as "Off" — **not** "Not installed", because a
 /// registered camera that is switched off is installed, and the old label said
 /// otherwise on every fresh startup.
 pub fn vcam_chip_label(
@@ -251,8 +251,8 @@ pub fn vcam_usage_detail(state: Option<&str>, streaming: bool, consumers: u32) -
 /// Outside `streaming` every field reads the placeholder, because a rate is a
 /// measurement only while the stream it measures is running. The core always
 /// sends a fully populated stats object whose live-rate fields are zeroed the
-/// moment a stream ends, so the guard that used to exist here â€” "is stats
-/// non-null?" â€” printed a confident `0.0` and `0 Mbps` for a stream that was not
+/// moment a stream ends, so the guard that used to exist here — "is stats
+/// non-null?" — printed a confident `0.0` and `0 Mbps` for a stream that was not
 /// there.
 pub struct ThroughputReadout {
     pub fps: String,
@@ -291,7 +291,7 @@ pub fn throughput_readout(
 /// Whether the phone honoured the resolution we asked for.
 ///
 /// Compares the *label* (the shorter side), not the raw string, because a phone
-/// with a sideways sensor reports `1080x1920` for a request of `1920x1080` â€”
+/// with a sideways sensor reports `1080x1920` for a request of `1920x1080` —
 /// the same 1080p frame. The old string comparison announced a downgrade that
 /// had not happened and named the same resolution on both sides of the
 /// sentence.
@@ -315,7 +315,7 @@ pub fn compare_resolution(actual: &str, requested: &str) -> Option<ResolutionCom
 /* ------------------------------------------------------------------ */
 
 /// The identity fields that were actually reported. `None` means "not reported",
-/// and a field that was not reported is **absent from the UI** â€” never blank,
+/// and a field that was not reported is **absent from the UI** — never blank,
 /// and never "Android 0".
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceFacts {
@@ -393,7 +393,7 @@ pub enum StartRefusal {
 /// phone and lags the request by a round trip, so a phase check by itself still
 /// lets a second start through in the window that matters. Two concurrent dials
 /// produce two video connections, the second replaces the first, and the loser's
-/// teardown closes the winner's socket â€” a stream that starts and stops with no
+/// teardown closes the winner's socket — a stream that starts and stops with no
 /// error on either side.
 pub fn can_start_stream(phase: &str, last_start_at_ms: u64, now_ms: u64) -> StartRefusal {
     if phase == "streaming" {

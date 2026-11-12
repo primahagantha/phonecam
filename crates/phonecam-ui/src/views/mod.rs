@@ -170,18 +170,22 @@ impl Render for AppView {
 
         let stage: gpui::AnyElement = match &content {
             StageContent::Picture => {
-                let picture: gpui::AnyElement = match &self.preview_image {
-                    Some(image) => div()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .child(
-                            gpui::img(image.clone())
-                                .w_full()
-                                .h_full()
-                                .object_fit(gpui::ObjectFit::Contain),
-                        )
-                        .into_any_element(),
-                    None => div().flex_1().into_any_element(),
+                let picture: gpui::AnyElement = if !self.state.settings.preview_enabled {
+                    preview::preview_off_card()
+                } else {
+                    match &self.preview_image {
+                        Some(image) => div()
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .child(
+                                gpui::img(image.clone())
+                                    .w_full()
+                                    .h_full()
+                                    .object_fit(gpui::ObjectFit::Contain),
+                            )
+                            .into_any_element(),
+                        None => div().flex_1().into_any_element(),
+                    }
                 };
                 div()
                     .flex()
@@ -201,7 +205,11 @@ impl Render for AppView {
                             || self.state.has_notice(FailureCode::DecoderUnsupported),
                         self.state.frame_size,
                         self.state.core.as_ref().map(|c| c.stats.fps).unwrap_or(0.0),
-                        None,
+                        self.state
+                            .core
+                            .as_ref()
+                            .map(|c| c.stats.latency_ms)
+                            .filter(|ms| *ms >= 0.0),
                         self.state.settings.output_rotation,
                     ))
                     .into_any_element()

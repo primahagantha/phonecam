@@ -58,6 +58,8 @@ struct SettingsFile {
     #[serde(default)]
     window_maximized: Option<bool>,
     #[serde(default)]
+    preview_enabled: Option<bool>,
+    #[serde(default)]
     last_device_id: Option<String>,
 }
 
@@ -111,7 +113,7 @@ fn coerce(file: SettingsFile) -> Settings {
             .resolution
             .filter(|r| r == "auto" || phonecam_protocol::parse_resolution(r).is_some())
             .unwrap_or(defaults.resolution),
-        fps: file.fps.filter(|&f| (1..=120).contains(&f)).unwrap_or(defaults.fps),
+        fps: file.fps.filter(|&f| f == 0 || (1..=120).contains(&f)).unwrap_or(defaults.fps),
         bitrate: file
             .bitrate
             .filter(|&b| (100_000..=50_000_000).contains(&b))
@@ -145,6 +147,7 @@ fn coerce(file: SettingsFile) -> Settings {
             .filter(|h| (640.0..=10_000.0).contains(h))
             .unwrap_or(defaults.window_height),
         window_maximized: file.window_maximized.unwrap_or(defaults.window_maximized),
+        preview_enabled: file.preview_enabled.unwrap_or(defaults.preview_enabled),
         last_device_id: file.last_device_id.filter(|id| !id.is_empty()),
     }
 }
@@ -182,6 +185,7 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
         window_width: Some(settings.window_width),
         window_height: Some(settings.window_height),
         window_maximized: Some(settings.window_maximized),
+        preview_enabled: Some(settings.preview_enabled),
         last_device_id: settings.last_device_id.clone(),
     };
 

@@ -62,7 +62,7 @@ pub enum EmptyAction {
 ///
 /// Pairing yields to any problem state: while a code is on screen there is
 /// nothing else the user can usefully do, but it must not cover a reconnecting
-/// session â€” the old build showed a scannable code over a dropping phone and
+/// session — the old build showed a scannable code over a dropping phone and
 /// hid the sentence explaining it.
 pub fn stage_content(state: &AppState, pairing_selected: usize) -> StageContent {
     let streaming = state.is_streaming();
@@ -147,10 +147,10 @@ pub fn stage_content(state: &AppState, pairing_selected: usize) -> StageContent 
     let output_note = has_device.then(|| {
         let mut note = format!("{} x {}", state.settings.output_width, state.settings.output_height);
         if state.settings.output_mirror {
-            note.push_str(" Â· mirrored");
+            note.push_str(" · mirrored");
         }
         if state.settings.output_rotation != 0 {
-            note.push_str(&format!(" Â· {}Â°", state.settings.output_rotation));
+            note.push_str(&format!(" · {}°", state.settings.output_rotation));
         }
         note
     });
@@ -214,7 +214,7 @@ pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::Re
     } else {
         match expires_in_ms {
             Some(ms) => {
-                format!("Works once Â· expires in {}", crate::views::state::format_duration(*ms))
+                format!("Works once · expires in {}", crate::views::state::format_duration(*ms))
             }
             None => "Works once".to_string(),
         }
@@ -275,10 +275,21 @@ pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::Re
                     .justify_center()
                     .gap(px(Space::MD))
                     .children(networks.iter().enumerate().map(|(index, host)| {
-                        chip(
-                            host.clone(),
-                            if index == *selected { Tone::Accent } else { Tone::Neutral },
-                        )
+                        div()
+                            .id(gpui::ElementId::Name(gpui::SharedString::from(format!(
+                                "pairing-net-{index}"
+                            ))))
+                            .cursor_pointer()
+                            .on_click(move |_event, _window, _cx| {
+                                crate::views::effects::push_effect(
+                                    crate::views::effects::SideEffect::SelectPairingNetwork(index),
+                                );
+                            })
+                            .child(chip(
+                                host.clone(),
+                                if index == *selected { Tone::Accent } else { Tone::Neutral },
+                            ))
+                            .into_any_element()
                     })),
             )
             .child(
@@ -423,7 +434,7 @@ fn empty_body(content: &StageContent) -> AnyElement {
 ///
 /// Deliberately low contrast: it is a confidence check, not the thing being
 /// watched. The badge reports what **this window** is showing, not what the
-/// phone is sending â€” when the decoder has stopped, the stream is genuinely
+/// phone is sending — when the decoder has stopped, the stream is genuinely
 /// still running and the virtual camera is still being fed, but this surface has
 /// no picture, and a green "Live" over a black rectangle is the app contradicting
 /// itself on its most important surface.
@@ -489,7 +500,7 @@ pub fn telemetry(
         right = right.child(format!("{ms:.0} ms"));
     }
     if rotation != 0 {
-        right = right.child(format!("{rotation}Â°"));
+        right = right.child(format!("{rotation}°"));
     }
 
     div()
@@ -507,7 +518,7 @@ pub fn telemetry(
 
 /// Renders a QR payload into a BGRA buffer for display.
 ///
-/// The token never becomes a string, a data URL or a log line â€” only pixels.
+/// The token never becomes a string, a data URL or a log line — only pixels.
 pub fn qr_pixels(payload: &str, size: usize) -> Option<(Vec<u8>, usize, usize)> {
     use qrcode::QrCode;
 
@@ -578,6 +589,49 @@ fn is_well_formed_payload(payload: &str) -> bool {
 /// A placeholder used where a value has not been established.
 pub fn empty_value() -> &'static str {
     EMPTY_VALUE
+}
+
+/// Card shown on the stage when streaming is active but window preview is disabled.
+pub fn preview_off_card() -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h(px(0.0))
+        .items_center()
+        .justify_center()
+        .px(px(32.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .max_w(px(416.0))
+                .rounded(px(Radius::LG))
+                .border_1()
+                .border_color(SHELL.border.alpha(0.6))
+                .bg(SHELL.recessed)
+                .px(px(24.0))
+                .py(px(20.0))
+                .child(
+                    div()
+                        .font_family(Fonts::DISPLAY)
+                        .text_size(px(Type::DISPLAY))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(Text::PRIMARY)
+                        .child("Preview is off"),
+                )
+                .child(
+                    div()
+                        .mt(px(Space::MD))
+                        .font_family(Fonts::SANS)
+                        .text_size(px(Type::TWO_SM))
+                        .text_color(Text::MUTED)
+                        .text_center()
+                        .child("The phone is still streaming and the virtual camera is still publishing. Turn the preview back on in Preferences."),
+                ),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -653,7 +707,7 @@ mod tests {
                 let note = output_note.unwrap();
                 assert!(note.contains("1280 x 720"));
                 assert!(note.contains("mirrored"));
-                assert!(note.contains("90Â°"));
+                assert!(note.contains("90°"));
             }
             other => panic!("expected the empty stage, got {other:?}"),
         }
