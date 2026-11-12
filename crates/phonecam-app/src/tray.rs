@@ -177,6 +177,159 @@ pub fn set_window_always_on_top(hwnd: isize, enabled: bool) {
     }
 }
 
+/// Keeps the process-wide single-instance mutex alive for the lifetime of the app.
+#[cfg(windows)]
+pub struct SingleInstanceGuard(isize);
+
+#[cfg(windows)]
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        if self.0 != 0 {
+            unsafe {
+                let _ = CloseHandle(HANDLE(self.0 as *mut _));
+            }
+            self.0 = 0;
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub struct SingleInstanceGuard;
+
+/// Acquires the single-instance lock, or focuses the already-running PhoneCam
+/// window and returns `None` if another instance is active.
+#[cfg(windows)]
+pub fn acquire_single_instance_or_focus() -> Option<SingleInstanceGuard> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    let name: Vec<u16> = "Local\\PhoneCamDesktopSingleInstance\0".encode_utf16().collect();
+    let handle = match unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) } {
+        Ok(h) => h,
+        Err(err) => {
+            if err.code() == ERROR_ALREADY_EXISTS.into() {
+                focus_existing_window();
+                return None;
+            }
+            return Some(SingleInstanceGuard(0));
+        }
+    };
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        focus_existing_window();
+        return None;
+    }
+    Some(SingleInstanceGuard(handle.0 as isize))
+}
+
+#[cfg(not(windows))]
+pub fn acquire_single_instance_or_focus() -> Option<SingleInstanceGuard> {
+    Some(SingleInstanceGuard)
+}
+
+#[cfg(windows)]
+fn focus_existing_window() {
+    use windows::core::{BOOL, PCWSTR};
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, FindWindowW, GetClassNameW, GetWindowTextW, IsIconic, SetForegroundWindow,
+        ShowWindow, SW_RESTORE, SW_SHOW,
+    };
+
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let mut class_buf = [0u16; 64];
+        let class_len = unsafe { GetClassNameW(hwnd, &mut class_buf) };
+        if class_len > 0 {
+            let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+            if class_name == "PhoneCamTrayWindow" {
+                return BOOL(1);
+            }
+        }
+
+        let mut title_buf = [0u16; 256];
+        let len = unsafe { GetWindowTextW(hwnd, &mut title_buf) };
+        if len > 0 {
+            let title = String::from_utf16_lossy(&title_buf[..len as usize]);
+            if title == "PhoneCam" || title.starts_with("PhoneCam - ") {
+                let target = unsafe { &mut *(lparam.0 as *mut HWND) };
+                *target = hwnd;
+                return BOOL(0);
+            }
+        }
+        BOOL(1)
+    }
+
+    let exact_title: Vec<u16> = "PhoneCam\0".encode_utf16().collect();
+    let mut found = unsafe { FindWindowW(PCWSTR::null(), PCWSTR(exact_title.as_ptr())) }
+        .unwrap_or(HWND::default());
+    if found.is_invalid() || found.0.is_null() {
+        let mut enumerated = HWND::default();
+        let _ = unsafe { EnumWindows(Some(enum_cb), LPARAM(&mut enumerated as *mut HWND as isize)) };
+        found = enumerated;
+    }
+
+    if !found.is_invalid() && !found.0.is_null() {
+        unsafe {
+            if IsIconic(found).as_bool() {
+                let _ = ShowWindow(found, SW_RESTORE);
+            }
+            let _ = ShowWindow(found, SW_SHOW);
+            let _ = SetForegroundWindow(found);
+        }
+    }
+}
+
+/// Returns `(x, y, width, height, maximized)` for the window if available.
+#[cfg(windows)]
+pub fn window_bounds(hwnd: isize) -> Option<(f32, f32, f32, f32, bool)> {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, GetWindowRect, IsWindow, IsZoomed, WINDOWPLACEMENT,
+    };
+
+    if hwnd == 0 {
+        return None;
+    }
+    let hwnd = HWND(hwnd as *mut _);
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+        return None;
+    }
+
+    let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetWindowPlacement(hwnd, &mut placement) }.is_ok() {
+        let r = placement.rcNormalPosition;
+        let width = (r.right - r.left) as f32;
+        let height = (r.bottom - r.top) as f32;
+        if width > 0.0 && height > 0.0 {
+            return Some((r.left as f32, r.top as f32, width, height, maximized));
+        }
+    }
+
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
+        let width = (rect.right - rect.left) as f32;
+        let height = (rect.bottom - rect.top) as f32;
+        if width > 0.0 && height > 0.0 {
+            return Some((rect.left as f32, rect.top as f32, width, height, maximized));
+        }
+    }
+
+    None
+}
+
+#[cfg(not(windows))]
+pub fn window_bounds(_hwnd: isize) -> Option<(f32, f32, f32, f32, bool)> {
+    None
+}
+
 #[cfg(not(windows))]
 pub fn hide_window(_hwnd: isize) {}
 #[cfg(not(windows))]
@@ -573,6 +726,11 @@ mod tests {
         let menu = build_menu(&state);
         assert!(menu.vcam.contains("not registered"), "vcam was {}", menu.vcam);
         assert!(!menu.vcam_checked);
+    }
+
+    #[test]
+    fn window_bounds_returns_none_for_null_hwnd() {
+        assert_eq!(window_bounds(0), None);
     }
 }
 

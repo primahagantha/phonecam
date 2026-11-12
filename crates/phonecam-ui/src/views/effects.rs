@@ -15,6 +15,7 @@ pub enum SideEffect {
     StartStream,
     StopStream,
     SetVcam(bool),
+    RestartVcam,
     RefreshUsb,
     ConnectUsb(Option<String>),
     DisconnectUsb,

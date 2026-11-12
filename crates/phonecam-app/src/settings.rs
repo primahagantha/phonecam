@@ -52,6 +52,10 @@ struct SettingsFile {
     #[serde(default)]
     always_on_top: Option<bool>,
     #[serde(default)]
+    window_x: Option<f32>,
+    #[serde(default)]
+    window_y: Option<f32>,
+    #[serde(default)]
     window_width: Option<f32>,
     #[serde(default)]
     window_height: Option<f32>,
@@ -138,6 +142,12 @@ fn coerce(file: SettingsFile) -> Settings {
             _ => defaults.log_level,
         },
         always_on_top: file.always_on_top.unwrap_or(defaults.always_on_top),
+        window_x: file
+            .window_x
+            .filter(|x| x.is_finite() && (-10_000.0..=20_000.0).contains(x)),
+        window_y: file
+            .window_y
+            .filter(|y| y.is_finite() && (-10_000.0..=20_000.0).contains(y)),
         window_width: file
             .window_width
             .filter(|w| (900.0..=10_000.0).contains(w))
@@ -182,6 +192,8 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
         screen_mode: Some(settings.screen_mode.as_str().to_string()),
         log_level: Some(settings.log_level.as_str().to_string()),
         always_on_top: Some(settings.always_on_top),
+        window_x: settings.window_x,
+        window_y: settings.window_y,
         window_width: Some(settings.window_width),
         window_height: Some(settings.window_height),
         window_maximized: Some(settings.window_maximized),
@@ -296,6 +308,21 @@ mod tests {
         // The caller gets defaults rather than a panic or an error to handle.
         let settings = coerce(serde_json::from_str::<SettingsFile>("not json").unwrap_or_default());
         assert_eq!(settings.resolution, Settings::default().resolution);
+    }
+
+    #[test]
+    fn window_position_coerces_valid_and_rejects_out_of_range() {
+        let defaults = parse("{}");
+        assert_eq!(defaults.window_x, None);
+        assert_eq!(defaults.window_y, None);
+
+        let valid = parse(r#"{"window_x": -120.5, "window_y": 240.0}"#);
+        assert_eq!(valid.window_x, Some(-120.5));
+        assert_eq!(valid.window_y, Some(240.0));
+
+        let invalid = parse(r#"{"window_x": -20000.0, "window_y": 25000.0}"#);
+        assert_eq!(invalid.window_x, None);
+        assert_eq!(invalid.window_y, None);
     }
 }
 

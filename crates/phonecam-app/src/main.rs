@@ -31,6 +31,11 @@ use phonecam_ui::views::{AppView, SideEffect, Tab};
 use runtime::Runtime;
 
 fn main() -> anyhow::Result<()> {
+    let _single_instance = match tray::acquire_single_instance_or_focus() {
+        Some(guard) => guard,
+        None => return Ok(()),
+    };
+
     let settings = settings::load();
     logging::init(settings.log_level);
     tracing::info!("PhoneCam starting");
@@ -60,11 +65,22 @@ fn main() -> anyhow::Result<()> {
         // Register GPUI keyboard shortcuts (Space, F11, Esc, Ctrl+1..4, Tab/Shift-Tab)
         phonecam_ui::bind_keys(cx);
 
-        let bounds = Bounds::centered(
-            None,
-            size(px(settings.window_width), px(settings.window_height)),
-            cx,
-        );
+        let bounds = match (settings.window_x, settings.window_y) {
+            (Some(x), Some(y)) => Bounds {
+                origin: gpui::point(px(x), px(y)),
+                size: size(px(settings.window_width), px(settings.window_height)),
+            },
+            _ => Bounds::centered(
+                None,
+                size(px(settings.window_width), px(settings.window_height)),
+                cx,
+            ),
+        };
+        let window_bounds = if settings.window_maximized {
+            WindowBounds::Maximized(bounds)
+        } else {
+            WindowBounds::Windowed(bounds)
+        };
 
         let view = cx.new(|cx| {
             let mut app = AppView::new();
@@ -77,7 +93,7 @@ fn main() -> anyhow::Result<()> {
         let window = cx
             .open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_bounds: Some(window_bounds),
                     window_min_size: Some(size(px(900.0), px(640.0))),
                     window_background: WindowBackgroundAppearance::Opaque,
                     titlebar: Some(gpui::TitlebarOptions {
@@ -114,7 +130,7 @@ fn main() -> anyhow::Result<()> {
 
         // The tray, and the close-to-hide behaviour it exists for.
         start_tray(cx, window, view.clone(), runtime.clone());
-        start_tray_pump(cx, view.clone(), runtime.clone());
+        start_tray_pump(cx, window, view.clone(), runtime.clone());
 
         cx.activate(true);
     });
@@ -132,8 +148,17 @@ fn start_ui_pump(
     cx.spawn(async move |cx| {
         let mut last_state_version = 0u64;
         let mut last_title = title_for(&runtime.state.lock());
+        let mut geometry_ticks = 0u32;
         loop {
             cx.background_executor().timer(Duration::from_millis(8)).await;
+
+            geometry_ticks = geometry_ticks.wrapping_add(1);
+            if geometry_ticks >= 125 {
+                geometry_ticks = 0;
+                let _ = window.update(cx, |_, window, _| {
+                    persist_window_geometry(window, &runtime);
+                });
+            }
 
             let toast_expired = {
                 let mut state = runtime.state.lock();
@@ -265,16 +290,8 @@ fn apply_effect(
         SideEffect::ResolvePair(approved) => runtime.resolve_pair_request(approved),
         SideEffect::StartStream => runtime.start_stream(),
         SideEffect::StopStream => runtime.stop_stream(),
-        SideEffect::SetVcam(enabled) => {
-            runtime.vcam_enabled.store(enabled, Ordering::Relaxed);
-            let snapshot = {
-                let mut state = runtime.state.lock();
-                state.settings.vcam_enabled = enabled;
-                state.clone()
-            };
-            let _ = settings::save(&snapshot.settings);
-            runtime.bump_state_version();
-        }
+        SideEffect::SetVcam(enabled) => runtime.set_vcam(enabled),
+        SideEffect::RestartVcam => runtime.restart_vcam(),
         SideEffect::RefreshState => runtime.broadcast_state(),
         SideEffect::RefreshUsb => runtime.refresh_usb(),
         SideEffect::ConnectUsb(serial) => runtime.connect_usb_device(serial),
@@ -445,12 +462,127 @@ fn apply_effect(
     }
 }
 
+fn persist_window_geometry(window: &gpui::Window, runtime: &Runtime) {
+    let (x, y, width, height, maximized) = match window.window_bounds() {
+        WindowBounds::Windowed(b) => (
+            f32::from(b.origin.x),
+            f32::from(b.origin.y),
+            f32::from(b.size.width),
+            f32::from(b.size.height),
+            false,
+        ),
+        WindowBounds::Maximized(b) => (
+            f32::from(b.origin.x),
+            f32::from(b.origin.y),
+            f32::from(b.size.width),
+            f32::from(b.size.height),
+            true,
+        ),
+        WindowBounds::Fullscreen(b) => (
+            f32::from(b.origin.x),
+            f32::from(b.origin.y),
+            f32::from(b.size.width),
+            f32::from(b.size.height),
+            false,
+        ),
+    };
+    if width < 100.0
+        || height < 100.0
+        || !(-10_000.0..=20_000.0).contains(&x)
+        || !(-10_000.0..=20_000.0).contains(&y)
+    {
+        return;
+    }
+
+    let updated = {
+        let mut state = runtime.state.lock();
+        let s = &mut state.settings;
+        let changed = s.window_x != Some(x)
+            || s.window_y != Some(y)
+            || (s.window_width - width).abs() > 0.5
+            || (s.window_height - height).abs() > 0.5
+            || s.window_maximized != maximized;
+        if !changed {
+            None
+        } else {
+            s.window_x = Some(x);
+            s.window_y = Some(y);
+            s.window_width = width;
+            s.window_height = height;
+            s.window_maximized = maximized;
+            Some(s.clone())
+        }
+    };
+    if let Some(settings) = updated {
+        let _ = settings::save(&settings);
+    }
+}
+
+fn handle_tray_command(
+    command: tray::TrayCommand,
+    window: &WindowHandle<AppView>,
+    view: &gpui::Entity<AppView>,
+    runtime: &Runtime,
+    cx: &mut gpui::AsyncApp,
+) {
+    match command {
+        tray::TrayCommand::ShowWindow => {
+            let tray = runtime.tray.lock();
+            if let Some(tray) = tray.as_ref() {
+                tray.show_target();
+            }
+        }
+        tray::TrayCommand::ToggleVcam => {
+            let enabled = !runtime.vcam_enabled.load(Ordering::Relaxed);
+            phonecam_ui::push_effect(SideEffect::SetVcam(enabled));
+        }
+        tray::TrayCommand::ShowPairing => {
+            let _ = view.update(cx, |app, cx| {
+                app.tab = Tab::Setup;
+                cx.notify();
+            });
+            phonecam_ui::push_effect(SideEffect::ArmPairing);
+            let tray = runtime.tray.lock();
+            if let Some(tray) = tray.as_ref() {
+                tray.show_target();
+            }
+        }
+        tray::TrayCommand::Quit => {
+            let _ = window.update(cx, |_, window, _| {
+                persist_window_geometry(window, runtime);
+            });
+            runtime.log_info("quit from the tray");
+            let _ = cx.update(|cx| cx.quit());
+        }
+        tray::TrayCommand::OpenMenu => {
+            // The menu is built from the state as it is now, so a
+            // tick in it cannot disagree with the window.
+            let state = runtime.state.lock().clone();
+            let menu = tray::build_menu(&state);
+            let choice = {
+                let tray = runtime.tray.lock();
+                tray.as_ref().and_then(|tray| tray.show_menu(&menu))
+            };
+            if let Some(choice) = choice {
+                if choice != tray::TrayCommand::OpenMenu {
+                    handle_tray_command(choice, window, view, runtime, cx);
+                }
+            }
+        }
+    }
+}
+
 /// Acts on whatever the user clicked in the tray.
 ///
 /// The click arrives as a window message on a thread this module owns, so it is
 /// recorded and drained here rather than handled where it lands: the window, the
 /// settings file and the view all live on the UI thread.
-fn start_tray_pump(cx: &mut App, view: gpui::Entity<AppView>, runtime: std::sync::Arc<Runtime>) {
+fn start_tray_pump(
+    cx: &mut App,
+    window: WindowHandle<AppView>,
+    view: gpui::Entity<AppView>,
+    runtime: std::sync::Arc<Runtime>,
+) {
     cx.spawn(async move |cx| {
         loop {
             cx.background_executor().timer(Duration::from_millis(100)).await;
@@ -467,69 +599,11 @@ fn start_tray_pump(cx: &mut App, view: gpui::Entity<AppView>, runtime: std::sync
             }
 
             for command in commands {
-                match command {
-                    tray::TrayCommand::ShowWindow => {
-                        let tray = runtime.tray.lock();
-                        if let Some(tray) = tray.as_ref() {
-                            tray.show_target();
-                        }
-                    }
-                    tray::TrayCommand::ToggleVcam => {
-                        let enabled = !runtime.vcam_enabled.load(Ordering::Relaxed);
-                        phonecam_ui::push_effect(SideEffect::SetVcam(enabled));
-                    }
-                    tray::TrayCommand::ShowPairing => {
-                        phonecam_ui::push_effect(SideEffect::ArmPairing);
-                        let tray = runtime.tray.lock();
-                        if let Some(tray) = tray.as_ref() {
-                            tray.show_target();
-                        }
-                    }
-                    tray::TrayCommand::OpenMenu => {
-                        // The menu is built from the state as it is now, so a
-                        // tick in it cannot disagree with the window.
-                        let state = runtime.state.lock().clone();
-                        let menu = tray::build_menu(&state);
-                        let choice = {
-                            let tray = runtime.tray.lock();
-                            tray.as_ref().and_then(|tray| tray.show_menu(&menu))
-                        };
-                        match choice {
-                            Some(tray::TrayCommand::ShowWindow) => {
-                                let tray = runtime.tray.lock();
-                                if let Some(tray) = tray.as_ref() {
-                                    tray.show_target();
-                                }
-                            }
-                            Some(tray::TrayCommand::ToggleVcam) => {
-                                let enabled = !runtime.vcam_enabled.load(Ordering::Relaxed);
-                                phonecam_ui::push_effect(SideEffect::SetVcam(enabled));
-                            }
-                            Some(tray::TrayCommand::ShowPairing) => {
-                                phonecam_ui::push_effect(SideEffect::ArmPairing);
-                                let tray = runtime.tray.lock();
-                                if let Some(tray) = tray.as_ref() {
-                                    tray.show_target();
-                                }
-                            }
-                            Some(tray::TrayCommand::Quit) => {
-                                runtime.log_info("quit from the tray");
-                                let _ = cx.update(|cx| cx.quit());
-                            }
-                            _ => {}
-                        }
-                    }
-                    tray::TrayCommand::Quit => {
-                        runtime.log_info("quit from the tray");
-                        let _ = cx.update(|cx| cx.quit());
-                    }
-                }
+                handle_tray_command(command, &window, &view, &runtime, cx);
             }
         }
     })
     .detach();
-
-    let _ = view;
 }
 /// Installs the tray icon and makes closing the window hide it.
 ///
@@ -563,10 +637,12 @@ fn start_tray(
 
     // Closing hides the window instead of quitting, so the camera keeps running.
     // The tray's Quit is the only deliberate exit.
+    let close_runtime = runtime.clone();
     window
         .update(cx, |_, window, cx| {
-            window.on_window_should_close(cx, move |_window, _cx| {
+            window.on_window_should_close(cx, move |window, _cx| {
                 tracing::info!("window close requested; hiding instead of quitting");
+                persist_window_geometry(window, &close_runtime);
                 tray::hide_window(hwnd);
                 // Refuse the close: the window is hidden, not destroyed, so the
                 // camera and the listener keep running.

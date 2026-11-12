@@ -45,19 +45,54 @@ impl RegistrationState {
 impl Registrar {
     /// Finds `phonecam-vcam-register.exe` beside the exe, or in the tree.
     pub fn locate(exe_dir: Option<&Path>) -> Option<Self> {
+        let cwd = std::env::current_dir().ok();
+        Self::locate_with_roots(
+            exe_dir,
+            cwd.as_deref(),
+            &[PathBuf::from(
+                r"C:\Program Files\PhoneCam\phonecam-vcam-register.exe",
+            )],
+        )
+    }
+
+    fn locate_with_roots(
+        exe_dir: Option<&Path>,
+        current_dir: Option<&Path>,
+        extra_candidates: &[PathBuf],
+    ) -> Option<Self> {
         let mut candidates = Vec::new();
         if let Some(dir) = exe_dir {
             candidates.push(dir.join("phonecam-vcam-register.exe"));
             candidates.push(dir.join("resources").join("phonecam-vcam-register.exe"));
             if let Some(parent) = dir.parent() {
                 candidates.push(parent.join("virtual-camera").join("phonecam-vcam-register.exe"));
+                candidates.push(
+                    parent
+                        .join("dist")
+                        .join("unpacked")
+                        .join("phonecam-vcam-register.exe"),
+                );
                 if let Some(grandparent) = parent.parent() {
                     candidates.push(
                         grandparent.join("virtual-camera").join("phonecam-vcam-register.exe"),
                     );
+                    candidates.push(
+                        grandparent
+                            .join("dist")
+                            .join("unpacked")
+                            .join("phonecam-vcam-register.exe"),
+                    );
                 }
             }
         }
+        if let Some(cwd) = current_dir {
+            candidates.push(
+                cwd.join("dist")
+                    .join("unpacked")
+                    .join("phonecam-vcam-register.exe"),
+            );
+        }
+        candidates.extend_from_slice(extra_candidates);
         candidates.into_iter().find(|c| c.is_file()).map(|path| Self { path })
     }
 
@@ -144,8 +179,63 @@ mod tests {
 
     #[test]
     fn a_missing_tool_is_none_rather_than_a_fake_path() {
-        let found = Registrar::locate(Some(Path::new(r"Z:\definitely\not\here")));
+        let missing = Path::new(r"Z:\definitely\not\here");
+        let found = Registrar::locate_with_roots(Some(missing), Some(missing), &[]);
         assert!(found.is_none(), "a missing registrar must not be invented");
+    }
+
+    #[test]
+    fn locate_finds_dist_unpacked_and_program_files_with_exe_dir_first() {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "phonecam_vcam_test_{}_{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let dist_reg = root
+            .join("dist")
+            .join("unpacked")
+            .join("phonecam-vcam-register.exe");
+        std::fs::create_dir_all(dist_reg.parent().unwrap()).unwrap();
+        std::fs::write(&dist_reg, b"").unwrap();
+
+        let target_release = root.join("target").join("release");
+        std::fs::create_dir_all(&target_release).unwrap();
+        let from_grandparent = Registrar::locate_with_roots(Some(&target_release), None, &[])
+            .expect("locate from ../../dist/unpacked");
+        assert_eq!(
+            from_grandparent.path().canonicalize().unwrap(),
+            dist_reg.canonicalize().unwrap()
+        );
+
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let from_parent = Registrar::locate_with_roots(Some(&bin_dir), None, &[])
+            .expect("locate from ../dist/unpacked");
+        assert_eq!(
+            from_parent.path().canonicalize().unwrap(),
+            dist_reg.canonicalize().unwrap()
+        );
+
+        let from_cwd = Registrar::locate_with_roots(None, Some(&root), &[])
+            .expect("locate from current_dir/dist/unpacked");
+        assert_eq!(
+            from_cwd.path().canonicalize().unwrap(),
+            dist_reg.canonicalize().unwrap()
+        );
+
+        let exe_reg = target_release.join("phonecam-vcam-register.exe");
+        std::fs::write(&exe_reg, b"").unwrap();
+        let beside_exe = Registrar::locate_with_roots(Some(&target_release), Some(&root), &[])
+            .expect("exe_dir stays highest priority");
+        assert_eq!(
+            beside_exe.path().canonicalize().unwrap(),
+            exe_reg.canonicalize().unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

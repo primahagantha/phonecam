@@ -218,27 +218,26 @@ pub fn notice_bar(state: &AppState) -> AnyElement {
                         ),
                 );
 
+            let mut actions = div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(Space::MD))
+                .pt(px(Space::XS));
             if let Some(action) = action {
-                banner = banner.child(
-                    div()
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap(px(Space::MD))
-                        .pt(px(Space::XS))
-                        .child(action_button(action, primary))
-                        .child(Button::ghost("x").on_click(move |_window, _cx| {
-                            push_effect(SideEffect::DismissNotice(id))
-                        })),
-                );
+                actions = actions.child(action_button(action, primary, id));
             }
+            actions = actions.child(Button::ghost("x").on_click(move |_window, _cx| {
+                push_effect(SideEffect::DismissNotice(id))
+            }));
+            banner = banner.child(actions);
 
             banner.into_any_element()
         }))
         .into_any_element()
 }
 
-fn action_button(action: NoticeAction, primary: bool) -> AnyElement {
+fn action_button(action: NoticeAction, primary: bool, notice_id: u64) -> AnyElement {
     let label = match action {
         NoticeAction::RefreshState => "Check again",
         NoticeAction::StopStream => "Stop streaming",
@@ -257,9 +256,8 @@ fn action_button(action: NoticeAction, primary: bool) -> AnyElement {
                 NoticeAction::ArmPairing => SideEffect::ArmPairing,
                 NoticeAction::StartStream => SideEffect::StartStream,
                 NoticeAction::ConnectUsb => SideEffect::ConnectUsb(None),
-                NoticeAction::RestartVcam => SideEffect::SetVcam(true),
-                // The prompt itself is the affordance, so dismissing is enough.
-                NoticeAction::Dismiss => return,
+                NoticeAction::RestartVcam => SideEffect::RestartVcam,
+                NoticeAction::Dismiss => SideEffect::DismissNotice(notice_id),
             };
             push_effect(effect);
         })

@@ -14,7 +14,7 @@
 //! moves bytes and state between them.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 use phonecam_core::adaptive_quality::{AdaptiveQuality, QualitySample};
@@ -140,6 +140,18 @@ pub struct Runtime {
     /// developer build beside an installed copy all leave a camera that is not
     /// registered while the UI would otherwise claim it is.
     pub vcam_registered: Arc<AtomicBool>,
+    /// Last virtual camera registration/unregistration error, if any.
+    pub vcam_error: Mutex<Option<String>>,
+    /// True while a background virtual camera registration operation is running.
+    pub vcam_starting: AtomicBool,
+    /// Last known USB / ADB state so `broadcast_state()` never clobbers `core.usb`.
+    pub usb_status: Mutex<phonecam_protocol::UsbStatus>,
+    /// Serializes background registrar runs so rapid toggles cannot race.
+    vcam_op_lock: Mutex<()>,
+    /// Generation counter to discard stale virtual camera operations.
+    vcam_op_gen: AtomicU64,
+    /// Weak self-handle so `&self` methods can spawn background tasks.
+    self_weak: Weak<Self>,
     /// Whether `locate` has run at all.
     ///
     /// Before it has, "adb is unavailable" is not a fact: it is an absence of
@@ -183,7 +195,7 @@ impl Runtime {
             })
             .collect();
 
-        Arc::new(Self {
+        Arc::new_cyclic(|weak| Self {
             session: Arc::new(SessionState::default()),
             pairing: Arc::new(Mutex::new(PairingManager::new())),
             registry: Arc::new(Mutex::new(registry)),
@@ -211,6 +223,12 @@ impl Runtime {
             stage_max_us: Arc::new(Mutex::new([0; 3])),
             log: Arc::new(crate::settings::DesktopLog::new()),
             vcam_registered: Arc::new(AtomicBool::new(false)),
+            vcam_error: Mutex::new(None),
+            vcam_starting: AtomicBool::new(false),
+            usb_status: Mutex::new(phonecam_protocol::UsbStatus::default()),
+            vcam_op_lock: Mutex::new(()),
+            vcam_op_gen: AtomicU64::new(0),
+            self_weak: weak.clone(),
             camera_retry: Arc::new(Mutex::new(phonecam_core::CameraRetryTracker::new())),
             camera_retry_generation: Arc::new(AtomicU64::new(0)),
             spare_buffers: Arc::new(Mutex::new(Vec::new())),
@@ -1017,7 +1035,7 @@ impl Runtime {
                 state.settings.output_rotation % 360,
             )
         };
-        {
+        if self.vcam_enabled.load(Ordering::Relaxed) {
             let mut writer = self.writer.lock();
             if writer.is_none() {
                 // The buffer follows the stream unless the user pinned a size.
@@ -1151,13 +1169,18 @@ impl Runtime {
         let runtime = self.clone();
         std::thread::spawn(move || {
             let mut last_beacon = 0i64;
+            let mut tick_count: u64 = 0;
             while runtime.running.load(Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(1000));
+                tick_count = tick_count.wrapping_add(1);
                 let now = now_ms();
 
                 // --- placeholder after a grace period with no frames
                 let last_frame = runtime.last_frame_at_ms.load(Ordering::Relaxed);
-                if last_frame > 0 && now - last_frame > 3000 {
+                if runtime.vcam_enabled.load(Ordering::Relaxed)
+                    && last_frame > 0
+                    && now - last_frame > 3000
+                {
                     let mut writer = runtime.writer.lock();
                     if let Some(writer) = writer.as_mut() {
                         let _ = writer.publish_placeholder("no frames for 3s");
@@ -1181,6 +1204,11 @@ impl Runtime {
                 if now - last_beacon >= BEACON_INTERVAL_MS {
                     last_beacon = now;
                     runtime.broadcast_beacon();
+                }
+
+                // --- live USB polling every 2 ticks when adb is located
+                if tick_count % 2 == 0 && runtime.adb.lock().is_some() {
+                    runtime.poll_usb();
                 }
 
                 if runtime.state.lock().expire_toast_if_due(now) {
@@ -1763,20 +1791,28 @@ impl Runtime {
 
     /// Refreshes the snapshot the window draws.
     pub fn broadcast_state(&self) {
-        let mut state = self.state.lock();
-
-        // The core's own view, assembled from the session.
-        let vcam_state = if self.vcam_enabled.load(Ordering::Relaxed) {
-            VcamState::Running
-        } else {
-            VcamState::Stopped
-        };
+        let vcam_enabled = self.vcam_enabled.load(Ordering::Relaxed);
+        let vcam_starting = self.vcam_starting.load(Ordering::Relaxed);
+        let vcam_error = self.vcam_error.lock().clone();
+        let usb_status = self.usb_status.lock().clone();
         let consumers = self
             .writer
             .lock()
             .as_ref()
             .map(|w| w.reader_count())
             .unwrap_or(0);
+
+        let vcam_state = if vcam_starting {
+            VcamState::Starting
+        } else if vcam_error.is_some() && vcam_enabled {
+            VcamState::Error
+        } else if vcam_enabled {
+            VcamState::Running
+        } else {
+            VcamState::Stopped
+        };
+
+        let mut state = self.state.lock();
 
         let device = {
             let id = self.session.device_id.lock().clone();
@@ -1835,7 +1871,7 @@ impl Runtime {
                 name: "PhoneCam Camera".into(),
                 registered: self.vcam_registered.load(Ordering::Relaxed),
                 consumers,
-                error: None,
+                error: vcam_error,
             }),
             output: Some(phonecam_protocol::OutputTransform {
                 mirror: state.settings.output_mirror,
@@ -1843,7 +1879,7 @@ impl Runtime {
                 width: state.settings.output_width,
                 height: state.settings.output_height,
             }),
-            usb: Default::default(),
+            usb: usb_status,
             pairing: phonecam_protocol::PairingStatus::default(),
             error,
             log_level: state.settings.log_level,
@@ -2097,21 +2133,19 @@ impl Runtime {
 
     /// Reads the cable state and publishes it.
     pub fn poll_usb(&self) {
-        let devices = {
-            let adb = self.adb.lock();
-            match adb.as_ref() {
-                Some(adb) => match adb.devices() {
-                    Ok(devices) => {
-                        *self.adb_error.lock() = None;
-                        devices
-                    }
-                    Err(error) => {
-                        *self.adb_error.lock() = Some(error);
-                        Vec::new()
-                    }
-                },
-                None => Vec::new(),
-            }
+        let adb = self.adb.lock().clone();
+        let devices = match adb.as_ref() {
+            Some(adb) => match adb.devices() {
+                Ok(devices) => {
+                    *self.adb_error.lock() = None;
+                    devices
+                }
+                Err(error) => {
+                    *self.adb_error.lock() = Some(error);
+                    Vec::new()
+                }
+            },
+            None => Vec::new(),
         };
 
         let target_serial = {
@@ -2126,12 +2160,10 @@ impl Runtime {
                 })
         };
 
-        let forwarding = {
-            let adb = self.adb.lock();
-            adb.as_ref()
-                .map(|adb| adb.is_reverse_active(SERVICE_PORT, target_serial.as_deref()))
-                .unwrap_or(false)
-        };
+        let forwarding = adb
+            .as_ref()
+            .map(|adb| adb.is_reverse_active(SERVICE_PORT, target_serial.as_deref()))
+            .unwrap_or(false);
 
         self.sync_usb_state(devices, forwarding);
     }
@@ -2146,24 +2178,28 @@ impl Runtime {
         let authorized = devices.iter().any(|d| d.is_ready());
         let error = self.adb_error.lock().clone();
 
+        let usb_status = phonecam_protocol::UsbStatus {
+            adb_available,
+            available: !devices.is_empty(),
+            authorized,
+            devices: devices
+                .iter()
+                .map(|d| phonecam_protocol::AdbDevice {
+                    serial: d.serial.clone(),
+                    model: d.model.clone(),
+                    state: d.state.clone(),
+                })
+                .collect(),
+            forwarding,
+            error: error.clone(),
+        };
+
+        *self.usb_status.lock() = usb_status.clone();
+
         {
             let mut state = self.state.lock();
             if let Some(core) = &mut state.core {
-                core.usb = phonecam_protocol::UsbStatus {
-                    adb_available,
-                    available: !devices.is_empty(),
-                    authorized,
-                    devices: devices
-                        .iter()
-                        .map(|d| phonecam_protocol::AdbDevice {
-                            serial: d.serial.clone(),
-                            model: d.model.clone(),
-                            state: d.state.clone(),
-                        })
-                        .collect(),
-                    forwarding,
-                    error: error.clone(),
-                };
+                core.usb = usb_status;
             }
 
             // A phone on the cable that has not been approved needs saying,
@@ -2187,6 +2223,7 @@ impl Runtime {
                 None => state.dismiss_notice("usb"),
             }
         }
+        self.bump_state_version();
     }
 
     /// Asks the registrar whether the camera is registered, and records it.
@@ -2212,6 +2249,7 @@ impl Runtime {
 
         match state {
             crate::vcam::RegistrationState::Registered => {
+                *self.vcam_error.lock() = None;
                 self.log.write("INFO", "virtual camera: registered and enumerable");
             }
             crate::vcam::RegistrationState::NotRegistered { detail } => {
@@ -2224,6 +2262,136 @@ impl Runtime {
                     .write("WARN", &format!("virtual camera status unavailable: {detail}"));
             }
         }
+    }
+
+    /// Enables or disables the virtual camera, running COM registration on a background thread.
+    pub fn set_vcam(&self, enabled: bool) {
+        self.spawn_vcam_op(enabled, move |rt, registrar, op_gen| {
+            let status = registrar.status();
+            let already_desired = if enabled {
+                status.is_registered()
+            } else {
+                !status.is_registered()
+            };
+            if already_desired {
+                if rt.vcam_op_gen.load(Ordering::SeqCst) == op_gen {
+                    rt.vcam_registered.store(enabled, Ordering::Relaxed);
+                    *rt.vcam_error.lock() = None;
+                    rt.state.lock().dismiss_notice("vcam");
+                    rt.vcam_starting.store(false, Ordering::Relaxed);
+                    rt.broadcast_state();
+                }
+                return;
+            }
+
+            let action = if enabled { "register" } else { "unregister" };
+            let result = if enabled {
+                registrar.register()
+            } else {
+                registrar.unregister()
+            };
+            if rt.vcam_op_gen.load(Ordering::SeqCst) == op_gen {
+                rt.finish_vcam_op(enabled, action, result);
+            }
+        });
+    }
+
+    /// Unregisters and re-registers the virtual camera on a background thread.
+    pub fn restart_vcam(&self) {
+        self.spawn_vcam_op(true, |rt, registrar, op_gen| {
+            let _ = registrar.unregister();
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if rt.vcam_op_gen.load(Ordering::SeqCst) != op_gen {
+                return;
+            }
+
+            let result = registrar.register();
+            if rt.vcam_op_gen.load(Ordering::SeqCst) == op_gen {
+                rt.finish_vcam_op(true, "restart", result);
+            }
+        });
+    }
+
+    fn spawn_vcam_op<F>(&self, enabled: bool, work: F)
+    where
+        F: FnOnce(&Arc<Self>, crate::vcam::Registrar, u64) + Send + 'static,
+    {
+        let op_gen = self.vcam_op_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        self.vcam_enabled.store(enabled, Ordering::Relaxed);
+        let settings_snapshot = {
+            let mut state = self.state.lock();
+            state.settings.vcam_enabled = enabled;
+            state.dismiss_notice("vcam");
+            state.settings.clone()
+        };
+        let _ = crate::settings::save(&settings_snapshot);
+        *self.vcam_error.lock() = None;
+        self.vcam_starting.store(true, Ordering::Relaxed);
+        self.broadcast_state();
+
+        let Some(rt) = self.self_weak.upgrade() else {
+            self.vcam_starting.store(false, Ordering::Relaxed);
+            self.broadcast_state();
+            return;
+        };
+
+        std::thread::spawn(move || {
+            let _guard = rt.vcam_op_lock.lock();
+            if rt.vcam_op_gen.load(Ordering::SeqCst) != op_gen {
+                return;
+            }
+
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+            let Some(registrar) = crate::vcam::Registrar::locate(exe_dir.as_deref()) else {
+                if rt.vcam_op_gen.load(Ordering::SeqCst) == op_gen {
+                    if enabled {
+                        let msg = "Virtual camera registrar (phonecam-vcam-register.exe) was not found. Reinstall PhoneCam or run the installer as administrator.".to_string();
+                        rt.vcam_registered.store(false, Ordering::Relaxed);
+                        *rt.vcam_error.lock() = Some(msg.clone());
+                        rt.log.write("ERROR", &msg);
+                        rt.set_notice(
+                            FailureCode::VcamUnavailable,
+                            vec![("message".into(), msg)],
+                            "vcam",
+                        );
+                    }
+                    rt.vcam_starting.store(false, Ordering::Relaxed);
+                    rt.broadcast_state();
+                }
+                return;
+            };
+
+            work(&rt, registrar, op_gen);
+        });
+    }
+
+    fn finish_vcam_op(&self, enabled: bool, action: &str, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.vcam_registered.store(enabled, Ordering::Relaxed);
+                *self.vcam_error.lock() = None;
+                self.state.lock().dismiss_notice("vcam");
+                self.log
+                    .write("INFO", &format!("virtual camera {action} succeeded"));
+            }
+            Err(err) => {
+                let human = format_vcam_error(action, &err);
+                if enabled {
+                    self.vcam_registered.store(false, Ordering::Relaxed);
+                }
+                *self.vcam_error.lock() = Some(human.clone());
+                self.log.write("ERROR", &human);
+                self.set_notice(
+                    FailureCode::VcamUnavailable,
+                    vec![("message".into(), human)],
+                    "vcam",
+                );
+            }
+        }
+        self.vcam_starting.store(false, Ordering::Relaxed);
+        self.broadcast_state();
     }
 
     /// Opens the tunnel and asks the phone to connect through it using the first ready device.
@@ -2330,6 +2498,27 @@ impl Runtime {
         }
     }
 }
+fn format_vcam_error(action: &str, err: &str) -> String {
+    let trimmed = err.trim();
+    if trimmed.is_empty() {
+        return format!(
+            "Could not {action} the virtual camera. Try running PhoneCam as administrator or reinstalling."
+        );
+    }
+    let lower = trimmed.to_lowercase();
+    if lower.contains("elevation")
+        || lower.contains("access is denied")
+        || lower.contains("administrator")
+        || lower.contains("0x80070005")
+    {
+        format!(
+            "Administrator permission is needed to {action} the virtual camera ({trimmed}). Run the PhoneCam installer or restart as administrator."
+        )
+    } else {
+        format!("Could not {action} the virtual camera: {trimmed}")
+    }
+}
+
 /// Writes the registry to disk.
 ///
 /// Secrets never reach a log, but they do have to survive a restart, or every
@@ -2814,6 +3003,92 @@ mod tests {
         let guard = runtime.frames.lock();
         let published = guard.as_ref().expect("preview frame should be published");
         assert_eq!((published.width, published.height), (2, 4));
+    }
+
+    #[test]
+    fn broadcast_state_preserves_usb_adb_available_after_sync_usb_state() {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "phonecam_runtime_usb_test_{}_{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("adb.exe"), b"").unwrap();
+
+        let adb = crate::adb::Adb::locate(Some(&dir)).expect("locate dummy adb.exe");
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+        *runtime.adb.lock() = Some(adb);
+        runtime.adb_checked.store(true, Ordering::Relaxed);
+
+        runtime.sync_usb_state(Vec::new(), false);
+        runtime.broadcast_state();
+
+        let state = runtime.state.lock();
+        let usb = &state.core.as_ref().unwrap().usb;
+        assert!(
+            usb.adb_available,
+            "broadcast_state() must preserve core.usb.adb_available == true after sync_usb_state"
+        );
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn broadcast_state_reflects_vcam_states_and_error() {
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+
+        runtime.vcam_enabled.store(true, Ordering::Relaxed);
+        runtime.vcam_starting.store(true, Ordering::Relaxed);
+        runtime.broadcast_state();
+        assert_eq!(
+            runtime.state.lock().core.as_ref().unwrap().vcam.as_ref().unwrap().state,
+            VcamState::Starting
+        );
+
+        runtime.vcam_starting.store(false, Ordering::Relaxed);
+        *runtime.vcam_error.lock() = Some("Needs elevation".into());
+        runtime.broadcast_state();
+        {
+            let state = runtime.state.lock();
+            let vcam = state.core.as_ref().unwrap().vcam.as_ref().unwrap();
+            assert_eq!(vcam.state, VcamState::Error);
+            assert_eq!(vcam.error.as_deref(), Some("Needs elevation"));
+        }
+
+        *runtime.vcam_error.lock() = None;
+        runtime.broadcast_state();
+        assert_eq!(
+            runtime.state.lock().core.as_ref().unwrap().vcam.as_ref().unwrap().state,
+            VcamState::Running
+        );
+
+        runtime.vcam_enabled.store(false, Ordering::Relaxed);
+        runtime.broadcast_state();
+        assert_eq!(
+            runtime.state.lock().core.as_ref().unwrap().vcam.as_ref().unwrap().state,
+            VcamState::Stopped
+        );
+    }
+
+    #[test]
+    fn publish_skips_frame_bus_when_vcam_disabled() {
+        let mut settings = phonecam_ui::views::state::Settings::default();
+        settings.vcam_enabled = false;
+        settings.preview_enabled = false;
+        let runtime = Runtime::new(&settings);
+
+        let frame = phonecam_media::DecodedFrame::new(4, 2, vec![128; 12], 1_000);
+        let mut scratch = PublishScratch::default();
+        runtime.publish(frame, &mut scratch);
+
+        assert!(
+            runtime.writer.lock().is_none(),
+            "publish must not open FrameWriter when vcam_enabled is false"
+        );
     }
 }
 
