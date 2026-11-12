@@ -325,6 +325,116 @@ pub fn window_bounds(hwnd: isize) -> Option<(f32, f32, f32, f32, bool)> {
     None
 }
 
+/// Returns `true` when the desktop window is currently visible (not hidden in tray
+/// and not minimized).
+#[cfg(windows)]
+pub fn is_window_visible(hwnd: isize) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow, IsWindowVisible};
+
+    if hwnd == 0 {
+        return true;
+    }
+    let hwnd = HWND(hwnd as *mut _);
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return true;
+        }
+        IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool()
+    }
+}
+
+#[cfg(not(windows))]
+pub fn is_window_visible(_hwnd: isize) -> bool {
+    true
+}
+
+/// Result of prompting the user for a diagnostics export destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveDialogResult {
+    Selected(std::path::PathBuf),
+    Cancelled,
+    Unavailable,
+}
+
+/// Opens a native Windows "Save As" dialog for diagnostics export.
+#[cfg(windows)]
+pub fn save_diagnostics_dialog(hwnd: Option<isize>) -> SaveDialogResult {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Controls::Dialogs::{
+        CommDlgExtendedError, GetSaveFileNameW, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT,
+        OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+
+    let mut file_buf = [0u16; 1024];
+    let default_name: Vec<u16> = "phonecam-diagnostics.txt\0".encode_utf16().collect();
+    file_buf[..default_name.len()].copy_from_slice(&default_name);
+
+    let filter: Vec<u16> = "Text files (*.txt)\0*.txt\0All files (*.*)\0*.*\0\0"
+        .encode_utf16()
+        .collect();
+    let title: Vec<u16> = "Export PhoneCam diagnostics\0".encode_utf16().collect();
+    let def_ext: Vec<u16> = "txt\0".encode_utf16().collect();
+
+    let owner = hwnd
+        .filter(|h| *h != 0)
+        .map(|h| HWND(h as *mut _))
+        .unwrap_or_default();
+
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        lpstrFilter: PCWSTR(filter.as_ptr()),
+        nFilterIndex: 1,
+        lpstrFile: PWSTR(file_buf.as_mut_ptr()),
+        nMaxFile: file_buf.len() as u32,
+        lpstrTitle: PCWSTR(title.as_ptr()),
+        lpstrDefExt: PCWSTR(def_ext.as_ptr()),
+        Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
+
+    if unsafe { GetSaveFileNameW(&mut ofn) }.as_bool() {
+        let len = file_buf
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(file_buf.len());
+        let os = OsString::from_wide(&file_buf[..len]);
+        SaveDialogResult::Selected(std::path::PathBuf::from(os))
+    } else if unsafe { CommDlgExtendedError().0 } == 0 {
+        SaveDialogResult::Cancelled
+    } else {
+        SaveDialogResult::Unavailable
+    }
+}
+
+#[cfg(not(windows))]
+pub fn save_diagnostics_dialog(_hwnd: Option<isize>) -> SaveDialogResult {
+    SaveDialogResult::Unavailable
+}
+
+fn find_icon_path_in(candidates: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    candidates.iter().find(|p| p.is_file()).cloned()
+}
+
+/// Searches standard app and repository locations for `icon.ico`.
+pub fn find_icon_path() -> Option<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("icon.ico"));
+            candidates.push(dir.join("resources").join("icon.ico"));
+        }
+    }
+    candidates.push(std::path::PathBuf::from("resources").join("icon.ico"));
+    candidates.push(std::path::PathBuf::from("dist").join("unpacked").join("icon.ico"));
+    candidates.push(std::path::PathBuf::from("icon.ico"));
+    find_icon_path_in(&candidates)
+}
+
 #[cfg(not(windows))]
 pub fn window_bounds(_hwnd: isize) -> Option<(f32, f32, f32, f32, bool)> {
     None
@@ -354,11 +464,12 @@ mod imp {
         NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-        GetCursorPos, LoadIconW, RegisterClassW, SetForegroundWindow, ShowWindow,
-        TrackPopupMenu, IDI_APPLICATION, MF_CHECKED, MF_GRAYED, MF_SEPARATOR,
-        MF_STRING, SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-        WM_CONTEXTMENU, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW,
+        AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
+        GetCursorPos, LoadIconW, LoadImageW, RegisterClassW, SetForegroundWindow, ShowWindow,
+        TrackPopupMenu, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
+        MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CONTEXTMENU, WM_LBUTTONUP, WM_RBUTTONUP,
+        WNDCLASSW,
     };
 
     /// The message the tray posts when its icon is clicked.
@@ -383,6 +494,7 @@ mod imp {
         /// The GPUI window, so a click can bring it back.
         target: HWND,
         added: bool,
+        owned_icon: Option<HICON>,
         /// Where a click's intent is recorded, for the UI thread to drain.
         commands: Arc<Mutex<Vec<TrayCommand>>>,
     }
@@ -487,14 +599,37 @@ mod imp {
             data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
             data.uCallbackMessage = WM_PHONECAM_TRAY;
 
-            // The stock application icon: an installed tray icon beats a missing
-            // asset, and this build ships no .ico yet.
-            if let Ok(icon) = unsafe { LoadIconW(None, IDI_APPLICATION) } {
-                data.hIcon = icon;
+            let mut owned_icon = None;
+            if let Some(icon_path) = find_icon_path() {
+                let wide_path = wide(&icon_path.to_string_lossy());
+                if let Ok(handle) = unsafe {
+                    LoadImageW(
+                        None,
+                        PCWSTR(wide_path.as_ptr()),
+                        IMAGE_ICON,
+                        0,
+                        0,
+                        LR_LOADFROMFILE | LR_DEFAULTSIZE,
+                    )
+                } {
+                    let hicon = HICON(handle.0);
+                    if !hicon.is_invalid() {
+                        data.hIcon = hicon;
+                        owned_icon = Some(hicon);
+                    }
+                }
+            }
+            if data.hIcon.is_invalid() {
+                if let Ok(icon) = unsafe { LoadIconW(None, IDI_APPLICATION) } {
+                    data.hIcon = icon;
+                }
             }
             copy_tip(&mut data, tooltip);
 
             if !unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool() {
+                if let Some(icon) = owned_icon {
+                    let _ = unsafe { DestroyIcon(icon) };
+                }
                 tracing::warn!("could not add the tray icon");
                 return None;
             }
@@ -503,7 +638,7 @@ mod imp {
             let _ = unsafe { Shell_NotifyIconW(NIM_SETVERSION, &data) };
 
             tracing::info!("tray icon installed");
-            Some(Self { hwnd, target, added: true, commands })
+            Some(Self { hwnd, target, added: true, owned_icon, commands })
         }
 
         /// Takes whatever the user asked for since the last call.
@@ -595,6 +730,9 @@ mod imp {
                 data.uID = TRAY_ID;
                 let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &data) };
                 self.added = false;
+            }
+            if let Some(icon) = self.owned_icon.take() {
+                let _ = unsafe { DestroyIcon(icon) };
             }
         }
     }
@@ -731,6 +869,20 @@ mod tests {
     #[test]
     fn window_bounds_returns_none_for_null_hwnd() {
         assert_eq!(window_bounds(0), None);
+    }
+
+    #[test]
+    fn find_icon_path_in_returns_first_existing_file() {
+        let temp = std::env::temp_dir().join(format!("phonecam-tray-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join("resources")).unwrap();
+        let missing = temp.join("missing.ico");
+        let present = temp.join("resources").join("icon.ico");
+        std::fs::write(&present, b"ico").unwrap();
+
+        assert_eq!(find_icon_path_in(&[missing.clone(), present.clone()]), Some(present.clone()));
+        assert_eq!(find_icon_path_in(&[missing]), None);
+        let _ = std::fs::remove_dir_all(&temp);
     }
 }
 

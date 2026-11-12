@@ -30,6 +30,7 @@ pub enum SideEffect {
     SetMirror(bool),
     SetRotation(u32),
     SetOutputSize(u32, u32),
+    SetOutputFollowsStream(bool),
     SetCamera(String),
     SetResolution(String),
     SetVideo { fps: Option<u32>, bitrate: u64 },
@@ -46,6 +47,7 @@ pub enum SideEffect {
     ClearLogs,
     ToggleAlwaysOnTop,
     SelectPairingNetwork(usize),
+    CopyPairingPayload,
 }
 
 /// The four destinations in the rail, in the order the job happens.
@@ -140,6 +142,20 @@ mod tests {
         // "Camera" and "Output" as a pair read as synonyms; these cannot.
         assert_eq!(Tab::Capture.label(), "Capture");
         assert_eq!(Tab::Publish.label(), "Publish");
+    }
+
+    #[test]
+    fn parity_effects_queue_and_drain() {
+        drain_effects();
+        push_effect(SideEffect::SetOutputFollowsStream(false));
+        push_effect(SideEffect::CopyPairingPayload);
+        assert_eq!(
+            drain_effects(),
+            vec![
+                SideEffect::SetOutputFollowsStream(false),
+                SideEffect::CopyPairingPayload,
+            ]
+        );
     }
 }
 

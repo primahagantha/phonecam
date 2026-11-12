@@ -72,6 +72,7 @@ class CameraController(private val context: Context) {
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var requestBuilder: CaptureRequest.Builder? = null
+    @Volatile
     private var cameraGeneration = 0L
 
     /**
@@ -81,6 +82,7 @@ class CameraController(private val context: Context) {
      * disappearing while a stream is live is handled by rebuilding the capture
      * session instead of restarting the stream.
      */
+    @Volatile
     private var previewSurface: Surface? = null
 
     /** The live session's parameters, kept so it can be rebuilt for a new output. */
@@ -99,7 +101,9 @@ class CameraController(private val context: Context) {
         val onError: (String) -> Unit,
     )
 
+    @Volatile
     private var torchEnabled = false
+    @Volatile
     private var zoom = 1f
 
     @Volatile
@@ -208,6 +212,7 @@ class CameraController(private val context: Context) {
         } else {
             stop()
         }
+        this.previewSurface = previewSurface
 
         val characteristics = getCharacteristics(cameraId) ?: run {
             onError("This camera isn't available on your phone.")
@@ -244,7 +249,14 @@ class CameraController(private val context: Context) {
                 }
                 device = camera
                 createSession(
-                    camera, targetSurface, targetSize, resolved, onStarted, onError, previewSurface, generation,
+                    camera,
+                    targetSurface,
+                    targetSize,
+                    resolved,
+                    onStarted,
+                    onError,
+                    this@CameraController.previewSurface,
+                    generation,
                 )
             }
 
@@ -456,6 +468,14 @@ class CameraController(private val context: Context) {
                 )
                 set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
                 set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+                if (torchEnabled) {
+                    set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                }
+                if (zoom > 1f && characteristics != null) {
+                    computeCropRect(characteristics, zoom)?.let { crop ->
+                        set(CaptureRequest.SCALER_CROP_REGION, crop)
+                    }
+                }
             }
             requestBuilder = builder
 
@@ -558,6 +578,7 @@ class CameraController(private val context: Context) {
             }
         } catch (t: Throwable) {
             Log.e(TAG, "createSession failed", t)
+            if (generation != cameraGeneration) return
             onError("Couldn't configure the camera for streaming.")
         }
     }
@@ -573,6 +594,21 @@ class CameraController(private val context: Context) {
         }.onFailure { Log.d(TAG, "torch not supported: ${it.javaClass.simpleName}") }
     }
 
+    private fun computeCropRect(characteristics: CameraCharacteristics, zoomFactor: Float): Rect? {
+        val maxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+        val clamped = zoomFactor.coerceIn(1f, maxZoom)
+        zoom = clamped
+        val sensorRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        val cropWidth = (sensorRect.width() / clamped).toInt()
+        val cropHeight = (sensorRect.height() / clamped).toInt()
+        return Rect(
+            sensorRect.centerX() - cropWidth / 2,
+            sensorRect.centerY() - cropHeight / 2,
+            sensorRect.centerX() + cropWidth / 2,
+            sensorRect.centerY() + cropHeight / 2,
+        )
+    }
+
     /**
      * Digital zoom via a crop region.
      *
@@ -582,19 +618,8 @@ class CameraController(private val context: Context) {
     fun setZoom(cameraId: String, zoomFactor: Float) {
         val builder = requestBuilder ?: return
         val characteristics = getCharacteristics(cameraId) ?: return
-        val maxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
-        val clamped = zoomFactor.coerceIn(1f, maxZoom)
-        zoom = clamped
         runCatching {
-            val sensorRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
-            val cropWidth = (sensorRect.width() / clamped).toInt()
-            val cropHeight = (sensorRect.height() / clamped).toInt()
-            val crop = Rect(
-                sensorRect.centerX() - cropWidth / 2,
-                sensorRect.centerY() - cropHeight / 2,
-                sensorRect.centerX() + cropWidth / 2,
-                sensorRect.centerY() + cropHeight / 2,
-            )
+            val crop = computeCropRect(characteristics, zoomFactor) ?: return
             builder.set(CaptureRequest.SCALER_CROP_REGION, crop)
             applyRequest(builder)
         }.onFailure { Log.d(TAG, "zoom not supported: ${it.javaClass.simpleName}") }
@@ -605,7 +630,7 @@ class CameraController(private val context: Context) {
         val builder = requestBuilder ?: return
         runCatching {
             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps, fps))
-            session?.setRepeatingRequest(builder.build(), null, handler)
+            applyRequest(builder)
         }.onFailure { Log.d(TAG, "fps change rejected: ${it.javaClass.simpleName}") }
     }
 
@@ -621,26 +646,35 @@ class CameraController(private val context: Context) {
         if (previewSurface === surface) return
         previewSurface = surface
 
-        val request = sessionRequest ?: return
-        val camera = device ?: return
-        // Camera2 does not allow overlapping capture sessions on one device.
-        // Close the old output set before creating the replacement; otherwise a
-        // TextureView attach/detach can make the HAL report ERROR_CAMERA_DEVICE.
-        cameraGeneration++
-        runCatching { session?.close() }
-        session = null
-        // Rebuild around the new output set. `onStarted` is not re-invoked: the
-        // stream configuration did not change, only where frames are mirrored.
-        createSession(
-            camera = camera,
-            targetSurface = request.targetSurface,
-            targetSize = request.targetSize,
-            resolved = request.resolved,
-            onStarted = {},
-            onError = request.onError,
-            previewSurface = surface,
-            generation = cameraGeneration,
-        )
+        val cameraHandler = handler
+        val rebuild = Runnable {
+            if (this@CameraController.previewSurface !== surface) return@Runnable
+            val request = sessionRequest ?: return@Runnable
+            val camera = device ?: return@Runnable
+            // Camera2 does not allow overlapping capture sessions on one device.
+            // Close the old output set before creating the replacement; otherwise a
+            // TextureView attach/detach can make the HAL report ERROR_CAMERA_DEVICE.
+            cameraGeneration++
+            runCatching { session?.close() }
+            session = null
+            // Rebuild around the new output set. `onStarted` is not re-invoked: the
+            // stream configuration did not change, only where frames are mirrored.
+            createSession(
+                camera = camera,
+                targetSurface = request.targetSurface,
+                targetSize = request.targetSize,
+                resolved = request.resolved,
+                onStarted = {},
+                onError = request.onError,
+                previewSurface = surface,
+                generation = cameraGeneration,
+            )
+        }
+        if (cameraHandler != null) {
+            cameraHandler.post(rebuild)
+        } else {
+            rebuild.run()
+        }
     }
 
     fun stop() {
@@ -661,6 +695,8 @@ class CameraController(private val context: Context) {
         requestBuilder = null
         activeConfig = null
         sessionRequest = null
+        torchEnabled = false
+        zoom = 1f
     }
 
     val torchState: Boolean

@@ -32,6 +32,55 @@ pub enum DecodeError {
     NoPicture,
 }
 
+/// A borrowed I420 plane view (Y, U, V with explicit row strides).
+///
+/// Returned by [`H264Decoder::decode_and_process`] without copying or
+/// allocating an intermediate I420 buffer.
+#[derive(Debug, Clone, Copy)]
+pub struct YuvPlanes<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub y: &'a [u8],
+    pub u: &'a [u8],
+    pub v: &'a [u8],
+    pub y_stride: usize,
+    pub u_stride: usize,
+    pub v_stride: usize,
+}
+
+impl<'a> YuvPlanes<'a> {
+    /// Computes the mean luma by sampling every 16th pixel across the active
+    /// `width * height` picture, matching [`DecodedFrame::mean_luma`] even when
+    /// `y_stride > width`.
+    pub fn mean_luma(&self) -> u8 {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        if w == 0 || h == 0 {
+            return 0;
+        }
+        if self.y_stride == w {
+            return flicker::FlickerDetector::compute_mean_luma(self.y, w, h);
+        }
+        let mut sum: u64 = 0;
+        let mut count: u64 = 0;
+        let mut row = 0usize;
+        let mut col = 0usize;
+        while row < h {
+            let row_slice = &self.y[row * self.y_stride..];
+            if col < row_slice.len() {
+                sum += row_slice[col] as u64;
+                count += 1;
+            }
+            col += 16;
+            while col >= w {
+                col -= w;
+                row += 1;
+            }
+        }
+        if count == 0 { 0 } else { (sum / count) as u8 }
+    }
+}
+
 /// A decoded picture in I420: full luma, then quarter-size U and V planes.
 #[derive(Debug, Clone)]
 pub struct DecodedFrame {
@@ -44,6 +93,27 @@ pub struct DecodedFrame {
 impl DecodedFrame {
     pub fn new(width: u32, height: u32, yuv: Vec<u8>, pts_us: u64) -> Self {
         Self { width, height, yuv, pts_us }
+    }
+
+    /// Borrows packed I420 planes if `self.yuv` is large enough for `width x height`.
+    pub fn as_planes(&self) -> Option<YuvPlanes<'_>> {
+        let (width, height) = (self.width as usize, self.height as usize);
+        let luma_len = width.checked_mul(height)?;
+        let chroma_len = luma_len / 2;
+        if self.yuv.len() < luma_len + chroma_len {
+            return None;
+        }
+        let (u_plane, v_plane) = self.yuv[luma_len..luma_len + chroma_len].split_at(chroma_len / 2);
+        Some(YuvPlanes {
+            width: self.width,
+            height: self.height,
+            y: &self.yuv[..luma_len],
+            u: u_plane,
+            v: v_plane,
+            y_stride: width,
+            u_stride: width / 2,
+            v_stride: width / 2,
+        })
     }
 
     /// Computes the mean luma of this decoded frame.
@@ -60,40 +130,10 @@ impl DecodedFrame {
     /// Written into a caller-owned buffer so a streaming decode does not
     /// allocate once a second. `dst` must be exactly `nv12_size(w, h)` bytes.
     pub fn write_nv12(&self, dst: &mut [u8]) -> bool {
-        let (width, height) = (self.width as usize, self.height as usize);
-        let luma_len = width * height;
-        let chroma_len = luma_len / 2;
-        if self.yuv.len() < luma_len + chroma_len {
+        let Some(planes) = self.as_planes() else {
             return false;
-        }
-        if dst.len() != luma_len + chroma_len {
-            return false;
-        }
-
-        let (dst_luma, dst_chroma) = dst.split_at_mut(luma_len);
-        dst_luma.copy_from_slice(&self.yuv[..luma_len]);
-
-        let (u_plane, v_plane) = self.yuv[luma_len..luma_len + chroma_len].split_at(chroma_len / 2);
-        let u_chunks = u_plane.chunks_exact(2);
-        let v_chunks = v_plane.chunks_exact(2);
-        let mut dst_chunks = dst_chroma.chunks_exact_mut(4);
-        let u_rem = u_chunks.remainder();
-        let v_rem = v_chunks.remainder();
-
-        for ((u, v), out) in u_chunks.zip(v_chunks).zip(&mut dst_chunks) {
-            let packed = (u[0] as u32)
-                | ((v[0] as u32) << 8)
-                | ((u[1] as u32) << 16)
-                | ((v[1] as u32) << 24);
-            out.copy_from_slice(&packed.to_le_bytes());
-        }
-
-        let dst_rem = dst_chunks.into_remainder();
-        for i in 0..u_rem.len() {
-            dst_rem[i * 2] = u_rem[i];
-            dst_rem[i * 2 + 1] = v_rem[i];
-        }
-        true
+        };
+        write_planes_nv12(&planes, dst)
     }
 
     /// Converts to BGRA for display.
@@ -103,83 +143,366 @@ impl DecodedFrame {
     /// swapped, which looks like a broken camera rather than a broken
     /// conversion.
     pub fn write_bgra(&self, dst: &mut [u8], stride_pixels: usize) -> bool {
-        let (width, height) = (self.width as usize, self.height as usize);
-        let luma_len = width * height;
-        let chroma_len = luma_len / 2;
-        if self.yuv.len() < luma_len + chroma_len {
+        let Some(planes) = self.as_planes() else {
+            return false;
+        };
+        write_planes_bgra(&planes, dst, stride_pixels)
+    }
+}
+
+fn planes_have_valid_bounds(planes: &YuvPlanes<'_>) -> bool {
+    let width = planes.width as usize;
+    let height = planes.height as usize;
+    if width == 0 || height == 0 {
+        return true;
+    }
+    let chroma_width = width / 2;
+    let chroma_rows = height / 2;
+    if planes.y_stride < width || planes.u_stride < chroma_width || planes.v_stride < chroma_width {
+        return false;
+    }
+    let y_needed = (height - 1) * planes.y_stride + width;
+    if planes.y.len() < y_needed {
+        return false;
+    }
+    if chroma_rows > 0 && chroma_width > 0 {
+        let u_needed = (chroma_rows - 1) * planes.u_stride + chroma_width;
+        let v_needed = (chroma_rows - 1) * planes.v_stride + chroma_width;
+        if planes.u.len() < u_needed || planes.v.len() < v_needed {
             return false;
         }
-        if stride_pixels < width || dst.len() < stride_pixels * height * 4 {
-            return false;
-        }
+    }
+    true
+}
 
-        let (u_plane, v_plane) = self.yuv[luma_len..luma_len + chroma_len].split_at(chroma_len / 2);
-        let chroma_width = width / 2;
+#[inline]
+fn interleave_uv_row(u: &[u8], v: &[u8], dst_uv: &mut [u8]) {
+    let n = u.len().min(v.len()).min(dst_uv.len() / 2);
+    let mut i = 0usize;
 
-        // BT.601 limited range in fixed point, the transform the phone's encoder
-        // targets. The float version cost about 8 ms per 720p frame on the
-        // publish path; the integer form is the same arithmetic with the scale
-        // folded in, and the clamp is a saturating cast.
-        const SCALE: i32 = 10;
-        const HALF: i32 = 1 << (SCALE - 1);
-        // 1.164, 1.596, 0.813, 0.391, 2.018 scaled by 2^10.
-        const Y_GAIN: i32 = 1192;
-        const RV: i32 = 1634;
-        const GV: i32 = 833;
-        const GU: i32 = 400;
-        const BU: i32 = 2066;
-
-        #[inline(always)]
-        fn clamp(value: i32) -> u8 {
-            let non_neg = value & !(value >> 31);
-            (non_neg | ((255 - non_neg) >> 31)) as u8
-        }
-
-        const Y_OFFSET: i32 = Y_GAIN * 16;
-
-        for y in 0..height {
-            let luma_start = y * width;
-            let luma_row = &self.yuv[luma_start..luma_start + width];
-            let chroma_start = (y / 2) * chroma_width;
-            let u_row = &u_plane[chroma_start..chroma_start + chroma_width];
-            let v_row = &v_plane[chroma_start..chroma_start + chroma_width];
-            let row_dst = &mut dst[y * stride_pixels * 4..y * stride_pixels * 4 + width * 4];
-
-            let luma_chunks = luma_row.chunks_exact(2);
-            let dst_chunks = row_dst.chunks_exact_mut(8);
-
-            for (((&u_byte, &v_byte), y_pair), dst_pair) in
-                u_row.iter().zip(v_row.iter()).zip(luma_chunks).zip(dst_chunks)
-            {
-                let &[y0, y1] = y_pair else { continue };
-                let Ok(dst_8): Result<&mut [u8; 8], _> = dst_pair.try_into() else { continue };
-
-                let u = u_byte as i32 - 128;
-                let v = v_byte as i32 - 128;
-
-                let bu = BU * u;
-                let g_chroma = GV * v + GU * u;
-                let rv = RV * v;
-
-                let b_term = bu + HALF - Y_OFFSET;
-                let g_term = HALF - g_chroma - Y_OFFSET;
-                let r_term = rv + HALF - Y_OFFSET;
-
-                let y0_gain = Y_GAIN * y0 as i32;
-                let b0 = clamp((y0_gain + b_term) >> SCALE);
-                let g0 = clamp((y0_gain + g_term) >> SCALE);
-                let r0 = clamp((y0_gain + r_term) >> SCALE);
-
-                let y1_gain = Y_GAIN * y1 as i32;
-                let b1 = clamp((y1_gain + b_term) >> SCALE);
-                let g1 = clamp((y1_gain + g_term) >> SCALE);
-                let r1 = clamp((y1_gain + r_term) >> SCALE);
-
-                *dst_8 = [b0, g0, r0, 255, b1, g1, r1, 255];
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::*;
+        // SAFETY: SSE2 is guaranteed on x86_64; bounds checked via `i + 16 <= n`.
+        unsafe {
+            let u_ptr = u.as_ptr();
+            let v_ptr = v.as_ptr();
+            let d_ptr = dst_uv.as_mut_ptr();
+            while i + 16 <= n {
+                let uu = _mm_loadu_si128(u_ptr.add(i) as *const __m128i);
+                let vv = _mm_loadu_si128(v_ptr.add(i) as *const __m128i);
+                let lo = _mm_unpacklo_epi8(uu, vv);
+                let hi = _mm_unpackhi_epi8(uu, vv);
+                _mm_storeu_si128(d_ptr.add(i * 2) as *mut __m128i, lo);
+                _mm_storeu_si128(d_ptr.add(i * 2 + 16) as *mut __m128i, hi);
+                i += 16;
             }
         }
-        true
     }
+
+    while i + 2 <= n {
+        let packed = (u[i] as u32)
+            | ((v[i] as u32) << 8)
+            | ((u[i + 1] as u32) << 16)
+            | ((v[i + 1] as u32) << 24);
+        dst_uv[i * 2..i * 2 + 4].copy_from_slice(&packed.to_le_bytes());
+        i += 2;
+    }
+    while i < n {
+        dst_uv[i * 2] = u[i];
+        dst_uv[i * 2 + 1] = v[i];
+        i += 1;
+    }
+}
+
+/// Interleaves borrowed [`YuvPlanes`] into an NV12 destination buffer.
+///
+/// `dst` must be exactly `width * height * 3 / 2` bytes.
+pub fn write_planes_nv12(planes: &YuvPlanes<'_>, dst: &mut [u8]) -> bool {
+    let (width, height) = (planes.width as usize, planes.height as usize);
+    let luma_len = width * height;
+    let chroma_len = luma_len / 2;
+    if dst.len() != luma_len + chroma_len || !planes_have_valid_bounds(planes) {
+        return false;
+    }
+    if width == 0 || height == 0 {
+        return true;
+    }
+
+    let (dst_luma, dst_chroma) = dst.split_at_mut(luma_len);
+    if planes.y_stride == width {
+        dst_luma.copy_from_slice(&planes.y[..luma_len]);
+    } else {
+        for r in 0..height {
+            let src_row = &planes.y[r * planes.y_stride..r * planes.y_stride + width];
+            dst_luma[r * width..(r + 1) * width].copy_from_slice(src_row);
+        }
+    }
+
+    let chroma_width = width / 2;
+    let chroma_rows = height / 2;
+    if chroma_width == 0 || chroma_rows == 0 {
+        return true;
+    }
+
+    if planes.u_stride == chroma_width && planes.v_stride == chroma_width {
+        let half = chroma_width * chroma_rows;
+        interleave_uv_row(&planes.u[..half], &planes.v[..half], dst_chroma);
+    } else {
+        let row_uv_bytes = chroma_width * 2;
+        for r in 0..chroma_rows {
+            let u_row = &planes.u[r * planes.u_stride..r * planes.u_stride + chroma_width];
+            let v_row = &planes.v[r * planes.v_stride..r * planes.v_stride + chroma_width];
+            let d_row = &mut dst_chroma[r * row_uv_bytes..(r + 1) * row_uv_bytes];
+            interleave_uv_row(u_row, v_row, d_row);
+        }
+    }
+    true
+}
+
+// BT.601 limited range fixed-point constants (scaled by 2^10).
+const BT601_SCALE: i32 = 10;
+const BT601_HALF: i32 = 1 << (BT601_SCALE - 1);
+const BT601_Y_GAIN: i32 = 1192;
+const BT601_RV: i32 = 1634;
+const BT601_GV: i32 = 833;
+const BT601_GU: i32 = 400;
+const BT601_BU: i32 = 2066;
+const BT601_Y_OFFSET: i32 = BT601_Y_GAIN * 16;
+const BT601_BASE_BIAS: i32 = BT601_HALF - BT601_Y_OFFSET;
+
+#[inline(always)]
+fn clamp_u8(value: i32) -> u8 {
+    let non_neg = value & !(value >> 31);
+    (non_neg | ((255 - non_neg) >> 31)) as u8
+}
+
+#[inline(always)]
+unsafe fn write_bgra_pair_ptr(
+    y_ptr: *const u8,
+    dst_ptr: *mut u8,
+    b_term: i32,
+    g_term: i32,
+    r_term: i32,
+) {
+    let y0_gain = BT601_Y_GAIN * (*y_ptr as i32);
+    let b0 = clamp_u8((y0_gain + b_term) >> BT601_SCALE);
+    let g0 = clamp_u8((y0_gain + g_term) >> BT601_SCALE);
+    let r0 = clamp_u8((y0_gain + r_term) >> BT601_SCALE);
+
+    let y1_gain = BT601_Y_GAIN * (*y_ptr.add(1) as i32);
+    let b1 = clamp_u8((y1_gain + b_term) >> BT601_SCALE);
+    let g1 = clamp_u8((y1_gain + g_term) >> BT601_SCALE);
+    let r1 = clamp_u8((y1_gain + r_term) >> BT601_SCALE);
+
+    let out = [b0, g0, r0, 255, b1, g1, r1, 255];
+    std::ptr::copy_nonoverlapping(out.as_ptr(), dst_ptr, 8);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn write_planes_bgra_avx2(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_pixels: usize) {
+    use std::arch::x86_64::*;
+
+    let width = planes.width as usize;
+    let height = planes.height as usize;
+    let chroma_pairs = width / 2;
+    let dst_stride_bytes = stride_pixels * 4;
+
+    let v_128_128 = _mm_set1_epi32(128);
+    let v_bu_128 = _mm_set1_epi32(BT601_BU);
+    let v_gu_128 = _mm_set1_epi32(BT601_GU);
+    let v_gv_128 = _mm_set1_epi32(BT601_GV);
+    let v_rv_128 = _mm_set1_epi32(BT601_RV);
+    let v_bias_128 = _mm_set1_epi32(BT601_BASE_BIAS);
+    let perm_dup = _mm256_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3);
+
+    let v_y_gain = _mm256_set1_epi32(BT601_Y_GAIN);
+    let v_zero = _mm256_setzero_si256();
+    let v_255 = _mm256_set1_epi32(255);
+    let v_alpha = _mm256_set1_epi32(0xFF00_0000u32 as i32);
+
+    let y_ptr = planes.y.as_ptr();
+    let u_ptr = planes.u.as_ptr();
+    let v_ptr = planes.v.as_ptr();
+    let dst_ptr = dst.as_mut_ptr();
+
+    let simd_pairs = chroma_pairs & !3usize;
+    let pair_rows = height / 2;
+
+    for pr in 0..pair_rows {
+        let y0 = pr * 2;
+        let y1 = y0 + 1;
+        let y0_row = y_ptr.add(y0 * planes.y_stride);
+        let y1_row = y_ptr.add(y1 * planes.y_stride);
+        let u_row = u_ptr.add(pr * planes.u_stride);
+        let v_row = v_ptr.add(pr * planes.v_stride);
+        let d0_row = dst_ptr.add(y0 * dst_stride_bytes);
+        let d1_row = dst_ptr.add(y1 * dst_stride_bytes);
+
+        let mut cp = 0usize;
+        while cp < simd_pairs {
+            let px = cp * 2;
+            let u4_raw = std::ptr::read_unaligned(u_row.add(cp) as *const i32);
+            let v4_raw = std::ptr::read_unaligned(v_row.add(cp) as *const i32);
+            let u4 = _mm_sub_epi32(_mm_cvtepu8_epi32(_mm_cvtsi32_si128(u4_raw)), v_128_128);
+            let v4 = _mm_sub_epi32(_mm_cvtepu8_epi32(_mm_cvtsi32_si128(v4_raw)), v_128_128);
+
+            let b_term4 = _mm_add_epi32(_mm_mullo_epi32(u4, v_bu_128), v_bias_128);
+            let g_chroma4 = _mm_add_epi32(
+                _mm_mullo_epi32(v4, v_gv_128),
+                _mm_mullo_epi32(u4, v_gu_128),
+            );
+            let g_term4 = _mm_sub_epi32(v_bias_128, g_chroma4);
+            let r_term4 = _mm_add_epi32(_mm_mullo_epi32(v4, v_rv_128), v_bias_128);
+
+            let b_term8 = _mm256_permutevar8x32_epi32(_mm256_castsi128_si256(b_term4), perm_dup);
+            let g_term8 = _mm256_permutevar8x32_epi32(_mm256_castsi128_si256(g_term4), perm_dup);
+            let r_term8 = _mm256_permutevar8x32_epi32(_mm256_castsi128_si256(r_term4), perm_dup);
+
+            // Row 0: 8 pixels
+            let y0_raw = _mm_loadl_epi64(y0_row.add(px) as *const __m128i);
+            let y0_gain = _mm256_mullo_epi32(_mm256_cvtepu8_epi32(y0_raw), v_y_gain);
+            let b0 = _mm256_min_epi32(
+                v_255,
+                _mm256_max_epi32(
+                    v_zero,
+                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y0_gain, b_term8)),
+                ),
+            );
+            let g0 = _mm256_min_epi32(
+                v_255,
+                _mm256_max_epi32(
+                    v_zero,
+                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y0_gain, g_term8)),
+                ),
+            );
+            let r0 = _mm256_min_epi32(
+                v_255,
+                _mm256_max_epi32(
+                    v_zero,
+                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y0_gain, r_term8)),
+                ),
+            );
+            let bgra0 = _mm256_or_si256(
+                _mm256_or_si256(b0, _mm256_slli_epi32::<8>(g0)),
+                _mm256_or_si256(_mm256_slli_epi32::<16>(r0), v_alpha),
+            );
+            _mm256_storeu_si256(d0_row.add(px * 4) as *mut __m256i, bgra0);
+
+            // Row 1: 8 pixels, reusing b_term8 / g_term8 / r_term8
+            let y1_raw = _mm_loadl_epi64(y1_row.add(px) as *const __m128i);
+            let y1_gain = _mm256_mullo_epi32(_mm256_cvtepu8_epi32(y1_raw), v_y_gain);
+            let b1 = _mm256_min_epi32(
+                v_255,
+                _mm256_max_epi32(
+                    v_zero,
+                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y1_gain, b_term8)),
+                ),
+            );
+            let g1 = _mm256_min_epi32(
+                v_255,
+                _mm256_max_epi32(
+                    v_zero,
+                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y1_gain, g_term8)),
+                ),
+            );
+            let r1 = _mm256_min_epi32(
+                v_255,
+                _mm256_max_epi32(
+                    v_zero,
+                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y1_gain, r_term8)),
+                ),
+            );
+            let bgra1 = _mm256_or_si256(
+                _mm256_or_si256(b1, _mm256_slli_epi32::<8>(g1)),
+                _mm256_or_si256(_mm256_slli_epi32::<16>(r1), v_alpha),
+            );
+            _mm256_storeu_si256(d1_row.add(px * 4) as *mut __m256i, bgra1);
+
+            cp += 4;
+        }
+
+        while cp < chroma_pairs {
+            let px = cp * 2;
+            let u = *u_row.add(cp) as i32 - 128;
+            let v = *v_row.add(cp) as i32 - 128;
+            let b_term = BT601_BU * u + BT601_BASE_BIAS;
+            let g_term = BT601_BASE_BIAS - (BT601_GV * v + BT601_GU * u);
+            let r_term = BT601_RV * v + BT601_BASE_BIAS;
+
+            write_bgra_pair_ptr(y0_row.add(px), d0_row.add(px * 4), b_term, g_term, r_term);
+            write_bgra_pair_ptr(y1_row.add(px), d1_row.add(px * 4), b_term, g_term, r_term);
+            cp += 1;
+        }
+    }
+}
+
+fn write_planes_bgra_scalar(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_pixels: usize) {
+    let width = planes.width as usize;
+    let height = planes.height as usize;
+    let chroma_pairs = width / 2;
+    let dst_stride_bytes = stride_pixels * 4;
+    let pair_rows = height / 2;
+
+    let y_ptr = planes.y.as_ptr();
+    let u_ptr = planes.u.as_ptr();
+    let v_ptr = planes.v.as_ptr();
+    let dst_ptr = dst.as_mut_ptr();
+
+    for pr in 0..pair_rows {
+        let y0 = pr * 2;
+        let y1 = y0 + 1;
+        // SAFETY: `planes_have_valid_bounds` verified Y/U/V bounds and caller verified `dst` bounds.
+        unsafe {
+            let y0_row = y_ptr.add(y0 * planes.y_stride);
+            let y1_row = y_ptr.add(y1 * planes.y_stride);
+            let u_row = u_ptr.add(pr * planes.u_stride);
+            let v_row = v_ptr.add(pr * planes.v_stride);
+            let d0_row = dst_ptr.add(y0 * dst_stride_bytes);
+            let d1_row = dst_ptr.add(y1 * dst_stride_bytes);
+
+            for cp in 0..chroma_pairs {
+                let px = cp * 2;
+                let u = *u_row.add(cp) as i32 - 128;
+                let v = *v_row.add(cp) as i32 - 128;
+                let b_term = BT601_BU * u + BT601_BASE_BIAS;
+                let g_term = BT601_BASE_BIAS - (BT601_GV * v + BT601_GU * u);
+                let r_term = BT601_RV * v + BT601_BASE_BIAS;
+
+                write_bgra_pair_ptr(y0_row.add(px), d0_row.add(px * 4), b_term, g_term, r_term);
+                write_bgra_pair_ptr(y1_row.add(px), d1_row.add(px * 4), b_term, g_term, r_term);
+            }
+        }
+    }
+}
+
+/// Converts borrowed [`YuvPlanes`] directly to BGRA without intermediate I420 copying.
+pub fn write_planes_bgra(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_pixels: usize) -> bool {
+    let (width, height) = (planes.width as usize, planes.height as usize);
+    if !planes_have_valid_bounds(planes) {
+        return false;
+    }
+    if stride_pixels < width || dst.len() < stride_pixels * height * 4 {
+        return false;
+    }
+    if width < 2 || height < 2 {
+        return true;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 support verified at runtime and bounds checked above.
+            unsafe {
+                write_planes_bgra_avx2(planes, dst, stride_pixels);
+            }
+            return true;
+        }
+    }
+
+    write_planes_bgra_scalar(planes, dst, stride_pixels);
+    true
 }
 
 /// A streaming H.264 decoder.
@@ -231,15 +554,14 @@ impl H264Decoder {
         &self.parameter_sets
     }
 
-    /// Decodes one Annex-B access unit with a presentation timestamp (PTS).
-    ///
-    /// On failure the caller should treat the stream as needing a new keyframe;
-    /// `reset` returns the decoder to that state.
-    pub fn decode_with_pts(
+    /// Decodes one Annex-B access unit and invokes `f` on borrowed planar YUV
+    /// views without allocating or copying an intermediate I420 frame buffer.
+    pub fn decode_and_process<R>(
         &mut self,
         access_unit: &[u8],
         pts_us: u64,
-    ) -> Result<DecodedFrame, DecodeError> {
+        f: impl FnOnce(YuvPlanes<'_>, u64) -> R,
+    ) -> Result<R, DecodeError> {
         if access_unit.is_empty() {
             return Err(DecodeError::Rejected);
         }
@@ -267,15 +589,79 @@ impl H264Decoder {
         let (w, h) = (width as u32, height as u32);
         self.dimensions = Some(Dimensions { width: w, height: h });
 
-        // openh264 hands back three planes; flatten them into I420 so the
-        // converter has one contiguous buffer to work from.
-        let (y_plane, u_plane, v_plane) = (yuv.y(), yuv.u(), yuv.v());
-        let mut buffer = Vec::with_capacity(y_plane.len() + u_plane.len() + v_plane.len());
-        buffer.extend_from_slice(y_plane);
-        buffer.extend_from_slice(u_plane);
-        buffer.extend_from_slice(v_plane);
+        let (y_stride, u_stride, v_stride) = yuv.strides();
+        let planes = YuvPlanes {
+            width: w,
+            height: h,
+            y: yuv.y(),
+            u: yuv.u(),
+            v: yuv.v(),
+            y_stride,
+            u_stride,
+            v_stride,
+        };
+        Ok(f(planes, pts_us))
+    }
 
-        Ok(DecodedFrame { width: w, height: h, yuv: buffer, pts_us })
+    /// Decodes one Annex-B access unit into `out` reusing `out.yuv` capacity.
+    pub fn decode_with_pts_into(
+        &mut self,
+        access_unit: &[u8],
+        pts_us: u64,
+        out: &mut DecodedFrame,
+    ) -> Result<(), DecodeError> {
+        self.decode_and_process(access_unit, pts_us, |planes, pts| {
+            let w = planes.width as usize;
+            let h = planes.height as usize;
+            let luma_len = w * h;
+            let chroma_w = w / 2;
+            let chroma_h = h / 2;
+            let chroma_half = chroma_w * chroma_h;
+            let needed = luma_len + chroma_half * 2;
+
+            out.width = planes.width;
+            out.height = planes.height;
+            out.pts_us = pts;
+            out.yuv.clear();
+            if out.yuv.capacity() < needed {
+                out.yuv.reserve(needed - out.yuv.len());
+            }
+
+            if planes.y_stride == w && planes.u_stride == chroma_w && planes.v_stride == chroma_w {
+                out.yuv.extend_from_slice(&planes.y[..luma_len]);
+                out.yuv.extend_from_slice(&planes.u[..chroma_half]);
+                out.yuv.extend_from_slice(&planes.v[..chroma_half]);
+            } else {
+                for r in 0..h {
+                    out.yuv
+                        .extend_from_slice(&planes.y[r * planes.y_stride..r * planes.y_stride + w]);
+                }
+                for r in 0..chroma_h {
+                    out.yuv.extend_from_slice(
+                        &planes.u[r * planes.u_stride..r * planes.u_stride + chroma_w],
+                    );
+                }
+                for r in 0..chroma_h {
+                    out.yuv.extend_from_slice(
+                        &planes.v[r * planes.v_stride..r * planes.v_stride + chroma_w],
+                    );
+                }
+            }
+        })
+    }
+
+    /// Decodes one Annex-B access unit with a presentation timestamp (PTS).
+    ///
+    /// On failure the caller should treat the stream as needing a new keyframe;
+    /// `reset` returns the decoder to that state.
+    pub fn decode_with_pts(
+        &mut self,
+        access_unit: &[u8],
+        pts_us: u64,
+    ) -> Result<DecodedFrame, DecodeError> {
+        let mut frame = DecodedFrame { width: 0, height: 0, yuv: Vec::new(), pts_us };
+        self.decode_with_pts_into(access_unit, pts_us, &mut frame)?;
+        Ok(frame)
     }
 
     /// Decodes one Annex-B access unit.
@@ -347,13 +733,65 @@ pub fn transform_bgra_bytes(
     let (s_pre, s_u32, _) = unsafe { src[..byte_len].align_to::<u32>() };
     let (d_pre, d_u32, _) = unsafe { dst[..byte_len].align_to_mut::<u32>() };
     if s_pre.is_empty() && d_pre.is_empty() && s_u32.len() == count && d_u32.len() == count {
-        transform_pixels(s_u32, d_u32, w, h, mirror, rot);
+        transform_u32_fast(s_u32, d_u32, w, h, mirror, rot);
     } else {
         let (s_chunks, _) = src[..byte_len].as_chunks::<4>();
         let (d_chunks, _) = dst[..byte_len].as_chunks_mut::<4>();
         transform_pixels(s_chunks, d_chunks, w, h, mirror, rot);
     }
     (out_w, out_h)
+}
+
+fn transform_u32_fast(
+    src: &[u32],
+    dst: &mut [u32],
+    w: usize,
+    h: usize,
+    mirror: bool,
+    rot: u32,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if matches!((rot, mirror), (0, true) | (180, false)) && std::arch::is_x86_feature_detected!("avx2")
+    {
+        // SAFETY: AVX2 checked and `src`/`dst` both have `w * h` u32 elements.
+        unsafe {
+            reverse_rows_u32_avx2(src, dst, w, h, rot == 180);
+        }
+        return;
+    }
+    transform_pixels(src, dst, w, h, mirror, rot);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn reverse_rows_u32_avx2(
+    src: &[u32],
+    dst: &mut [u32],
+    w: usize,
+    h: usize,
+    flip_y: bool,
+) {
+    use std::arch::x86_64::*;
+    let perm_rev = _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0);
+    let src_ptr = src.as_ptr();
+    let dst_ptr = dst.as_mut_ptr();
+
+    for dy in 0..h {
+        let sy = if flip_y { h - 1 - dy } else { dy };
+        let s_row = src_ptr.add(sy * w);
+        let d_row = dst_ptr.add(dy * w);
+        let mut x = 0usize;
+        while x + 8 <= w {
+            let v = _mm256_loadu_si256(s_row.add(w - x - 8) as *const __m256i);
+            let r = _mm256_permutevar8x32_epi32(v, perm_rev);
+            _mm256_storeu_si256(d_row.add(x) as *mut __m256i, r);
+            x += 8;
+        }
+        while x < w {
+            *d_row.add(x) = *s_row.add(w - 1 - x);
+            x += 1;
+        }
+    }
 }
 
 #[inline]
@@ -707,6 +1145,146 @@ mod tests {
         transform_bgra(&src_u32, &mut dst_u32, 3, 2, false, 90);
         let expected_bytes: Vec<u8> = dst_u32.iter().flat_map(|p| p.to_ne_bytes()).collect();
         assert_eq!(dst_bytes, expected_bytes);
+    }
+
+    #[test]
+    fn write_planes_bgra_and_nv12_match_scalar_reference_including_strided() {
+        for &(w, h, pad_y, pad_uv) in &[
+            (6u32, 4u32, 0usize, 0usize),
+            (18, 4, 8, 4),
+            (32, 8, 64, 32),
+            (128, 16, 16, 8),
+        ] {
+            let packed_luma = (w * h) as usize;
+            let cw = (w / 2) as usize;
+            let ch = (h / 2) as usize;
+            let mut packed = vec![0u8; packed_luma * 3 / 2];
+            for (i, b) in packed.iter_mut().enumerate() {
+                *b = ((i * 31 + 17) & 0xFF) as u8;
+            }
+            let frame = DecodedFrame::new(w, h, packed.clone(), 123);
+
+            let mut expected_bgra = vec![0u8; (w * h * 4) as usize];
+            write_planes_bgra_scalar(
+                &frame.as_planes().unwrap(),
+                &mut expected_bgra,
+                w as usize,
+            );
+
+            let mut got_bgra = vec![0u8; (w * h * 4) as usize];
+            assert!(frame.write_bgra(&mut got_bgra, w as usize));
+            assert_eq!(got_bgra, expected_bgra, "write_bgra mismatch at {w}x{h}");
+
+            // Build strided planes and verify both write_planes_bgra & write_planes_nv12 & mean_luma.
+            let y_stride = w as usize + pad_y;
+            let u_stride = cw + pad_uv;
+            let v_stride = cw + pad_uv;
+            let mut y_strided = vec![0xA5u8; h as usize * y_stride];
+            let mut u_strided = vec![0x5Au8; ch * u_stride];
+            let mut v_strided = vec![0x3Cu8; ch * v_stride];
+            for r in 0..h as usize {
+                y_strided[r * y_stride..r * y_stride + w as usize]
+                    .copy_from_slice(&packed[r * w as usize..(r + 1) * w as usize]);
+            }
+            let u_src = &packed[packed_luma..packed_luma + cw * ch];
+            let v_src = &packed[packed_luma + cw * ch..];
+            for r in 0..ch {
+                u_strided[r * u_stride..r * u_stride + cw]
+                    .copy_from_slice(&u_src[r * cw..(r + 1) * cw]);
+                v_strided[r * v_stride..r * v_stride + cw]
+                    .copy_from_slice(&v_src[r * cw..(r + 1) * cw]);
+            }
+            let strided = YuvPlanes {
+                width: w,
+                height: h,
+                y: &y_strided,
+                u: &u_strided,
+                v: &v_strided,
+                y_stride,
+                u_stride,
+                v_stride,
+            };
+
+            let mut strided_bgra = vec![0u8; (w * h * 4) as usize];
+            assert!(write_planes_bgra(&strided, &mut strided_bgra, w as usize));
+            assert_eq!(strided_bgra, expected_bgra, "strided bgra mismatch at {w}x{h}");
+
+            let mut expected_nv12 = vec![0u8; packed_luma * 3 / 2];
+            assert!(frame.write_nv12(&mut expected_nv12));
+            let mut strided_nv12 = vec![0u8; packed_luma * 3 / 2];
+            assert!(write_planes_nv12(&strided, &mut strided_nv12));
+            assert_eq!(strided_nv12, expected_nv12, "strided nv12 mismatch at {w}x{h}");
+            assert_eq!(strided.mean_luma(), frame.mean_luma());
+        }
+    }
+
+    #[test]
+    fn reverse_rows_u32_matches_scalar_mirror_and_180() {
+        let (w, h) = (35u32, 6u32);
+        let src: Vec<u8> = (0..(w * h * 4) as usize).map(|i| (i & 0xFF) as u8).collect();
+        let src_u32: Vec<u32> = src
+            .chunks_exact(4)
+            .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        for &(mirror, rot) in &[(true, 0u32), (false, 180u32)] {
+            let mut got_bytes = Vec::new();
+            let dims = transform_bgra_bytes(&src, &mut got_bytes, w, h, mirror, rot);
+            assert_eq!(dims, (w, h));
+            let mut want_u32 = Vec::new();
+            transform_bgra(&src_u32, &mut want_u32, w, h, mirror, rot);
+            let want_bytes: Vec<u8> = want_u32.iter().flat_map(|p| p.to_ne_bytes()).collect();
+            assert_eq!(got_bytes, want_bytes);
+        }
+    }
+
+    #[test]
+    fn perf_1080p_csc_nv12_and_transform_throughput() {
+        let (w, h) = (1920u32, 1080u32);
+        let luma = (w * h) as usize;
+        let mut yuv = vec![128u8; luma * 3 / 2];
+        for (i, b) in yuv.iter_mut().enumerate() {
+            *b = ((i * 7) & 0xFF) as u8;
+        }
+        let frame = DecodedFrame::new(w, h, yuv, 0);
+        let planes = frame.as_planes().unwrap();
+
+        let mut nv12 = vec![0u8; luma * 3 / 2];
+        let mut bgra = vec![0u8; luma * 4];
+        let mut transformed = Vec::with_capacity(luma * 4);
+        let iters = 200u32;
+
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters {
+            assert!(write_planes_nv12(&planes, &mut nv12));
+            std::hint::black_box(&nv12);
+        }
+        let nv12_ms = t0.elapsed().as_secs_f64() * 1000.0 / f64::from(iters);
+        eprintln!(
+            "1080p write_planes_nv12: {nv12_ms:.3} ms/frame ({:.1} FPS)",
+            1000.0 / nv12_ms.max(1e-6)
+        );
+
+        let t1 = std::time::Instant::now();
+        for _ in 0..iters {
+            assert!(write_planes_bgra(&planes, &mut bgra, w as usize));
+            std::hint::black_box(&bgra);
+        }
+        let bgra_ms = t1.elapsed().as_secs_f64() * 1000.0 / f64::from(iters);
+        eprintln!(
+            "1080p write_planes_bgra: {bgra_ms:.3} ms/frame ({:.1} FPS)",
+            1000.0 / bgra_ms.max(1e-6)
+        );
+
+        let t2 = std::time::Instant::now();
+        for _ in 0..iters {
+            transform_bgra_bytes(&bgra, &mut transformed, w, h, true, 0);
+            std::hint::black_box(&transformed);
+        }
+        let mir_ms = t2.elapsed().as_secs_f64() * 1000.0 / f64::from(iters);
+        eprintln!(
+            "1080p transform_bgra_bytes(mirror): {mir_ms:.3} ms/frame ({:.1} FPS)",
+            1000.0 / mir_ms.max(1e-6)
+        );
     }
 }
 

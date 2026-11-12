@@ -5,6 +5,7 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
 import java.io.IOException
+import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -37,6 +38,7 @@ object Proto {
     const val CLIENT_HANDSHAKE_SIZE = 20
     const val SERVER_RESPONSE_SIZE = 24
     const val VIDEO_HEADER_SIZE = 24
+    const val VIDEO_FRAME_PREFIX_SIZE = 4 + VIDEO_HEADER_SIZE
 
     const val MAX_HANDSHAKE_AUTH = 512
 }
@@ -209,6 +211,52 @@ object Framing {
         return payload
     }
 
+    private val videoHeaderScratch = ThreadLocal.withInitial {
+        ByteArray(Proto.VIDEO_FRAME_PREFIX_SIZE)
+    }
+
+    /**
+     * Writes `u32 totalLen` + 24-byte header + payload using a caller-reused
+     * [headerScratch] buffer (at least [Proto.VIDEO_FRAME_PREFIX_SIZE] bytes)
+     * so the hot video path allocates zero bytes on the JVM heap.
+     */
+    @Throws(IOException::class)
+    fun writeVideoPacket(
+        output: OutputStream,
+        frameId: Long,
+        ptsUs: Long,
+        flags: Int,
+        codec: Int,
+        payload: ByteArray,
+        payloadOffset: Int = 0,
+        payloadLength: Int = payload.size,
+        headerScratch: ByteArray,
+        flush: Boolean = true,
+    ) {
+        if (payloadOffset < 0 || payloadLength < 0 || payloadOffset + payloadLength > payload.size) {
+            throw IOException("video payload slice out of bounds: offset=$payloadOffset length=$payloadLength size=${payload.size}")
+        }
+        if (headerScratch.size < Proto.VIDEO_FRAME_PREFIX_SIZE) {
+            throw IllegalArgumentException("headerScratch must be at least ${Proto.VIDEO_FRAME_PREFIX_SIZE} bytes")
+        }
+        NativeCore.encodeVideoPacketHeaderInto(
+            dst = headerScratch,
+            offset = 0,
+            frameId = frameId,
+            ptsUs = ptsUs,
+            flags = flags,
+            codec = codec,
+            payloadLen = payloadLength,
+        )
+        output.write(headerScratch, 0, Proto.VIDEO_FRAME_PREFIX_SIZE)
+        if (payloadLength > 0) {
+            output.write(payload, payloadOffset, payloadLength)
+        }
+        if (flush) {
+            output.flush()
+        }
+    }
+
     /**
      * Writes `u32 totalLen` + 24-byte header + payload.
      *
@@ -224,19 +272,18 @@ object Framing {
         payloadOffset: Int = 0,
         payloadLength: Int = payload.size,
     ) {
-        if (payloadOffset < 0 || payloadLength < 0 || payloadOffset + payloadLength > payload.size) {
-            throw IOException("video payload slice out of bounds: offset=$payloadOffset length=$payloadLength size=${payload.size}")
-        }
-        val prefix = NativeCore.encodeVideoPacketHeader(
+        writeVideoPacket(
+            output = output,
             frameId = header.frameId,
             ptsUs = header.ptsUs,
             flags = header.flags,
             codec = header.codec,
-            payloadLen = payloadLength,
+            payload = payload,
+            payloadOffset = payloadOffset,
+            payloadLength = payloadLength,
+            headerScratch = videoHeaderScratch.get()!!,
+            flush = true,
         )
-        output.write(prefix)
-        output.write(payload, payloadOffset, payloadLength)
-        output.flush()
     }
 
     @Throws(IOException::class)

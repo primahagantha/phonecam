@@ -97,6 +97,16 @@ object NativeCore {
         payloadLen: Int,
     ): ByteArray
 
+    external fun encodeVideoPacketHeaderInto(
+        dst: ByteArray,
+        offset: Int,
+        frameId: Long,
+        ptsUs: Long,
+        flags: Int,
+        codec: Int,
+        payloadLen: Int,
+    )
+
     external fun encodeVideoPacket(
         frameId: Long,
         ptsUs: Long,

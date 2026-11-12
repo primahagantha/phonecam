@@ -44,6 +44,7 @@ fn main() -> anyhow::Result<()> {
         let runtime = Runtime::new(&settings);
         logging::bind_runtime(runtime.clone());
         runtime.set_preview_enabled(settings.preview_enabled);
+        runtime.set_quality_mode(settings.quality_mode == phonecam_protocol::QualityMode::Auto);
 
         // Start the listeners before the window so the first frame of UI already
         // knows whether the service is reachable.
@@ -123,10 +124,10 @@ fn main() -> anyhow::Result<()> {
         // The window pulls state and frames on a timer: a push per decoded frame
         // would re-render the whole window 30 times a second for a change that
         // only affects one image.
-        start_ui_pump(cx, window, view.clone(), runtime.clone());
+        start_ui_pump(cx, window, view.clone(), runtime.clone(), hwnd);
 
         // Drain the effects the panels asked for.
-        start_effect_pump(cx, view.clone(), runtime.clone(), hwnd);
+        start_effect_pump(cx, window, view.clone(), runtime.clone(), hwnd);
 
         // The tray, and the close-to-hide behaviour it exists for.
         start_tray(cx, window, view.clone(), runtime.clone());
@@ -142,27 +143,44 @@ fn main() -> anyhow::Result<()> {
 fn start_ui_pump(
     cx: &mut App,
     window: WindowHandle<AppView>,
-    view: gpui::Entity<AppView>,
+    _view: gpui::Entity<AppView>,
     runtime: std::sync::Arc<Runtime>,
+    hwnd: Option<isize>,
 ) {
     cx.spawn(async move |cx| {
         let mut last_state_version = 0u64;
-        let mut last_title = title_for(&runtime.state.lock());
-        let mut geometry_ticks = 0u32;
+        let (mut last_title, mut last_tooltip) = {
+            let state = runtime.state.lock();
+            (title_for(&state), tray::tooltip(&state))
+        };
+        let mut last_visible = true;
+        let mut geometry_elapsed_ms = 0u64;
         loop {
-            cx.background_executor().timer(Duration::from_millis(8)).await;
+            let visible = hwnd.map(tray::is_window_visible).unwrap_or(true);
+            if visible != last_visible {
+                last_visible = visible;
+                runtime.set_window_visible(visible);
+            }
+            let sleep_ms = if visible { 8 } else { 100 };
+            cx.background_executor()
+                .timer(Duration::from_millis(sleep_ms))
+                .await;
 
-            geometry_ticks = geometry_ticks.wrapping_add(1);
-            if geometry_ticks >= 125 {
-                geometry_ticks = 0;
-                let _ = window.update(cx, |_, window, _| {
-                    persist_window_geometry(window, &runtime);
-                });
+            if visible {
+                geometry_elapsed_ms = geometry_elapsed_ms.saturating_add(sleep_ms);
+                if geometry_elapsed_ms >= 1000 {
+                    geometry_elapsed_ms = 0;
+                    let _ = window.update(cx, |_, window, _| {
+                        persist_window_geometry(window, &runtime);
+                    });
+                }
             }
 
-            let toast_expired = {
+            let toast_expired = if runtime.has_active_toast() {
                 let mut state = runtime.state.lock();
                 state.toast_expires_at_ms.is_some() && state.expire_toast_if_due(now_ms())
+            } else {
+                false
             };
             if toast_expired {
                 runtime.bump_state_version();
@@ -170,7 +188,14 @@ fn start_ui_pump(
 
             let current_version = runtime.state_version.load(Ordering::Relaxed);
             let state_changed = current_version != last_state_version;
-            let frame = runtime.frames.lock().take();
+            let frame = if visible {
+                runtime.frames.lock().take()
+            } else {
+                if let Some(discarded) = runtime.frames.lock().take() {
+                    runtime.return_buffer(discarded.bgra);
+                }
+                None
+            };
 
             if !state_changed && frame.is_none() {
                 continue;
@@ -190,13 +215,22 @@ fn start_ui_pump(
                         window.set_window_title(&next_title);
                     });
                 }
+
+                let next_tooltip = tray::tooltip(snapshot);
+                if next_tooltip != last_tooltip {
+                    last_tooltip = next_tooltip.clone();
+                    let tray = runtime.tray.lock();
+                    if let Some(tray) = tray.as_ref() {
+                        tray.set_tooltip(&next_tooltip);
+                    }
+                }
             }
 
             let rt = runtime.clone();
-            let updated = view.update(cx, |app, cx| {
+            let updated = window.update(cx, |app, window, cx| {
                 if let Some(snapshot) = snapshot {
                     if !snapshot.settings.preview_enabled {
-                        if let Some(recycled) = app.clear_preview() {
+                        if let Some(recycled) = app.clear_preview_in(Some(window)) {
                             rt.return_buffer(recycled);
                         }
                     }
@@ -204,7 +238,8 @@ fn start_ui_pump(
                 }
                 if let Some(frame) = frame {
                     if app.state.settings.preview_enabled {
-                        if let Some(recycled) = app.set_preview(frame.bgra, frame.width, frame.height)
+                        if let Some(recycled) =
+                            app.set_preview_in(frame.bgra, frame.width, frame.height, Some(window))
                         {
                             rt.return_buffer(recycled);
                         }
@@ -229,6 +264,7 @@ fn start_ui_pump(
 /// Performs whatever the user clicked.
 fn start_effect_pump(
     cx: &mut App,
+    window: WindowHandle<AppView>,
     view: gpui::Entity<AppView>,
     runtime: std::sync::Arc<Runtime>,
     hwnd: Option<isize>,
@@ -243,7 +279,7 @@ fn start_effect_pump(
             }
 
             for effect in effects {
-                apply_effect(&runtime, effect, &view, hwnd, cx);
+                apply_effect(&runtime, effect, &window, &view, hwnd, cx);
             }
         }
     })
@@ -278,6 +314,7 @@ fn open_platform_tools_url(runtime: &Runtime) {
 fn apply_effect(
     runtime: &std::sync::Arc<Runtime>,
     effect: SideEffect,
+    window: &WindowHandle<AppView>,
     view: &gpui::Entity<AppView>,
     hwnd: Option<isize>,
     cx: &mut gpui::AsyncApp,
@@ -335,13 +372,14 @@ fn apply_effect(
             let _ = settings::save(&snapshot.settings);
             runtime.set_preview_enabled(enabled);
             if !enabled {
-                view.update(cx, |app, cx| {
-                    if let Some(recycled) = app.clear_preview() {
-                        runtime.return_buffer(recycled);
-                    }
-                    cx.notify();
-                })
-                .ok();
+                window
+                    .update(cx, |app, window, cx| {
+                        if let Some(recycled) = app.clear_preview_in(Some(window)) {
+                            runtime.return_buffer(recycled);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
             }
         }
         SideEffect::SetMirror(mirror) => {
@@ -357,6 +395,7 @@ fn apply_effect(
                 let mut state = runtime.state.lock();
                 state.settings.output_width = width;
                 state.settings.output_height = height;
+                state.settings.output_follows_stream = false;
                 state.clone()
             };
             let _ = settings::save(&snapshot.settings);
@@ -364,14 +403,36 @@ fn apply_effect(
             *runtime.writer.lock() = None;
             runtime.broadcast_state();
         }
+        SideEffect::SetOutputFollowsStream(enabled) => {
+            let snapshot = {
+                let mut state = runtime.state.lock();
+                state.settings.output_follows_stream = enabled;
+                state.clone()
+            };
+            let _ = settings::save(&snapshot.settings);
+            *runtime.writer.lock() = None;
+            runtime.broadcast_state();
+        }
         SideEffect::SetCamera(camera) => runtime.set_camera(camera),
         SideEffect::SetResolution(resolution) => {
             let (fps, bitrate) = {
                 let state = runtime.state.lock();
-                (
-                    (state.settings.fps > 0).then_some(state.settings.fps),
+                let fps_opt = (state.settings.fps > 0).then_some(state.settings.fps);
+                let prev_default = phonecam_ui::views::bitrate_for(
+                    &state.settings.resolution,
+                    state.settings.fps,
                     state.settings.bitrate,
-                )
+                );
+                let next_bitrate = if state.settings.bitrate == prev_default {
+                    phonecam_ui::views::bitrate_for(
+                        &resolution,
+                        state.settings.fps,
+                        state.settings.bitrate,
+                    )
+                } else {
+                    state.settings.bitrate
+                };
+                (fps_opt, next_bitrate)
             };
             runtime.set_video(resolution, fps, bitrate);
         }
@@ -415,22 +476,38 @@ fn apply_effect(
             let _ = settings::save(&snapshot.settings);
             runtime.bump_state_version();
         }
-        SideEffect::ExportDiagnostics => match runtime.export_diagnostics(None) {
-            Ok(path) => {
-                runtime.log_info(&format!("diagnostics exported to {}", path.display()));
-                runtime
-                    .state
-                    .lock()
-                    .set_toast("Diagnostics exported", Timing::TOAST_MS as i64);
-                runtime.bump_state_version();
+        SideEffect::ExportDiagnostics => {
+            let custom_path = match tray::save_diagnostics_dialog(hwnd) {
+                tray::SaveDialogResult::Selected(path) => Some(path),
+                tray::SaveDialogResult::Cancelled => {
+                    runtime
+                        .state
+                        .lock()
+                        .set_toast("Diagnostics export cancelled", Timing::TOAST_MS as i64);
+                    runtime.bump_state_version();
+                    return;
+                }
+                tray::SaveDialogResult::Unavailable => None,
+            };
+            match runtime.export_diagnostics(custom_path.as_deref()) {
+                Ok(path) => {
+                    runtime.log_info(&format!("diagnostics exported to {}", path.display()));
+                    let path_str = path.to_string_lossy().to_string();
+                    let _ = cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(path_str)));
+                    runtime.state.lock().set_toast(
+                        format!("Diagnostics exported to {}", path.display()),
+                        Timing::TOAST_MS as i64,
+                    );
+                    runtime.bump_state_version();
+                }
+                Err(err) => {
+                    runtime.log_error(
+                        "diagnostics_failed",
+                        &format!("could not export diagnostics: {err}"),
+                    );
+                }
             }
-            Err(err) => {
-                runtime.log_error(
-                    "diagnostics_failed",
-                    &format!("could not export diagnostics: {err}"),
-                );
-            }
-        },
+        }
         SideEffect::CopyDiagnosticsReport => {
             let report = runtime.generate_diagnostics_report();
             let copied = cx
@@ -458,6 +535,38 @@ fn apply_effect(
                 cx.notify();
             })
             .ok();
+        }
+        SideEffect::CopyPairingPayload => {
+            let selected_network = view.update(cx, |app, _| app.pairing_network).unwrap_or(0);
+            let payload = {
+                let state = runtime.state.lock();
+                let payloads = state
+                    .core
+                    .as_ref()
+                    .map(|c| c.pairing.qr_payloads.as_slice())
+                    .unwrap_or(&[]);
+                if payloads.is_empty() {
+                    None
+                } else {
+                    Some(payloads[selected_network.min(payloads.len() - 1)].clone())
+                }
+            };
+            let copied = payload
+                .filter(|p| !p.is_empty())
+                .map(|p| {
+                    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(p)))
+                        .is_ok()
+                })
+                .unwrap_or(false);
+            {
+                let mut state = runtime.state.lock();
+                if copied {
+                    state.set_toast("Pairing code copied to clipboard", Timing::TOAST_MS as i64);
+                } else {
+                    state.set_toast("No active pairing code to copy", Timing::TOAST_MS as i64);
+                }
+            }
+            runtime.bump_state_version();
         }
     }
 }
@@ -531,6 +640,7 @@ fn handle_tray_command(
             if let Some(tray) = tray.as_ref() {
                 tray.show_target();
             }
+            runtime.set_window_visible(true);
         }
         tray::TrayCommand::ToggleVcam => {
             let enabled = !runtime.vcam_enabled.load(Ordering::Relaxed);
@@ -546,6 +656,7 @@ fn handle_tray_command(
             if let Some(tray) = tray.as_ref() {
                 tray.show_target();
             }
+            runtime.set_window_visible(true);
         }
         tray::TrayCommand::Quit => {
             let _ = window.update(cx, |_, window, _| {
@@ -644,6 +755,7 @@ fn start_tray(
                 tracing::info!("window close requested; hiding instead of quitting");
                 persist_window_geometry(window, &close_runtime);
                 tray::hide_window(hwnd);
+                close_runtime.set_window_visible(false);
                 // Refuse the close: the window is hidden, not destroyed, so the
                 // camera and the listener keep running.
                 false

@@ -13,23 +13,24 @@
 //! `phonecam-core` and `phonecam-ui`, where they are unit tested; this file only
 //! moves bytes and state between them.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
-use phonecam_core::adaptive_quality::{AdaptiveQuality, QualitySample};
+use phonecam_core::adaptive_quality::{AdaptiveQuality, QualityRung, QualitySample};
 use phonecam_core::pairing::{new_server_id, DeviceRecord, PairingManager};
 use phonecam_core::session::{
-    control_frame, now_ms, now_us, phase_after_phone_state, read_video_packet, Authenticator,
-    SessionState, StatsWindow,
+    control_frame, now_ms, now_us, phase_after_phone_state, Authenticator, SessionState,
+    StatsWindow,
 };
-use phonecam_core::transport::{Connection, DiscoverySocket, Listener};
+use phonecam_core::transport::{Connection, DiscoverySocket, Listener, ReadResult};
 use phonecam_framebus::{FrameState, FrameWriter};
-use phonecam_media::H264Decoder;
+use phonecam_media::{H264Decoder, YuvPlanes};
 use phonecam_protocol::{
     CapabilitiesPayload, CoreError, CoreState, DesktopBeacon, DesktopToPhone, FpsValue, LogLevel,
     NearbyPhone, PhoneToDesktop, QrPayload, QualityMode, ScreenMode, StreamPhase, TransportKind,
-    VcamState, VcamStatus, BEACON_INTERVAL_MS, DISCOVERY_PORT, SERVICE_PORT, VIDEO_HEADER_SIZE,
+    VcamState, VcamStatus, VideoFlags, BEACON_INTERVAL_MS, DISCOVERY_PORT, MAX_VIDEO_PAYLOAD,
+    SERVICE_PORT, VIDEO_HEADER_SIZE,
 };
 use phonecam_ui::views::state::{AppState, CoreStatus, FailureCode, LogSource};
 
@@ -65,9 +66,7 @@ pub fn output_size_for(
 /// Owned by the video thread, because that is the only thread that touches them.
 #[derive(Default)]
 pub struct PublishScratch {
-    /// NV12 at the output size, ready to hand to the frame bus.
-    nv12: Vec<u8>,
-    /// I420 at the decoded size, for the scale path.
+    /// I420/NV12 at the decoded size, for the scale path.
     source: Vec<u8>,
     /// The BGRA buffer being filled.
     bgra: Vec<u8>,
@@ -174,6 +173,32 @@ pub struct Runtime {
     pub active_usb_serial: Mutex<Option<String>>,
     /// Current digital zoom value stored as `f32::to_bits`.
     zoom_bits: AtomicU32,
+    /// Atomic mirror of `settings.output_mirror` for lock-free per-frame reads.
+    output_mirror: AtomicBool,
+    /// Atomic mirror of `settings.output_rotation % 360` for lock-free per-frame reads.
+    output_rotation: AtomicU32,
+    /// Atomic mirror of `settings.output_width` for lock-free writer init.
+    output_width: AtomicU32,
+    /// Atomic mirror of `settings.output_height` for lock-free writer init.
+    output_height: AtomicU32,
+    /// Atomic mirror of `settings.output_follows_stream` for lock-free writer init.
+    output_follows_stream: AtomicBool,
+    /// Whether the desktop window is visible (false when minimized or hidden in tray).
+    window_visible: AtomicBool,
+    /// Whether `state.toast_expires_at_ms` is currently `Some(_)`.
+    has_active_toast: AtomicBool,
+    /// Set when `bump_state_version()` could not inspect `state` synchronously.
+    toast_check_needed: AtomicBool,
+    /// Lock-free per-stage accumulator synced to `stage_us` every second & on exit.
+    stage_totals_atomic: [AtomicI64; 3],
+    /// Lock-free per-stage max synced to `stage_max_us` every second & on exit.
+    stage_max_atomic: [AtomicI64; 3],
+    /// Cached count of recorded `frame_intervals_us` samples (caps locking after 4096).
+    frame_interval_count: AtomicUsize,
+    /// Whether a stepped camera-start retry is currently active.
+    camera_retry_active: AtomicBool,
+    /// Last `(requested, actual)` pair emitted as `ResolutionDowngraded`.
+    last_downgraded: Mutex<Option<(String, String)>>,
 }
 
 impl Runtime {
@@ -195,6 +220,9 @@ impl Runtime {
             })
             .collect();
 
+        let mut quality = AdaptiveQuality::new();
+        quality.set_enabled(settings.quality_mode == QualityMode::Auto);
+
         Arc::new_cyclic(|weak| Self {
             session: Arc::new(SessionState::default()),
             pairing: Arc::new(Mutex::new(PairingManager::new())),
@@ -204,7 +232,7 @@ impl Runtime {
             want_stream: Arc::new(AtomicBool::new(false)),
             vcam_enabled: Arc::new(AtomicBool::new(settings.vcam_enabled)),
             preview_enabled: Arc::new(AtomicBool::new(settings.preview_enabled)),
-            quality: Arc::new(Mutex::new(AdaptiveQuality::new())),
+            quality: Arc::new(Mutex::new(quality)),
             running: Arc::new(AtomicBool::new(true)),
             server_id: new_server_id().unwrap_or_else(|| "pc-00000000".into()),
             server_name: hostname(),
@@ -237,7 +265,56 @@ impl Runtime {
             connects: Arc::new(AtomicU32::new(0)),
             active_usb_serial: Mutex::new(None),
             zoom_bits: AtomicU32::new(1.0f32.to_bits()),
+            output_mirror: AtomicBool::new(settings.output_mirror),
+            output_rotation: AtomicU32::new(settings.output_rotation % 360),
+            output_width: AtomicU32::new(settings.output_width),
+            output_height: AtomicU32::new(settings.output_height),
+            output_follows_stream: AtomicBool::new(settings.output_follows_stream),
+            window_visible: AtomicBool::new(true),
+            has_active_toast: AtomicBool::new(false),
+            toast_check_needed: AtomicBool::new(false),
+            stage_totals_atomic: [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)],
+            stage_max_atomic: [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)],
+            frame_interval_count: AtomicUsize::new(0),
+            camera_retry_active: AtomicBool::new(false),
+            last_downgraded: Mutex::new(None),
         })
+    }
+
+    /// Updates `window_visible` so preview BGRA conversion & mailbox publishing
+    /// are skipped while the desktop window is minimized or hidden in the tray.
+    pub fn set_window_visible(&self, visible: bool) {
+        let prev = self.window_visible.swap(visible, Ordering::Relaxed);
+        if !visible && prev {
+            *self.frames.lock() = None;
+        }
+    }
+
+    /// Returns whether an active UI toast timer needs expiration polling.
+    pub fn has_active_toast(&self) -> bool {
+        if self.toast_check_needed.swap(false, Ordering::Relaxed) {
+            if let Some(state) = self.state.try_lock() {
+                self.sync_cached_settings_from_state(&state);
+            } else {
+                self.toast_check_needed.store(true, Ordering::Relaxed);
+            }
+        }
+        self.has_active_toast.load(Ordering::Relaxed)
+    }
+
+    fn sync_cached_settings_from_state(&self, state: &AppState) {
+        self.output_mirror
+            .store(state.settings.output_mirror, Ordering::Relaxed);
+        self.output_rotation
+            .store(state.settings.output_rotation % 360, Ordering::Relaxed);
+        self.output_width
+            .store(state.settings.output_width, Ordering::Relaxed);
+        self.output_height
+            .store(state.settings.output_height, Ordering::Relaxed);
+        self.output_follows_stream
+            .store(state.settings.output_follows_stream, Ordering::Relaxed);
+        self.has_active_toast
+            .store(state.toast_expires_at_ms.is_some(), Ordering::Relaxed);
     }
 
     /// Updates `preview_enabled` atomically and clears any queued preview frame when turned off.
@@ -256,6 +333,8 @@ impl Runtime {
     /// Synchronizes mirror/rotation onto settings, the active `FrameWriter`, and the phone.
     pub fn sync_output_transform(&self, mirror: bool, rotation: u32) {
         let normalized_rot = rotation % 360;
+        self.output_mirror.store(mirror, Ordering::Relaxed);
+        self.output_rotation.store(normalized_rot, Ordering::Relaxed);
         {
             let mut state = self.state.lock();
             state.settings.output_mirror = mirror;
@@ -276,6 +355,12 @@ impl Runtime {
 
     /// Increments the state mutation version counter.
     pub fn bump_state_version(&self) {
+        if let Some(state) = self.state.try_lock() {
+            self.sync_cached_settings_from_state(&state);
+            self.toast_check_needed.store(false, Ordering::Relaxed);
+        } else {
+            self.toast_check_needed.store(true, Ordering::Relaxed);
+        }
         self.state_version.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -301,6 +386,7 @@ impl Runtime {
     /// Generates the comprehensive diagnostics report covering desktop, listeners,
     /// device/cameras, video/output settings, framebus metrics, ADB/USB, VCam, and log tail.
     pub fn generate_diagnostics_report(&self) -> String {
+        self.sync_stage_stats();
         let state = self.state.lock().clone();
         let port = self.port.load(Ordering::Relaxed);
         let addresses = local_ipv4_addresses();
@@ -707,7 +793,7 @@ impl Runtime {
 
         if outcome.approval_pending {
             // The prompt is up; the phone waits on this socket for a decision.
-            self.set_pairing_prompt(&outcome.device_id);
+            self.set_pairing_prompt_with_name(&outcome.device_id, Some(&outcome.device_name));
             self.wait_for_approval(&conn, &outcome.device_id);
             conn.close();
             return;
@@ -862,6 +948,7 @@ impl Runtime {
                     ) {
                         self.quality.lock().confirm(rung);
                     }
+                    self.reconcile_resolution_downgrade(&phone_state);
                     *self.session.phone_state.lock() = Some(phone_state);
                     // The phase rules live in the core and are unit tested there.
                     let next = phase_after_phone_state(self.session.phase(), streaming);
@@ -928,6 +1015,7 @@ impl Runtime {
         let mut dropped: u64 = 0;
         let mut saw_keyframe = false;
         let mut scratch = PublishScratch::default();
+        let mut packet_buf = Vec::with_capacity(256 * 1024);
 
         loop {
             if !self.running.load(Ordering::Relaxed) {
@@ -936,23 +1024,21 @@ impl Runtime {
             // A video channel that goes quiet is a stalled stream, but a read
             // timeout is not proof the socket closed.
             let read_started = now_us();
-            let Some((payload, flags, pts)) = read_video_packet(&conn) else {
+            let Some((flags, pts, total_len)) = read_video_packet_into(&conn, &mut packet_buf) else {
                 if conn.is_closed() {
                     break;
                 }
                 continue;
             };
-            self.bytes_in.fetch_add(
-                4 + VIDEO_HEADER_SIZE as u64 + payload.len() as u64,
-                Ordering::Relaxed,
-            );
+            let payload = &packet_buf[VIDEO_HEADER_SIZE..total_len];
+            self.bytes_in.fetch_add(4 + total_len as u64, Ordering::Relaxed);
 
             let read_us = now_us() - read_started;
             self.note_stage(0, read_us);
             stats_window.note_frame(payload.len());
 
             if flags.is_codec_config() {
-                if !decoder.set_parameter_sets(&payload) {
+                if !decoder.set_parameter_sets(payload) {
                     tracing::warn!("ignored a codec-config packet with no readable parameter sets");
                 }
                 continue;
@@ -967,21 +1053,28 @@ impl Runtime {
             }
 
             let decode_started = now_us();
-            let decoded_result = decoder.decode_with_pts(&payload, pts.max(0) as u64);
-            self.note_stage(1, now_us() - decode_started);
+            let pts_us = pts.max(0) as u64;
+            let decoded_result = decoder.decode_and_process(payload, pts_us, |planes, p_pts| {
+                self.note_stage(1, now_us() - decode_started);
+                let publish_started = now_us();
+                self.publish_planes(planes, p_pts, &mut scratch);
+                self.note_stage(2, now_us() - publish_started);
+            });
 
             match decoded_result {
-                Ok(frame) => {
+                Ok(()) => {
                     decoded += 1;
                     self.last_frame_at_ms.store(now_ms(), Ordering::Relaxed);
-                    let publish_started = now_us();
-                    self.publish(frame, &mut scratch);
-                    self.note_stage(2, now_us() - publish_started);
-                    self.session.note_decoded_frame();
-                    self.camera_retry.lock().reset();
-                    self.camera_retry_generation.fetch_add(1, Ordering::SeqCst);
+                    if decoded == 1 || !self.session.live_frame_seen.load(Ordering::Relaxed) {
+                        self.session.note_decoded_frame();
+                    }
+                    if self.camera_retry_active.swap(false, Ordering::Relaxed) {
+                        self.camera_retry.lock().reset();
+                        self.camera_retry_generation.fetch_add(1, Ordering::SeqCst);
+                    }
                 }
                 Err(_) => {
+                    self.note_stage(1, now_us() - decode_started);
                     dropped += 1;
                     self.session.decode_struggling.store(true, Ordering::Relaxed);
                     saw_keyframe = false;
@@ -997,9 +1090,11 @@ impl Runtime {
                     dropped,
                 );
                 *self.session.stats.lock() = stats;
+                self.sync_stage_stats();
             }
         }
 
+        self.sync_stage_stats();
         // The picture stops but the camera keeps the last frame until the
         // placeholder grace period elapses in the stats thread.
         self.session.live_frame_seen.store(false, Ordering::Relaxed);
@@ -1007,47 +1102,43 @@ impl Runtime {
         tracing::info!("video channel closed");
     }
 
-    /// Publishes one decoded frame to the camera bus and to the window.
-    ///
-    /// Everything this touches is reused. The first version allocated four
-    /// buffers per frame — NV12, an I420 copy, the scaled NV12 and a BGRA clone —
-    /// which is 11.3 MB per frame at the default output size, or about 338 MB/s
-    /// at 30 fps. The allocator and the zeroing cost grew exactly when a fast
-    /// movement made frames larger, so the decoder thread fell behind the socket
-    /// and the picture stuttered. The C++ core had a `scaledFrame_` scratch
-    /// member for this reason; the port had dropped it.
+    #[cfg(test)]
     fn publish(&self, frame: phonecam_media::DecodedFrame, scratch: &mut PublishScratch) {
+        if let Some(planes) = frame.as_planes() {
+            self.publish_planes(planes, frame.pts_us, scratch);
+        }
+    }
+
+    /// Publishes one decoded planar YUV frame to the camera bus and to the window.
+    ///
+    /// Writes directly into the shared-memory frame bus under the seqlock when
+    /// no scaling is needed (zero intermediate NV12 staging copy) and skips
+    /// BGRA conversion when the preview is disabled or the window is hidden.
+    fn publish_planes(&self, planes: YuvPlanes<'_>, pts_us: u64, scratch: &mut PublishScratch) {
         // Timestamped at the producer, so the interval is the real one.
         let now = now_us();
         let previous = self.last_publish_us.swap(now, Ordering::Relaxed);
-        if previous != 0 {
+        if previous != 0 && self.frame_interval_count.load(Ordering::Relaxed) < 4096 {
             let mut intervals = self.frame_intervals_us.lock();
             // Bounded: a long session must not grow without limit.
             if intervals.len() < 4096 {
                 intervals.push(now - previous);
             }
+            self.frame_interval_count.store(intervals.len(), Ordering::Relaxed);
         }
         // --- the virtual camera: NV12 into the shared buffer
-        let (mirror, rotation) = {
-            let state = self.state.lock();
-            (
-                state.settings.output_mirror,
-                state.settings.output_rotation % 360,
-            )
-        };
+        let mirror = self.output_mirror.load(Ordering::Relaxed);
+        let rotation = self.output_rotation.load(Ordering::Relaxed) % 360;
         if self.vcam_enabled.load(Ordering::Relaxed) {
             let mut writer = self.writer.lock();
             if writer.is_none() {
-                // The buffer follows the stream unless the user pinned a size.
-                //
-                // The default output was 1920x1080 while the phone sends
-                // 1280x720, so every frame was upscaled: 3.75 ms of the 6.75 ms
-                // publish cost, spent adding no detail at all, and the published
-                // picture was blurrier than the one that arrived. A buffer at the
-                // stream's own size makes the common case a straight copy.
-                let (width, height) = {
-                    let state = self.state.lock();
-                    output_size_for(&state.settings, frame.width, frame.height)
+                let (width, height) = if self.output_follows_stream.load(Ordering::Relaxed) {
+                    (planes.width & !1, planes.height & !1)
+                } else {
+                    (
+                        self.output_width.load(Ordering::Relaxed) & !1,
+                        self.output_height.load(Ordering::Relaxed) & !1,
+                    )
                 };
                 match FrameWriter::open(width, height) {
                     Ok(mut w) => {
@@ -1062,43 +1153,44 @@ impl Runtime {
             }
 
             if let Some(writer) = writer.as_mut() {
-                let capacity = writer.capacity() as usize;
                 let out_width = writer.width();
                 let out_height = writer.height();
 
-                if frame.width == out_width && frame.height == out_height {
-                    // Same size: straight into the publish buffer.
-                    scratch.nv12.resize(capacity, 0);
-                    if frame.write_nv12(&mut scratch.nv12) {
-                        let _ = writer.publish(&scratch.nv12, frame.pts_us, FrameState::Live);
-                    }
+                if planes.width == out_width && planes.height == out_height {
+                    // Same size: interleave straight into the shared-memory publish buffer.
+                    let _ = writer.publish_with(pts_us, FrameState::Live, None, |dst| {
+                        phonecam_media::write_planes_nv12(&planes, dst)
+                    });
                 } else {
-                    // Different size: I420 once, scale into the publish buffer.
-                    let source_len = frame.width as usize * frame.height as usize * 3 / 2;
+                    // Different size: interleave once to scratch.source, then scale directly into the frame bus.
+                    let source_len = planes.width as usize * planes.height as usize * 3 / 2;
                     scratch.source.resize(source_len, 0);
-                    if frame.write_nv12(&mut scratch.source) {
-                        scratch.nv12.resize(capacity, 0);
-                        phonecam_framebus::nv12::scale(
-                            &scratch.source,
-                            frame.width,
-                            frame.height,
-                            &mut scratch.nv12,
-                            out_width,
-                            out_height,
-                        );
-                        let _ = writer.publish(&scratch.nv12, frame.pts_us, FrameState::Live);
+                    if phonecam_media::write_planes_nv12(&planes, &mut scratch.source) {
+                        let _ = writer.publish_with(pts_us, FrameState::Live, None, |dst| {
+                            phonecam_framebus::nv12::scale(
+                                &scratch.source,
+                                planes.width,
+                                planes.height,
+                                dst,
+                                out_width,
+                                out_height,
+                            );
+                            true
+                        });
                     }
                 }
             }
         }
 
-        if !self.preview_enabled.load(Ordering::Relaxed) {
+        if !self.preview_enabled.load(Ordering::Relaxed)
+            || !self.window_visible.load(Ordering::Relaxed)
+        {
             return;
         }
 
         // --- the window: BGRA, double-buffered so the mailbox never holds a
         // buffer this thread is still writing into.
-        let needed = frame.width as usize * frame.height as usize * 4;
+        let needed = planes.width as usize * planes.height as usize * 4;
         if scratch.bgra.capacity() < needed {
             if scratch.spare.capacity() >= needed {
                 std::mem::swap(&mut scratch.bgra, &mut scratch.spare);
@@ -1109,7 +1201,7 @@ impl Runtime {
             }
         }
         scratch.bgra.resize(needed, 0);
-        if !frame.write_bgra(&mut scratch.bgra, frame.width as usize) {
+        if !phonecam_media::write_planes_bgra(&planes, &mut scratch.bgra, planes.width as usize) {
             return;
         }
 
@@ -1127,8 +1219,8 @@ impl Runtime {
             let dims = phonecam_media::transform_bgra_bytes(
                 &scratch.bgra,
                 &mut scratch.transformed,
-                frame.width,
-                frame.height,
+                planes.width,
+                planes.height,
                 mirror,
                 rotation,
             );
@@ -1138,7 +1230,7 @@ impl Runtime {
             // Hand the filled buffer to the mailbox and take the previous one back,
             // so at most two BGRA buffers exist for the whole stream.
             std::mem::swap(&mut scratch.bgra, &mut scratch.spare);
-            (frame.width, frame.height)
+            (planes.width, planes.height)
         };
 
         let previous = self.frames.lock().replace(Frame {
@@ -1212,9 +1304,11 @@ impl Runtime {
                 }
 
                 if runtime.state.lock().expire_toast_if_due(now) {
+                    runtime.has_active_toast.store(false, Ordering::Relaxed);
                     runtime.bump_state_version();
                 }
 
+                runtime.sync_stage_stats();
                 runtime.broadcast_state();
             }
         });
@@ -1227,22 +1321,22 @@ impl Runtime {
             return;
         }
 
+        let max_rung = {
+            let state = self.state.lock();
+            effective_max_rung(&state.settings, state.capabilities.as_ref())
+        };
+
         let current = self
             .session
             .phone_state
             .lock()
             .as_ref()
-            .and_then(|s| {
-                phonecam_core::adaptive_quality::QualityRung::for_stream(
-                    &s.actual_resolution,
-                    s.actual_fps,
-                )
-            })
+            .and_then(|s| QualityRung::for_stream(&s.actual_resolution, s.actual_fps))
             .unwrap_or_else(|| quality.current());
 
         let sample = QualitySample {
             current,
-            max_rung: phonecam_core::adaptive_quality::QualityRung::P1080_60,
+            max_rung,
             dropped_percent: self.session.phone_dropped_permille.load(Ordering::Relaxed) as f64
                 / 10.0,
             rtt_us: self.session.rtt_us.load(Ordering::Relaxed),
@@ -1433,6 +1527,7 @@ impl Runtime {
     pub fn stop_stream(&self) {
         self.want_stream.store(false, Ordering::Relaxed);
         self.session.note_stop_stream();
+        self.camera_retry_active.store(false, Ordering::Relaxed);
         self.camera_retry.lock().reset();
         self.camera_retry_generation.fetch_add(1, Ordering::SeqCst);
         self.queue_command(DesktopToPhone::StopStream);
@@ -1451,6 +1546,7 @@ impl Runtime {
 
     /// Retries a camera start failure with stepped delays (upstream 8f58170).
     pub fn retry_camera_start(self: &Arc<Self>, code: &str, message: &str) -> bool {
+        self.camera_retry_active.store(true, Ordering::Relaxed);
         let delay_opt = {
             let mut retry = self.camera_retry.lock();
             retry.record_failure()
@@ -1723,15 +1819,86 @@ impl Runtime {
     }
 
     pub fn set_pairing_prompt(&self, device_id: &str) {
+        self.set_pairing_prompt_with_name(device_id, None);
+    }
+
+    fn set_pairing_prompt_with_name(&self, device_id: &str, advertised_name: Option<&str>) {
+        let registry_name = self
+            .registry
+            .lock()
+            .iter()
+            .find(|r| r.device_id == device_id && !r.name.is_empty())
+            .map(|r| r.name.clone());
+
         let mut state = self.state.lock();
+        let nearby = state
+            .core
+            .as_ref()
+            .and_then(|core| core.nearby_phones.iter().find(|p| p.device_id == device_id))
+            .cloned();
+
+        let name = advertised_name
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                nearby
+                    .as_ref()
+                    .map(|p| p.name.clone())
+                    .filter(|s| !s.is_empty())
+            })
+            .or(registry_name)
+            .unwrap_or_else(|| "Android phone".into());
+        let model = nearby
+            .map(|p| p.model)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Android".into());
+
         state.pairing_prompt = Some(phonecam_ui::views::state::PairingPrompt {
             device_id: device_id.to_string(),
-            name: "Android phone".into(),
-            model: "Android".into(),
+            name,
+            model,
             raised_at_ms: now_ms(),
         });
         drop(state);
         self.set_notice(FailureCode::ApprovalPending, vec![], "pair-request");
+    }
+
+    fn reconcile_resolution_downgrade(&self, phone_state: &phonecam_protocol::PhoneState) {
+        let (requested, actual, downgraded) = {
+            let state = self.state.lock();
+            let req = state.settings.resolution.trim().to_string();
+            let act = phone_state.actual_resolution.trim().to_string();
+            let is_explicit = !req.is_empty() && req != "auto";
+            // Only flag when streaming at a different resolution than requested and
+            // not intentionally stepped down by adaptive quality (`phone_state.resolution`).
+            let same_asked_target =
+                phone_state.resolution.is_empty() || phone_state.resolution == req;
+            let dow = phone_state.streaming
+                && is_explicit
+                && !act.is_empty()
+                && act != req
+                && same_asked_target;
+            (req, act, dow)
+        };
+
+        let mut last = self.last_downgraded.lock();
+        if downgraded {
+            let pair = (requested.clone(), actual.clone());
+            if last.as_ref() != Some(&pair) {
+                *last = Some(pair);
+                drop(last);
+                self.set_notice(
+                    FailureCode::ResolutionDowngraded,
+                    vec![("requested".into(), requested), ("actual".into(), actual)],
+                    "resolution-downgraded",
+                );
+            }
+        } else if last.take().is_some() {
+            drop(last);
+            self.state.lock().dismiss_notice("resolution-downgraded");
+            self.bump_state_version();
+        }
     }
 
     fn clear_pairing_prompt(&self) {
@@ -1905,8 +2072,10 @@ impl Runtime {
             connects: self.connects.load(Ordering::Relaxed),
         };
         state.reconcile_notices();
+        self.sync_cached_settings_from_state(&state);
         drop(state);
-        self.bump_state_version();
+        self.toast_check_needed.store(false, Ordering::Relaxed);
+        self.state_version.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -2488,15 +2657,105 @@ impl Runtime {
 }
 
 impl Runtime {
-    /// Records how long one stage of the video loop took.
+    /// Records how long one stage of the video loop took without locking.
     fn note_stage(&self, index: usize, micros: i64) {
+        self.stage_totals_atomic[index].fetch_add(micros, Ordering::Relaxed);
+        self.stage_max_atomic[index].fetch_max(micros, Ordering::Relaxed);
+    }
+
+    /// Flushes lock-free stage accumulators into `stage_us` and `stage_max_us`.
+    pub fn sync_stage_stats(&self) {
         let mut totals = self.stage_us.lock();
-        totals[index] += micros;
         let mut maxima = self.stage_max_us.lock();
-        if micros > maxima[index] {
-            maxima[index] = micros;
+        for i in 0..3 {
+            totals[i] = self.stage_totals_atomic[i].load(Ordering::Relaxed);
+            maxima[i] = self.stage_max_atomic[i].load(Ordering::Relaxed);
         }
     }
+}
+
+/// Reads one framed H.264 video packet into a caller-reused buffer without
+/// per-frame heap allocations. Returns `(flags, pts_us, total_bytes)`.
+fn read_video_packet_into(
+    conn: &Connection,
+    packet: &mut Vec<u8>,
+) -> Option<(VideoFlags, i64, usize)> {
+    let mut len_bytes = [0u8; 4];
+    match conn.read_exact(&mut len_bytes) {
+        ReadResult::Ok(_) => {}
+        _ => return None,
+    }
+    let total = u32::from_be_bytes(len_bytes) as usize;
+    if total < VIDEO_HEADER_SIZE || total > VIDEO_HEADER_SIZE + MAX_VIDEO_PAYLOAD {
+        tracing::warn!("video packet length {total} is out of range; closing");
+        return None;
+    }
+
+    packet.resize(total, 0);
+    match conn.read_exact(packet) {
+        ReadResult::Ok(_) => {}
+        _ => return None,
+    }
+
+    let flags = VideoFlags(packet[12]);
+    let codec = packet[13];
+    let payload_len = u32::from_be_bytes([packet[16], packet[17], packet[18], packet[19]]) as usize;
+    let pts_us = i64::from_be_bytes([
+        packet[4], packet[5], packet[6], packet[7], packet[8], packet[9], packet[10], packet[11],
+    ]);
+
+    if codec != 1 || payload_len + VIDEO_HEADER_SIZE != total {
+        return None;
+    }
+    Some((flags, pts_us, total))
+}
+
+fn parse_resolution_pixels(resolution: &str) -> Option<u64> {
+    let (w, h) = resolution.trim().split_once('x')?;
+    let w: u64 = w.parse().ok()?;
+    let h: u64 = h.parse().ok()?;
+    Some(w.saturating_mul(h))
+}
+
+/// Computes the adaptive quality ladder ceiling from the user's configured
+/// resolution/fps and the active camera's advertised capabilities.
+fn effective_max_rung(
+    settings: &phonecam_ui::views::state::Settings,
+    capabilities: Option<&CapabilitiesPayload>,
+) -> QualityRung {
+    let effective_fps = if settings.fps == 0 { 60 } else { settings.fps };
+
+    let settings_ceiling = if settings.resolution.trim().eq_ignore_ascii_case("auto") {
+        if effective_fps >= 60 {
+            QualityRung::P1080_60
+        } else {
+            QualityRung::P1080_30
+        }
+    } else if let Some(req_pixels) = parse_resolution_pixels(&settings.resolution) {
+        QualityRung::ALL
+            .into_iter()
+            .rev()
+            .find(|rung| {
+                parse_resolution_pixels(rung.resolution()).unwrap_or(0) <= req_pixels
+                    && rung.fps() <= effective_fps
+            })
+            .unwrap_or(QualityRung::P480_30)
+    } else if effective_fps >= 60 {
+        QualityRung::P1080_60
+    } else {
+        QualityRung::P1080_30
+    };
+
+    let camera_ceiling = capabilities.and_then(|caps| {
+        let cam = caps
+            .cameras
+            .iter()
+            .find(|c| c.id == settings.camera)
+            .or_else(|| caps.cameras.first())?;
+        QualityRung::highest_supported(&cam.resolutions, &cam.fps)
+    });
+
+    camera_ceiling.map_or(settings_ceiling, |cam| settings_ceiling.min(cam))
 }
 fn format_vcam_error(action: &str, err: &str) -> String {
     let trimmed = err.trim();
@@ -2997,7 +3256,7 @@ mod tests {
         );
 
         runtime.set_preview_enabled(true);
-        runtime.state.lock().settings.output_rotation = 90;
+        runtime.sync_output_transform(false, 90);
         runtime.publish(frame, &mut scratch);
 
         let guard = runtime.frames.lock();
@@ -3088,6 +3347,145 @@ mod tests {
         assert!(
             runtime.writer.lock().is_none(),
             "publish must not open FrameWriter when vcam_enabled is false"
+        );
+    }
+
+    #[test]
+    fn runtime_initializes_quality_from_settings_and_computes_max_rung() {
+        let mut manual = phonecam_ui::views::state::Settings::default();
+        manual.quality_mode = QualityMode::Manual;
+        let rt_manual = Runtime::new(&manual);
+        assert!(!rt_manual.quality.lock().enabled());
+
+        let mut auto = phonecam_ui::views::state::Settings::default();
+        auto.quality_mode = QualityMode::Auto;
+        auto.resolution = "1280x720".into();
+        auto.fps = 60;
+        let rt_auto = Runtime::new(&auto);
+        assert!(rt_auto.quality.lock().enabled());
+        assert_eq!(effective_max_rung(&auto, None), QualityRung::P720_30);
+
+        auto.resolution = "1920x1080".into();
+        auto.fps = 30;
+        assert_eq!(effective_max_rung(&auto, None), QualityRung::P1080_30);
+
+        auto.fps = 60;
+        let caps = CapabilitiesPayload {
+            device: phonecam_protocol::DeviceCapabilities {
+                model: "Pixel".into(),
+                android_version: 34,
+                app_version: "1.0.0".into(),
+            },
+            cameras: vec![phonecam_protocol::CameraCapability {
+                id: "back-0".into(),
+                facing: phonecam_protocol::CameraFacing::Back,
+                resolutions: vec!["1280x720".into(), "640x480".into()],
+                fps: vec![30],
+                torch: true,
+                focus: true,
+                zoom: true,
+                exposure: false,
+                white_balance: false,
+                min_zoom: 1.0,
+                max_zoom: 4.0,
+                orientation_degrees: 90,
+            }],
+        };
+        auto.camera = "back-0".into();
+        assert_eq!(effective_max_rung(&auto, Some(&caps)), QualityRung::P720_30);
+    }
+
+    #[test]
+    fn resolution_downgraded_notice_emits_and_retracts() {
+        let mut settings = phonecam_ui::views::state::Settings::default();
+        settings.resolution = "1920x1080".into();
+        settings.quality_mode = QualityMode::Manual;
+        let runtime = Runtime::new(&settings);
+
+        let downgraded = phonecam_protocol::PhoneState {
+            streaming: true,
+            camera: "0".into(),
+            resolution: "1920x1080".into(),
+            fps: 30,
+            actual_resolution: "1280x720".into(),
+            actual_fps: 30,
+            bitrate: 4_000_000,
+            mirror: false,
+            rotation: 0,
+            torch: false,
+            zoom: 1.0,
+            battery: 80,
+            charging: false,
+            thermal: phonecam_protocol::ThermalState::None,
+        };
+        runtime.reconcile_resolution_downgrade(&downgraded);
+        assert!(runtime
+            .state
+            .lock()
+            .notices
+            .iter()
+            .any(|n| n.code == FailureCode::ResolutionDowngraded));
+
+        let exact = phonecam_protocol::PhoneState {
+            actual_resolution: "1920x1080".into(),
+            ..downgraded
+        };
+        runtime.reconcile_resolution_downgrade(&exact);
+        assert!(!runtime
+            .state
+            .lock()
+            .notices
+            .iter()
+            .any(|n| n.code == FailureCode::ResolutionDowngraded));
+    }
+
+    #[test]
+    fn set_pairing_prompt_uses_nearby_or_advertised_name() {
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+        {
+            let mut state = runtime.state.lock();
+            let mut core = CoreState::default();
+            core.nearby_phones.push(NearbyPhone {
+                device_id: "dev-1".into(),
+                name: "Pixel 8 Pro".into(),
+                model: "GC3VE".into(),
+                address: "192.168.1.50".into(),
+                android_version: 34,
+                streaming: false,
+            });
+            state.core = Some(core);
+        }
+        runtime.set_pairing_prompt("dev-1");
+        let prompt = runtime.state.lock().pairing_prompt.clone().unwrap();
+        assert_eq!(prompt.name, "Pixel 8 Pro");
+        assert_eq!(prompt.model, "GC3VE");
+
+        runtime.set_pairing_prompt_with_name("dev-2", Some("Galaxy S24"));
+        let prompt2 = runtime.state.lock().pairing_prompt.clone().unwrap();
+        assert_eq!(prompt2.name, "Galaxy S24");
+        assert_eq!(prompt2.model, "Android");
+    }
+
+    #[test]
+    fn hidden_window_skips_preview_mailbox_while_toast_flag_tracks_state() {
+        let mut settings = phonecam_ui::views::state::Settings::default();
+        settings.vcam_enabled = false;
+        settings.preview_enabled = true;
+        let runtime = Runtime::new(&settings);
+
+        assert!(!runtime.has_active_toast());
+        runtime.state.lock().set_toast("Saved", 3_000);
+        runtime.bump_state_version();
+        assert!(runtime.has_active_toast());
+
+        runtime.set_window_visible(false);
+        let frame = phonecam_media::DecodedFrame::new(4, 2, vec![128; 12], 1_000);
+        let mut scratch = PublishScratch::default();
+        runtime.publish(frame, &mut scratch);
+        assert!(
+            runtime.frames.lock().is_none(),
+            "hidden/minimized window must skip preview BGRA mailbox"
         );
     }
 }

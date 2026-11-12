@@ -2,6 +2,8 @@
 //! parsing, and adaptive quality ladder to the Android Kotlin app and JVM unit
 //! tests.
 
+use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::ptr;
 
 use jni::objects::{JByteArray, JClass, JString};
@@ -196,6 +198,38 @@ pub fn encode_video_packet_header(
     payload_len: i32,
 ) -> Result<[u8; 28], NativeError> {
     build_video_header_frame(frame_id, pts_us, flags, codec, payload_len)
+}
+
+/// Writes the 28-byte video packet prefix (`u32 totalLen` + 24-byte header) directly into
+/// `dst[offset..offset + 28]` without allocating.
+pub fn encode_video_packet_header_into(
+    dst: &mut [u8],
+    offset: i32,
+    frame_id: i64,
+    pts_us: i64,
+    flags: i32,
+    codec: i32,
+    payload_len: i32,
+) -> Result<(), NativeError> {
+    const PREFIX_LEN: usize = 4 + VIDEO_HEADER_SIZE;
+    if offset < 0 {
+        return Err(NativeError::IndexOutOfBounds(format!(
+            "negative destination offset: {offset}"
+        )));
+    }
+    let start = offset as usize;
+    let end = start.checked_add(PREFIX_LEN).ok_or_else(|| {
+        NativeError::IndexOutOfBounds("destination offset overflow".into())
+    })?;
+    if end > dst.len() {
+        return Err(NativeError::IndexOutOfBounds(format!(
+            "destination slice {start}..{end} exceeds length {}",
+            dst.len()
+        )));
+    }
+    let header = build_video_header_frame(frame_id, pts_us, flags, codec, payload_len)?;
+    dst[start..end].copy_from_slice(&header);
+    Ok(())
 }
 
 pub fn encode_video_packet(
@@ -424,7 +458,7 @@ impl AdaptiveQualityHandle {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn observe(
+    pub fn observe_str(
         &self,
         now_ms: i64,
         cur_res: &str,
@@ -435,7 +469,7 @@ impl AdaptiveQualityHandle {
         rtt_us: i64,
         thermal: &str,
         decode_struggling: bool,
-    ) -> String {
+    ) -> Cow<'static, str> {
         let mut guard = self.inner.lock();
         let current = resolve_rung(cur_res, cur_fps, guard.fallback_rung);
         guard.fallback_rung = current;
@@ -450,33 +484,90 @@ impl AdaptiveQualityHandle {
             decode_struggling,
         };
         let decision = guard.controller.observe(&sample, now_ms);
-        let (action, target) = match decision.action {
-            QualityAction::Hold => ("hold", current),
-            QualityAction::StepDown(r) => ("step_down", r),
-            QualityAction::StepUp(r) => ("step_up", r),
-        };
-        let out = AdaptiveQualityOutput {
-            action,
-            resolution: target.resolution(),
-            fps: target.fps(),
-            bitrate: target.bitrate(),
-            label: target.label(),
-            reason: decision.reason,
-        };
-        serde_json::to_string(&out).unwrap_or_else(|_| {
-            r#"{"action":"hold","resolution":"1920x1080","fps":30,"bitrate":8000000,"label":"1080p30","reason":""}"#.to_string()
-        })
+        drop(guard);
+
+        match decision.action {
+            QualityAction::Hold => Cow::Borrowed(hold_json_for(current)),
+            QualityAction::StepDown(target) => {
+                Cow::Owned(format_quality_decision("step_down", target, decision.reason))
+            }
+            QualityAction::StepUp(target) => {
+                Cow::Owned(format_quality_decision("step_up", target, decision.reason))
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe(
+        &self,
+        now_ms: i64,
+        cur_res: &str,
+        cur_fps: i32,
+        max_res: &str,
+        max_fps: i32,
+        dropped_pct: f64,
+        rtt_us: i64,
+        thermal: &str,
+        decode_struggling: bool,
+    ) -> String {
+        self.observe_str(
+            now_ms,
+            cur_res,
+            cur_fps,
+            max_res,
+            max_fps,
+            dropped_pct,
+            rtt_us,
+            thermal,
+            decode_struggling,
+        )
+        .into_owned()
     }
 }
 
-#[derive(Serialize)]
-struct AdaptiveQualityOutput {
-    action: &'static str,
-    resolution: &'static str,
-    fps: u32,
-    bitrate: u64,
-    label: &'static str,
-    reason: &'static str,
+const HOLD_JSON_480P: &str =
+    r#"{"action":"hold","resolution":"640x480","fps":30,"bitrate":1500000,"label":"480p","reason":""}"#;
+const HOLD_JSON_720P: &str =
+    r#"{"action":"hold","resolution":"1280x720","fps":30,"bitrate":4000000,"label":"720p","reason":""}"#;
+const HOLD_JSON_1080P30: &str =
+    r#"{"action":"hold","resolution":"1920x1080","fps":30,"bitrate":8000000,"label":"1080p30","reason":""}"#;
+const HOLD_JSON_1080P60: &str =
+    r#"{"action":"hold","resolution":"1920x1080","fps":60,"bitrate":12000000,"label":"1080p60","reason":""}"#;
+
+fn hold_json_for(rung: QualityRung) -> &'static str {
+    match rung {
+        QualityRung::P480_30 => HOLD_JSON_480P,
+        QualityRung::P720_30 => HOLD_JSON_720P,
+        QualityRung::P1080_30 => HOLD_JSON_1080P30,
+        QualityRung::P1080_60 => HOLD_JSON_1080P60,
+    }
+}
+
+fn format_quality_decision(action: &'static str, target: QualityRung, reason: &str) -> String {
+    let mut out = String::with_capacity(140 + reason.len());
+    let _ = write!(
+        out,
+        r#"{{"action":"{action}","resolution":"{}","fps":{},"bitrate":{},"label":"{}","reason":""#,
+        target.resolution(),
+        target.fps(),
+        target.bitrate(),
+        target.label()
+    );
+    for ch in reason.chars() {
+        match ch {
+            '"' => out.push_str(r#"\""#),
+            '\\' => out.push_str(r#"\\"#),
+            '\n' => out.push_str(r#"\n"#),
+            '\r' => out.push_str(r#"\r"#),
+            '\t' => out.push_str(r#"\t"#),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push_str(r#""}"#);
+    out
 }
 
 fn parse_exact_rung(res: &str, fps: i32) -> Option<QualityRung> {
@@ -503,14 +594,21 @@ fn resolve_rung(res: &str, fps: i32, fallback: QualityRung) -> QualityRung {
 }
 
 fn parse_thermal(thermal: &str) -> ThermalState {
-    match thermal.trim().to_ascii_lowercase().as_str() {
-        "light" => ThermalState::Light,
-        "moderate" => ThermalState::Moderate,
-        "severe" => ThermalState::Severe,
-        "critical" => ThermalState::Critical,
-        "emergency" => ThermalState::Emergency,
-        "shutdown" => ThermalState::Shutdown,
-        _ => ThermalState::None,
+    let trimmed = thermal.trim();
+    if trimmed.eq_ignore_ascii_case("light") {
+        ThermalState::Light
+    } else if trimmed.eq_ignore_ascii_case("moderate") {
+        ThermalState::Moderate
+    } else if trimmed.eq_ignore_ascii_case("severe") {
+        ThermalState::Severe
+    } else if trimmed.eq_ignore_ascii_case("critical") {
+        ThermalState::Critical
+    } else if trimmed.eq_ignore_ascii_case("emergency") {
+        ThermalState::Emergency
+    } else if trimmed.eq_ignore_ascii_case("shutdown") {
+        ThermalState::Shutdown
+    } else {
+        ThermalState::None
     }
 }
 
@@ -548,6 +646,64 @@ fn read_jbyte_array(
     }
     env.convert_byte_array(arr)
         .map_err(|e| NativeError::Io(format!("failed to read {name}: {e}")))
+}
+
+fn read_exact_jbyte_array<const N: usize>(
+    env: &mut JNIEnv<'_>,
+    arr: &JByteArray<'_>,
+    null_err: impl FnOnce() -> NativeError,
+    len_err: impl FnOnce(i32) -> NativeError,
+) -> Result<[u8; N], NativeError> {
+    if arr.is_null() {
+        return Err(null_err());
+    }
+    let len = env
+        .get_array_length(arr)
+        .map_err(|e| NativeError::Io(format!("failed to inspect byte array: {e}")))?;
+    if len != N as i32 {
+        return Err(len_err(len));
+    }
+    let mut buf = [0i8; N];
+    env.get_byte_array_region(arr, 0, &mut buf)
+        .map_err(|e| NativeError::Io(format!("failed to copy byte array: {e}")))?;
+    Ok(buf.map(|b| b as u8))
+}
+
+enum SmallText<const N: usize> {
+    Stack([u8; N], usize),
+    Heap(String),
+    Empty,
+}
+
+impl<const N: usize> SmallText<N> {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Stack(buf, len) => std::str::from_utf8(&buf[..*len]).unwrap_or(""),
+            Self::Heap(s) => s.as_str(),
+            Self::Empty => "",
+        }
+    }
+}
+
+fn read_optional_small_jstring<const N: usize>(
+    env: &mut JNIEnv<'_>,
+    s: &JString<'_>,
+) -> SmallText<N> {
+    if s.is_null() {
+        return SmallText::Empty;
+    }
+    let Ok(jstr) = env.get_string(s) else {
+        return SmallText::Empty;
+    };
+    let cow: Cow<'_, str> = (&jstr).into();
+    let bytes = cow.as_bytes();
+    if bytes.len() <= N {
+        let mut buf = [0u8; N];
+        buf[..bytes.len()].copy_from_slice(bytes);
+        SmallText::Stack(buf, bytes.len())
+    } else {
+        SmallText::Heap(cow.into_owned())
+    }
 }
 
 fn to_jstring(env: &mut JNIEnv<'_>, value: &str) -> jstring {
@@ -661,12 +817,16 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_decodeServ
     bytes: JByteArray<'local>,
 ) -> jbyteArray {
     let res = (|| {
-        if bytes.is_null() {
-            return Err(NativeError::Io(
-                "not a PhoneCam peer (greeting is null)".into(),
-            ));
-        }
-        let raw = read_jbyte_array(&mut env, &bytes, "bytes")?;
+        let raw = read_exact_jbyte_array::<SERVER_GREETING_SIZE>(
+            &mut env,
+            &bytes,
+            || NativeError::Io("not a PhoneCam peer (greeting is null)".into()),
+            |len| {
+                NativeError::Io(format!(
+                    "not a PhoneCam peer (greeting length={len}, expected {SERVER_GREETING_SIZE})"
+                ))
+            },
+        )?;
         decode_server_greeting(&raw)
     })();
     match res {
@@ -709,10 +869,16 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_decodeServ
     header24: JByteArray<'local>,
 ) -> jintArray {
     let res = (|| {
-        if header24.is_null() {
-            return Err(NativeError::Io("server response header is null".into()));
-        }
-        let raw = read_jbyte_array(&mut env, &header24, "header24")?;
+        let raw = read_exact_jbyte_array::<SERVER_RESPONSE_SIZE>(
+            &mut env,
+            &header24,
+            || NativeError::Io("server response header is null".into()),
+            |len| {
+                NativeError::Io(format!(
+                    "server response header must be {SERVER_RESPONSE_SIZE} bytes, got {len}"
+                ))
+            },
+        )?;
         decode_server_response_header(&raw)
     })();
     match res {
@@ -754,6 +920,52 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_encodeVide
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_encodeVideoPacketHeaderInto<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _cls: JClass<'local>,
+    dst: JByteArray<'local>,
+    offset: jint,
+    frame_id: jlong,
+    pts_us: jlong,
+    flags: jint,
+    codec: jint,
+    payload_len: jint,
+) {
+    let res = (|| {
+        if dst.is_null() {
+            return Err(NativeError::IllegalArgument("dst must not be null".into()));
+        }
+        if offset < 0 {
+            return Err(NativeError::IndexOutOfBounds(format!(
+                "negative destination offset: {offset}"
+            )));
+        }
+        let dst_len = env
+            .get_array_length(&dst)
+            .map_err(|e| NativeError::Io(format!("failed to read dst length: {e}")))?;
+        let start = offset as usize;
+        let end = start
+            .checked_add(4 + VIDEO_HEADER_SIZE)
+            .ok_or_else(|| NativeError::IndexOutOfBounds("destination offset overflow".into()))?;
+        if dst_len < 0 || end > dst_len as usize {
+            return Err(NativeError::IndexOutOfBounds(format!(
+                "destination slice {start}..{end} exceeds length {dst_len}"
+            )));
+        }
+        let bytes = encode_video_packet_header(frame_id, pts_us, flags, codec, payload_len)?;
+        let jbytes: [i8; 4 + VIDEO_HEADER_SIZE] = bytes.map(|b| b as i8);
+        env.set_byte_array_region(&dst, offset, &jbytes)
+            .map_err(|e| NativeError::Io(format!("failed to write header into dst: {e}")))?;
+        Ok(())
+    })();
+    if let Err(err) = res {
+        err.throw(&mut env);
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_encodeVideoPacket<'local>(
     mut env: JNIEnv<'local>,
     _cls: JClass<'local>,
@@ -787,10 +999,16 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_decodeVide
     header24: JByteArray<'local>,
 ) -> jlongArray {
     let res = (|| {
-        if header24.is_null() {
-            return Err(NativeError::Io("video header is null".into()));
-        }
-        let raw = read_jbyte_array(&mut env, &header24, "header24")?;
+        let raw = read_exact_jbyte_array::<VIDEO_HEADER_SIZE>(
+            &mut env,
+            &header24,
+            || NativeError::Io("video header is null".into()),
+            |len| {
+                NativeError::Io(format!(
+                    "video header must be {VIDEO_HEADER_SIZE} bytes, got {len}"
+                ))
+            },
+        )?;
         decode_video_packet_header(&raw)
     })();
     match res {
@@ -915,36 +1133,24 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_adaptiveQu
     decode_struggling: jboolean,
 ) -> jstring {
     if handle == 0 {
-        return to_jstring(
-            &mut env,
-            r#"{"action":"hold","resolution":"1920x1080","fps":30,"bitrate":8000000,"label":"1080p30","reason":""}"#,
-        );
+        return to_jstring(&mut env, HOLD_JSON_1080P30);
     }
-    let cur = read_optional_jstring(&mut env, &cur_res, "curRes")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let max = read_optional_jstring(&mut env, &max_res, "maxRes")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let therm = read_optional_jstring(&mut env, &thermal, "thermal")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let cur = read_optional_small_jstring::<32>(&mut env, &cur_res);
+    let max = read_optional_small_jstring::<32>(&mut env, &max_res);
+    let therm = read_optional_small_jstring::<32>(&mut env, &thermal);
     let state = unsafe { &*(handle as *const AdaptiveQualityHandle) };
-    let json = state.observe(
+    let json = state.observe_str(
         now_ms,
-        &cur,
+        cur.as_str(),
         cur_fps,
-        &max,
+        max.as_str(),
         max_fps,
         dropped_pct,
         rtt_us,
-        &therm,
+        therm.as_str(),
         decode_struggling != 0,
     );
-    to_jstring(&mut env, &json)
+    to_jstring(&mut env, json.as_ref())
 }
 
 #[no_mangle]
@@ -1393,5 +1599,115 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(dm1["action"], "hold");
+    }
+
+    #[test]
+    fn encode_video_packet_header_into_matches_allocating_and_checks_bounds() {
+        let mut scratch = [0xEEu8; 32];
+        encode_video_packet_header_into(
+            &mut scratch,
+            4,
+            0x8000_0007,
+            123_456,
+            (VideoFlags::KEYFRAME.0 | VideoFlags::CODEC_CONFIG.0) as i32,
+            VideoCodec::H264 as i32,
+            4096,
+        )
+        .unwrap();
+
+        let expected = encode_video_packet_header(
+            0x8000_0007,
+            123_456,
+            (VideoFlags::KEYFRAME.0 | VideoFlags::CODEC_CONFIG.0) as i32,
+            VideoCodec::H264 as i32,
+            4096,
+        )
+        .unwrap();
+        assert_eq!(&scratch[..4], &[0xEE; 4]);
+        assert_eq!(&scratch[4..32], &expected[..]);
+
+        assert!(matches!(
+            encode_video_packet_header_into(&mut scratch, -1, 1, 0, 0, 1, 100),
+            Err(NativeError::IndexOutOfBounds(_))
+        ));
+        assert!(matches!(
+            encode_video_packet_header_into(&mut scratch, 5, 1, 0, 0, 1, 100),
+            Err(NativeError::IndexOutOfBounds(_))
+        ));
+        assert!(matches!(
+            encode_video_packet_header_into(
+                &mut scratch,
+                0,
+                1,
+                0,
+                0,
+                1,
+                (MAX_VIDEO_PAYLOAD + 1) as i32
+            ),
+            Err(NativeError::Io(_))
+        ));
+    }
+
+    #[test]
+    fn observe_str_borrows_static_hold_json_and_escapes_decisions() {
+        let aq = AdaptiveQualityHandle::new(true, "1920x1080", 30);
+        let hold = aq.observe_str(0, "1920x1080", 30, "1920x1080", 60, 0.0, 10_000, "NONE", false);
+        assert!(matches!(hold, Cow::Borrowed(_)));
+        assert_eq!(hold.as_ref(), HOLD_JSON_1080P30);
+
+        let down = aq.observe_str(
+            1000,
+            "1920x1080",
+            30,
+            "1920x1080",
+            60,
+            0.0,
+            10_000,
+            "CRITICAL",
+            false,
+        );
+        let parsed: Value = serde_json::from_str(down.as_ref()).unwrap();
+        assert_eq!(parsed["action"], "step_down");
+        assert_eq!(parsed["resolution"], "1280x720");
+        assert_eq!(parsed["fps"], 30);
+        assert_eq!(parsed["bitrate"], 4_000_000);
+        assert_eq!(parsed["label"], "720p");
+        assert!(!parsed["reason"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rust_hot_path_throughput_and_latency() {
+        let mut scratch = [0u8; 28];
+        let header_start = std::time::Instant::now();
+        for i in 0..10_000i64 {
+            encode_video_packet_header_into(&mut scratch, 0, i, i * 16_667, 1, 1, 32_768).unwrap();
+            std::hint::black_box(&scratch);
+        }
+        let header_elapsed = header_start.elapsed();
+
+        let secret = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let nonce: [u8; 32] = [0x5A; 32];
+        let auth_start = std::time::Instant::now();
+        for i in 0..1_000i64 {
+            let auth = compute_device_secret_auth("android-perf", secret, &nonce, i).unwrap();
+            std::hint::black_box(auth);
+        }
+        let auth_elapsed = auth_start.elapsed();
+
+        let aq = AdaptiveQualityHandle::new(true, "1920x1080", 30);
+        let aq_start = std::time::Instant::now();
+        for i in 0..1_000i64 {
+            let out = aq.observe_str(i * 100, "1920x1080", 30, "1920x1080", 60, 0.1, 15_000, "none", false);
+            std::hint::black_box(out);
+        }
+        let aq_elapsed = aq_start.elapsed();
+
+        println!(
+            "perf(phonecam-android-core): 10k headers={:?}, 1k auth={:?}, 1k aq_observe={:?}",
+            header_elapsed, auth_elapsed, aq_elapsed
+        );
+        assert!(header_elapsed.as_millis() < 500, "header encode too slow: {header_elapsed:?}");
+        assert!(auth_elapsed.as_millis() < 1000, "auth too slow: {auth_elapsed:?}");
+        assert!(aq_elapsed.as_millis() < 500, "aq observe too slow: {aq_elapsed:?}");
     }
 }

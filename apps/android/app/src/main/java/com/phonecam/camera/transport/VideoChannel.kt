@@ -2,10 +2,9 @@ package com.phonecam.camera.transport
 
 import android.util.Log
 import com.phonecam.camera.camera.EncodedFrame
-import com.phonecam.camera.protocol.ChannelRole
 import com.phonecam.camera.protocol.Framing
+import com.phonecam.camera.protocol.Proto
 import com.phonecam.camera.protocol.VideoFlags
-import com.phonecam.camera.protocol.VideoPacketHeader
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -34,6 +33,7 @@ data class VideoChannelStats(
 class VideoChannel(private val connection: PeerConnection) {
 
     private val queue = ArrayBlockingQueue<PendingFrame>(QUEUE_CAPACITY)
+    private val recyclePool = ArrayBlockingQueue<PendingFrame>(POOL_CAPACITY)
     private val running = AtomicBoolean(false)
     private val sentFrames = AtomicLong(0)
     private val droppedFrames = AtomicLong(0)
@@ -49,10 +49,11 @@ class VideoChannel(private val connection: PeerConnection) {
     private var writerThread: Thread? = null
 
     private class PendingFrame(
-        val data: ByteArray,
-        val ptsUs: Long,
-        val keyframe: Boolean,
-        val codecConfig: Boolean,
+        var data: ByteArray,
+        var length: Int = 0,
+        var ptsUs: Long = 0L,
+        var keyframe: Boolean = false,
+        var codecConfig: Boolean = false,
     )
 
     fun start() {
@@ -68,47 +69,83 @@ class VideoChannel(private val connection: PeerConnection) {
         writerThread?.interrupt()
         writerThread = null
         queue.clear()
+        recyclePool.clear()
     }
 
     val stats: VideoChannelStats
         get() = VideoChannelStats(sentFrames.get(), droppedFrames.get(), bytesSent.get())
 
+    private fun acquireFrame(neededLength: Int): PendingFrame {
+        val reused = recyclePool.poll()
+        if (reused != null) {
+            if (reused.data.size < neededLength) {
+                reused.data = ByteArray(maxOf(neededLength, MIN_POOLED_FRAME_BYTES))
+            }
+            return reused
+        }
+        return PendingFrame(ByteArray(maxOf(neededLength, MIN_POOLED_FRAME_BYTES)))
+    }
+
+    private fun recycleFrame(frame: PendingFrame) {
+        if (frame.data.size <= MAX_POOLED_FRAME_BYTES) {
+            frame.length = 0
+            recyclePool.offer(frame)
+        }
+    }
+
     /**
      * Copies [frame] out of the MediaCodec buffer and enqueues it.
      *
      * The copy is unavoidable: the encoder's buffer is recycled as soon as the
-     * callback returns, and the write happens on another thread. The queue is
+     * callback returns, and the write happens on another thread. Frame backing
+     * arrays are pooled to eliminate steady-state GC churn, and the queue is
      * short and bounded so a slow link drops rather than accumulates latency.
      */
     fun submit(frame: EncodedFrame) {
-        if (!running.get()) return
+        if (!running.get() || frame.length <= 0) return
 
-        val data = ByteArray(frame.length)
-        val source = frame.buffer.duplicate()
-        source.position(frame.offset)
-        source.get(data, 0, frame.length)
-
-        val pending = PendingFrame(
-            data = data,
-            ptsUs = frame.ptsUs,
-            keyframe = frame.isKeyframe,
-            codecConfig = frame.isCodecConfig,
-        )
+        val pending = acquireFrame(frame.length)
+        val buf = frame.buffer
+        if (buf.hasArray()) {
+            System.arraycopy(buf.array(), buf.arrayOffset() + frame.offset, pending.data, 0, frame.length)
+        } else {
+            val prevPos = buf.position()
+            try {
+                buf.position(frame.offset)
+                buf.get(pending.data, 0, frame.length)
+            } finally {
+                buf.position(prevPos)
+            }
+        }
+        pending.length = frame.length
+        pending.ptsUs = frame.ptsUs
+        pending.keyframe = frame.isKeyframe
+        pending.codecConfig = frame.isCodecConfig
 
         if (!queue.offer(pending)) {
             // Prefer dropping a non-keyframe; a dropped keyframe costs the peer a
             // whole GOP, so replace the queued head when this frame is a keyframe.
             if (pending.keyframe) {
-                queue.poll()
-                if (!queue.offer(pending)) droppedFrames.incrementAndGet()
+                val evicted = queue.poll()
+                if (evicted != null) {
+                    droppedFrames.incrementAndGet()
+                    recycleFrame(evicted)
+                }
+                if (!queue.offer(pending)) {
+                    droppedFrames.incrementAndGet()
+                    recycleFrame(pending)
+                }
             } else {
                 droppedFrames.incrementAndGet()
+                recycleFrame(pending)
             }
         }
     }
 
     private fun writeLoop() {
         var frameId = 0L
+        val headerScratch = ByteArray(Proto.VIDEO_FRAME_PREFIX_SIZE)
+        var unflushed = 0
         while (running.get()) {
             val pending = try {
                 queue.take()
@@ -122,24 +159,30 @@ class VideoChannel(private val connection: PeerConnection) {
                 if (pending.keyframe) flags = flags or VideoFlags.KEYFRAME
                 if (pending.codecConfig) flags = flags or VideoFlags.CODEC_CONFIG
 
+                val length = pending.length
+                unflushed++
+                val shouldFlush = queue.isEmpty() || unflushed >= FLUSH_BATCH_LIMIT
                 Framing.writeVideoPacket(
                     output = connection.output,
-                    header = VideoPacketHeader(
-                        frameId = frameId++,
-                        ptsUs = pending.ptsUs,
-                        flags = flags,
-                        codec = CODEC_H264,
-                        payloadLen = pending.data.size,
-                    ),
+                    frameId = frameId++,
+                    ptsUs = pending.ptsUs,
+                    flags = flags,
+                    codec = CODEC_H264,
                     payload = pending.data,
+                    payloadOffset = 0,
+                    payloadLength = length,
+                    headerScratch = headerScratch,
+                    flush = shouldFlush,
                 )
+                if (shouldFlush) unflushed = 0
+                recycleFrame(pending)
                 sentFrames.incrementAndGet()
-                bytesSent.addAndGet(pending.data.size.toLong())
+                bytesSent.addAndGet(length.toLong())
                 // Largest frame in this reporting window. A sudden rise is the
                 // signature of fast movement and it is the number that predicts
                 // stutter: big frames fill the queue and the link at once.
                 largestFrameBytes.set(
-                    maxOf(largestFrameBytes.get(), pending.data.size.toLong()),
+                    maxOf(largestFrameBytes.get(), length.toLong()),
                 )
                 reportIfDue()
             } catch (t: Throwable) {
@@ -174,7 +217,7 @@ class VideoChannel(private val connection: PeerConnection) {
         val bytes = bytesSent.get()
         val largest = largestFrameBytes.getAndSet(0)
         val queued = queue.size
-        val kbps = if (last == 0L) 0L else ((bytes - lastBytes) * 8) / ((now - last) / 1000).coerceAtLeast(1)
+        val kbps = if (last == 0L) 0L else ((bytes - lastBytes) * 8_000L) / (now - last).coerceAtLeast(1L)
         lastBytes = bytes
         Log.i(
             TAG,
@@ -197,5 +240,9 @@ class VideoChannel(private val connection: PeerConnection) {
          * congested link shows up as dropped frames rather than growing latency.
          */
         const val QUEUE_CAPACITY = 15
+        const val POOL_CAPACITY = QUEUE_CAPACITY + 2
+        const val MIN_POOLED_FRAME_BYTES = 64 * 1024
+        const val MAX_POOLED_FRAME_BYTES = 512 * 1024
+        const val FLUSH_BATCH_LIMIT = 4
     }
 }

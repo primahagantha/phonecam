@@ -1,10 +1,12 @@
 package com.phonecam.camera.nativecore
 
+import com.phonecam.camera.protocol.Auth
 import com.phonecam.camera.protocol.AuthMode
 import com.phonecam.camera.protocol.ChannelRole
 import com.phonecam.camera.protocol.HandshakeStatus
 import com.phonecam.camera.protocol.Proto
 import com.phonecam.camera.protocol.VideoFlags
+import com.phonecam.camera.session.NativeAdaptiveQuality
 import com.phonecam.camera.transport.DiscoveryClient
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.intOrNull
@@ -256,5 +258,110 @@ class NativeCoreBridgeTest {
         val emptyServerId = """{"t":"phonecam.beacon","v":1,"role":"desktop","serverId":"","port":48721}"""
             .toByteArray(Charsets.UTF_8)
         assertNull(NativeCore.parseDiscoveryBeacon(emptyServerId))
+    }
+
+    @Test
+    fun `encodeVideoPacketHeaderInto writes exact 28-byte prefix at offset and validates bounds`() {
+        val scratch = ByteArray(36) { 0x5A.toByte() }
+        NativeCore.encodeVideoPacketHeaderInto(
+            dst = scratch,
+            offset = 4,
+            frameId = 0x8000_0007L,
+            ptsUs = 123_456L,
+            flags = VideoFlags.KEYFRAME or VideoFlags.CODEC_CONFIG,
+            codec = 1,
+            payloadLen = 2048,
+        )
+        val expected = NativeCore.encodeVideoPacketHeader(
+            frameId = 0x8000_0007L,
+            ptsUs = 123_456L,
+            flags = VideoFlags.KEYFRAME or VideoFlags.CODEC_CONFIG,
+            codec = 1,
+            payloadLen = 2048,
+        )
+        assertArrayEquals(byteArrayOf(0x5A, 0x5A, 0x5A, 0x5A), scratch.copyOfRange(0, 4))
+        assertArrayEquals(expected, scratch.copyOfRange(4, 32))
+        assertArrayEquals(byteArrayOf(0x5A, 0x5A, 0x5A, 0x5A), scratch.copyOfRange(32, 36))
+
+        try {
+            NativeCore.encodeVideoPacketHeaderInto(scratch, -1, 1L, 0L, 0, 1, 100)
+            fail("expected IndexOutOfBoundsException on negative offset")
+        } catch (_: IndexOutOfBoundsException) {
+            // expected
+        }
+        try {
+            NativeCore.encodeVideoPacketHeaderInto(scratch, 9, 1L, 0L, 0, 1, 100)
+            fail("expected IndexOutOfBoundsException when 28-byte header overflows dst")
+        } catch (_: IndexOutOfBoundsException) {
+            // expected
+        }
+        try {
+            NativeCore.encodeVideoPacketHeaderInto(scratch, 0, 1L, 0L, 0, 1, Proto.MAX_VIDEO_PAYLOAD + 1)
+            fail("expected IOException on oversized video payload")
+        } catch (_: IOException) {
+            // expected
+        }
+    }
+
+    @Test
+    fun `jni hot-path throughput for 10k headers and latency for auth and adaptive quality`() {
+        val scratch = ByteArray(Proto.VIDEO_FRAME_PREFIX_SIZE)
+        // Warm up JIT/JNI lookup.
+        repeat(200) { i ->
+            NativeCore.encodeVideoPacketHeaderInto(scratch, 0, i.toLong(), i * 16_667L, 1, 1, 16_384)
+        }
+
+        val hdrStartNs = System.nanoTime()
+        for (i in 0 until 10_000) {
+            NativeCore.encodeVideoPacketHeaderInto(
+                dst = scratch,
+                offset = 0,
+                frameId = i.toLong(),
+                ptsUs = i * 16_667L,
+                flags = if (i % 30 == 0) VideoFlags.KEYFRAME else VideoFlags.NONE,
+                codec = 1,
+                payloadLen = 32_768,
+            )
+        }
+        val hdrMs = (System.nanoTime() - hdrStartNs) / 1_000_000.0
+
+        val secret = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        val nonce = ByteArray(32) { 0x5A }
+        val authStartNs = System.nanoTime()
+        var lastAuth = ""
+        for (i in 0 until 1_000) {
+            lastAuth = Auth.deviceSecretAuth("android-perf", secret, nonce, i.toLong())
+        }
+        val authMs = (System.nanoTime() - authStartNs) / 1_000_000.0
+        assertTrue(lastAuth.startsWith("android-perf:"))
+
+        var holdCount = 0
+        val aqMs = NativeAdaptiveQuality(enabled = true, initResolution = "1920x1080", initFps = 30).use { aq ->
+            val aqStartNs = System.nanoTime()
+            for (i in 0 until 1_000) {
+                val decision = aq.observe(
+                    nowMs = i * 100L,
+                    currentResolution = "1920x1080",
+                    currentFps = 30,
+                    maxResolution = "1920x1080",
+                    maxFps = 30,
+                    droppedPercent = 0.1,
+                    rttUs = 15_000L,
+                    thermal = "none",
+                )
+                if (decision.action == "hold") holdCount++
+            }
+            (System.nanoTime() - aqStartNs) / 1_000_000.0
+        }
+        assertEquals(1_000, holdCount)
+
+        println(
+            "JNI perf: 10k encodeVideoPacketHeaderInto=${"%.2f".format(hdrMs)}ms, " +
+                "1k deviceSecretAuth=${"%.2f".format(authMs)}ms, " +
+                "1k adaptiveQualityObserve=${"%.2f".format(aqMs)}ms",
+        )
+        assertTrue("10k JNI header encodes took ${hdrMs}ms (expected < 500ms)", hdrMs < 500.0)
+        assertTrue("1k JNI auth calls took ${authMs}ms (expected < 1000ms)", authMs < 1000.0)
+        assertTrue("1k JNI adaptiveQualityObserve took ${aqMs}ms (expected < 500ms)", aqMs < 500.0)
     }
 }

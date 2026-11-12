@@ -92,7 +92,8 @@ class NativeAdaptiveQuality(
                 decodeStruggling = decodeStruggling,
             )
         }
-        return json.decodeFromString(AdaptiveQualityDecision.serializer(), raw)
+        return cachedHoldDecision(raw)
+            ?: json.decodeFromString(AdaptiveQualityDecision.serializer(), raw)
     }
 
     override fun close() {
@@ -107,5 +108,18 @@ class NativeAdaptiveQuality(
 
     private companion object {
         val json = Json { ignoreUnknownKeys = true }
+
+        val HOLD_480P = AdaptiveQualityDecision("hold", "640x480", 30, 1_500_000, "480p", "")
+        val HOLD_720P = AdaptiveQualityDecision("hold", "1280x720", 30, 4_000_000, "720p", "")
+        val HOLD_1080P30 = AdaptiveQualityDecision("hold", "1920x1080", 30, 8_000_000, "1080p30", "")
+        val HOLD_1080P60 = AdaptiveQualityDecision("hold", "1920x1080", 60, 12_000_000, "1080p60", "")
+
+        fun cachedHoldDecision(raw: String): AdaptiveQualityDecision? = when (raw) {
+            """{"action":"hold","resolution":"1920x1080","fps":30,"bitrate":8000000,"label":"1080p30","reason":""}""" -> HOLD_1080P30
+            """{"action":"hold","resolution":"1280x720","fps":30,"bitrate":4000000,"label":"720p","reason":""}""" -> HOLD_720P
+            """{"action":"hold","resolution":"1920x1080","fps":60,"bitrate":12000000,"label":"1080p60","reason":""}""" -> HOLD_1080P60
+            """{"action":"hold","resolution":"640x480","fps":30,"bitrate":1500000,"label":"480p","reason":""}""" -> HOLD_480P
+            else -> null
+        }
     }
 }

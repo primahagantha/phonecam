@@ -2,7 +2,6 @@ package com.phonecam.camera.session
 
 import android.content.Context
 import android.os.Build
-import android.os.SystemClock
 import com.phonecam.camera.BuildConfig
 import com.phonecam.camera.camera.CameraCapabilityProbe
 import com.phonecam.camera.camera.CameraController
@@ -420,12 +419,6 @@ class StreamSession(
     private var restartJob: Job? = null
     private var streamingJob: Job? = null
 
-    private var adaptiveQuality: NativeAdaptiveQuality? = null
-    @Volatile
-    private var qualityCeilingResolution: String? = null
-    @Volatile
-    private var qualityCeilingFps: Int? = null
-
     /**
      * Consecutive camera-start failures on this connection.
      *
@@ -466,6 +459,7 @@ class StreamSession(
     private val encodedFrames = AtomicLong(0)
     private val lastStatsAt = AtomicLong(System.currentTimeMillis())
     private val lastStatsFrames = AtomicLong(0)
+    private val lastStatsBytes = AtomicLong(0)
 
     /**
      * A camera the user asked for before the capability list was ready.
@@ -585,7 +579,6 @@ class StreamSession(
         searchJob?.cancel()
         searchJob = null
         discovery.stop()
-        releaseAdaptiveQuality()
         scope.cancel()
     }
 
@@ -626,7 +619,6 @@ class StreamSession(
             runCatching { control?.close() }
         }
         control = null
-        releaseAdaptiveQuality()
         // Back to looking for a PC: the beacon had been off for the duration of
         // the connection, and a phone that has just lost its desktop is exactly
         // when the user needs to see it again.
@@ -1126,8 +1118,10 @@ class StreamSession(
         val healthSnapshot = health.snapshot()
 
         val bitrate = if (elapsed > 0 && channelStats != null) {
-            // Bytes per interval converted to bits per second.
-            (channelStats.bytesSent * 8 * 1000 / elapsed).toInt()
+            // Delta bytes per interval converted to bits per second.
+            val prevBytes = lastStatsBytes.getAndSet(channelStats.bytesSent)
+            val deltaBytes = (channelStats.bytesSent - prevBytes).coerceAtLeast(0L)
+            (deltaBytes * 8_000L / elapsed).toInt()
         } else {
             0
         }
@@ -1139,8 +1133,6 @@ class StreamSession(
             charging = healthSnapshot.charging,
             thermal = healthSnapshot.thermal,
         )
-
-        observeAdaptiveQuality(dropPercent, healthSnapshot.thermal)
 
         val connection = control ?: return
         runCatching {
@@ -1174,11 +1166,7 @@ class StreamSession(
             }
 
             is DesktopMessage.SetCamera -> selectCamera(message.camera)
-            is DesktopMessage.SetVideo -> {
-                qualityCeilingResolution = message.resolution.takeIf { it != "auto" }
-                qualityCeilingFps = message.fps.takeIf { it > 0 }
-                applyVideoRequest(message)
-            }
+            is DesktopMessage.SetVideo -> applyVideoRequest(message)
             is DesktopMessage.SetImage -> applyImageRequest(message)
             is DesktopMessage.SetTorch -> applyTorch(message.enabled)
             is DesktopMessage.SetScreen -> {
@@ -1187,7 +1175,6 @@ class StreamSession(
             }
             is DesktopMessage.SetQualityMode -> {
                 _state.value = _state.value.copy(qualityMode = message.mode)
-                adaptiveQuality?.setEnabled(message.mode != "manual")
                 sendState()
             }
 
@@ -1310,7 +1297,6 @@ class StreamSession(
                                 notice = applied.notice,
                                 noticeKind = NoticeKind.Substitution,
                             )
-                            confirmAdaptiveQuality(appliedRes, applied.fps)
                             sendState()
                             // The new sensor starts on a delta frame by default; an IDR
                             // here gives the desktop a clean reference immediately.
@@ -1330,7 +1316,7 @@ class StreamSession(
             return
         }
 
-        stopStreaming(notifyPeer = false, keepVideoChannel = true, resetAdaptiveQuality = false)
+        stopStreaming(notifyPeer = false, keepVideoChannel = true)
         restartJob = scope.launch {
             delay(VIDEO_RESTART_DELAY_MS)
             if (isActive) startStreaming()
@@ -1396,7 +1382,7 @@ class StreamSession(
         scheduleStreamRestart(delayMs)
     }
 
-    private fun applyVideoRequest(message: DesktopMessage.SetVideo, noticeOverride: String? = null) {
+    private fun applyVideoRequest(message: DesktopMessage.SetVideo) {
         val requestedFps = message.fps.takeIf { it > 0 }
         _state.value = _state.value.copy(
             requestedResolution = message.resolution,
@@ -1423,19 +1409,13 @@ class StreamSession(
             encoder?.updateBitrate(resolved.bitrate)
             _state.value = _state.value.copy(
                 bitrate = resolved.bitrate,
-                notice = noticeOverride ?: resolved.notice,
+                notice = resolved.notice,
                 // A substitution, so it goes back to the default heading.
                 noticeKind = NoticeKind.Substitution,
             )
             sendState()
         } else {
-            if (noticeOverride != null) {
-                _state.value = _state.value.copy(
-                    notice = noticeOverride,
-                    noticeKind = NoticeKind.Substitution,
-                )
-            }
-            stopStreaming(notifyPeer = false, resetAdaptiveQuality = false)
+            stopStreaming(notifyPeer = false)
             scheduleStreamRestart()
         }
     }
@@ -1691,11 +1671,10 @@ class StreamSession(
                                 actualResolution = appliedRes,
                                 actualFps = applied.fps,
                                 bitrate = applied.bitrate,
-                                notice = applied.notice ?: _state.value.notice,
+                                notice = applied.notice,
                                 // A substitution, so it goes back to the default heading.
                                 noticeKind = NoticeKind.Substitution,
                             )
-                            confirmAdaptiveQuality(appliedRes, applied.fps)
                             // The stats tick is a property of the stream, not of
                             // the connection: it starts here and is stopped by
                             // `stopStreaming`, so a camera switch (which stops
@@ -1732,7 +1711,6 @@ class StreamSession(
     private fun stopStreaming(
         notifyPeer: Boolean,
         keepVideoChannel: Boolean = false,
-        resetAdaptiveQuality: Boolean = true,
     ) {
         restartJob?.cancel()
         restartJob = null
@@ -1757,9 +1735,7 @@ class StreamSession(
             videoChannel = null
             runCatching { video?.close() }
             video = null
-        }
-        if (resetAdaptiveQuality) {
-            releaseAdaptiveQuality()
+            lastStatsBytes.set(0)
         }
 
         // What the phase becomes after a teardown is a rule, not a local
@@ -1872,57 +1848,6 @@ class StreamSession(
     /** Short correlator for diagnostics; never the secret itself (PRD §63). */
     fun secretFingerprint(): String? =
         identity.deviceSecretHex?.let { Auth.secretFingerprint(it) }
-
-    private fun confirmAdaptiveQuality(resolution: String, fps: Int) {
-        val aq = adaptiveQuality ?: NativeAdaptiveQuality(
-            enabled = _state.value.qualityMode != "manual",
-            initResolution = resolution,
-            initFps = fps,
-        ).also { adaptiveQuality = it }
-        aq.setEnabled(_state.value.qualityMode != "manual")
-        aq.confirm(resolution, fps)
-    }
-
-    private fun observeAdaptiveQuality(dropPercent: Double, thermal: String) {
-        val current = _state.value
-        if (!current.isStreaming) return
-        val aq = adaptiveQuality ?: return
-        val curRes = current.actualResolution ?: return
-        val curFps = current.actualFps ?: return
-        val maxRes = qualityCeilingResolution ?: "1920x1080"
-        val maxFps = qualityCeilingFps ?: 60
-        val decision = runCatching {
-            aq.observe(
-                nowMs = SystemClock.elapsedRealtime(),
-                currentResolution = curRes,
-                currentFps = curFps,
-                maxResolution = maxRes,
-                maxFps = maxFps,
-                droppedPercent = dropPercent,
-                rttUs = 0L,
-                thermal = thermal,
-                decodeStruggling = false,
-            )
-        }.getOrNull() ?: return
-        if (decision.isChange && current.qualityMode != "manual") {
-            Log.i("adaptive quality ${decision.action} -> ${decision.label}: ${decision.reason}")
-            applyVideoRequest(
-                DesktopMessage.SetVideo(
-                    resolution = decision.resolution,
-                    fps = decision.fps,
-                    bitrate = decision.bitrate,
-                ),
-                noticeOverride = decision.reason.takeIf { it.isNotBlank() },
-            )
-        }
-    }
-
-    private fun releaseAdaptiveQuality() {
-        adaptiveQuality?.close()
-        adaptiveQuality = null
-        qualityCeilingResolution = null
-        qualityCeilingFps = null
-    }
 
     private fun kotlinx.serialization.json.JsonPrimitive.contentOrNullSafe(): String? =
         runCatching { content }.getOrNull()

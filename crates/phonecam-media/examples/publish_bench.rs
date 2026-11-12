@@ -86,4 +86,24 @@ fn main() {
         source.write_bgra(&mut bgra, 1280);
         std::hint::black_box(&bgra);
     });
+
+    let src_1080 = frame(1920, 1080);
+    let planes_1080 = src_1080.as_planes().expect("1080p planes");
+    let mut nv12_1080 = vec![0u8; 1920 * 1080 * 3 / 2];
+    let mut bgra_1080 = vec![0u8; 1920 * 1080 * 4];
+    println!("\n--- 1920x1080 in, 1920x1080 out (1080p60), 200 iterations ---\n");
+    bench("1080p write_planes_nv12", 200, || {
+        phonecam_media::write_planes_nv12(&planes_1080, &mut nv12_1080);
+        std::hint::black_box(&nv12_1080);
+    });
+    bench("1080p write_planes_bgra", 200, || {
+        phonecam_media::write_planes_bgra(&planes_1080, &mut bgra_1080, 1920);
+        std::hint::black_box(&bgra_1080);
+    });
+    bench("1080p nv12+bgra (preview on)", 200, || {
+        phonecam_media::write_planes_nv12(&planes_1080, &mut nv12_1080);
+        phonecam_media::write_planes_bgra(&planes_1080, &mut bgra_1080, 1920);
+        std::hint::black_box(&nv12_1080);
+        std::hint::black_box(&bgra_1080);
+    });
 }

@@ -197,12 +197,12 @@ pub fn stage_frame(content: &StageContent) -> AnyElement {
 /// QR texture and regenerates it only when the payload changes.
 pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::RenderImage>>) -> AnyElement {
     let StageContent::Pairing {
+        payload,
         expires_in_ms,
         expired,
         networks,
         selected,
         no_phone_broadcasting,
-        ..
     } = content
     else {
         return div().into_any_element();
@@ -324,7 +324,18 @@ pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::Re
             .mt(px(Space::SECTION))
             .flex()
             .flex_row()
+            .flex_wrap()
+            .justify_center()
             .gap(px(Space::LG))
+            .children((!*expired && !payload.is_empty()).then(|| {
+                crate::views::widgets::Button::new("Copy pairing code")
+                    .on_click(|_window, _cx| {
+                        crate::views::effects::push_effect(
+                            crate::views::effects::SideEffect::CopyPairingPayload,
+                        )
+                    })
+                    .into_any_element()
+            }))
             .child(if *expired {
                 crate::views::widgets::Button::primary("Show a new code")
                     .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::ArmPairing))
@@ -366,11 +377,18 @@ fn empty_body(content: &StageContent) -> AnyElement {
             .mt(px(Space::SECTION))
             .flex()
             .flex_row()
+            .flex_wrap()
+            .justify_center()
             .gap(px(Space::LG))
             .child(
                 crate::views::widgets::Button::primary("Start streaming")
                     .disabled(!enabled)
                     .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::StartStream))
+                    .into_any_element(),
+            )
+            .child(
+                crate::views::widgets::Button::new("Pair another phone")
+                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::ArmPairing))
                     .into_any_element(),
             )
             .into_any_element(),
@@ -783,6 +801,29 @@ mod tests {
         let (buffer, _w, _h) = qr_pixels(payload, 264).unwrap();
         // The top-left corner is quiet zone, so it must be light (near-white).
         assert!(buffer[0] > 200, "the quiet zone should be light, got {}", buffer[0]);
+    }
+
+    #[test]
+    fn empty_and_pairing_stages_render_without_panicking() {
+        let state = state_with_device();
+        let empty = stage_content(&state, 0);
+        assert!(matches!(empty, StageContent::Empty { .. }));
+        let _el = empty_body(&empty);
+
+        let mut pairing_state = AppState::default();
+        pairing_state.status.connected = true;
+        if let Some(core) = &mut pairing_state.core {
+            core.pairing.open = true;
+            core.pairing.qr_payloads = vec![r#"{"protocol":"phonecam","version":1,"host":"10.0.0.2","port":48721,"token":"0123456789abcdef0123456789abcdef","name":"PC","serverId":"pc-2"}"#.into()];
+        } else {
+            let mut core = phonecam_protocol::CoreState::default();
+            core.pairing.open = true;
+            core.pairing.qr_payloads = vec![r#"{"protocol":"phonecam","version":1,"host":"10.0.0.2","port":48721,"token":"0123456789abcdef0123456789abcdef","name":"PC","serverId":"pc-2"}"#.into()];
+            pairing_state.core = Some(core);
+        }
+        let pairing = stage_content(&pairing_state, 0);
+        assert!(matches!(pairing, StageContent::Pairing { .. }));
+        let _pel = pairing_stage(&pairing, None);
     }
 }
 

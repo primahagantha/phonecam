@@ -10,9 +10,9 @@ pub mod widgets;
 pub use actions::*;
 pub use effects::{drain_effects, push_effect, SideEffect, Tab};
 pub use state::{
-    format_bytes, format_duration, format_log_time, now_ms, stream_phase_label, thermal_label,
-    AppState, CoreStatus, FailureCode, LogLine, LogSource, Notice, NoticeAction, PairingPrompt,
-    Settings,
+    bitrate_for, camera_facing_label, format_battery, format_bytes, format_duration,
+    format_log_time, now_ms, screen_mode_label, stream_phase_label, thermal_label, AppState,
+    CoreStatus, FailureCode, LogLine, LogSource, Notice, NoticeAction, PairingPrompt, Settings,
 };
 
 use gpui::prelude::*;
@@ -36,6 +36,7 @@ pub struct AppView {
     /// allocation, and the shipped app's equivalent rule was "exactly one
     /// canvas, never remounted".
     pub preview_image: Option<std::sync::Arc<gpui::RenderImage>>,
+    preview_capacity: usize,
     /// The pairing code, regenerated only when its payload changes.
     pub qr_image: Option<std::sync::Arc<gpui::RenderImage>>,
     qr_payload_cached: Option<String>,
@@ -50,6 +51,7 @@ impl AppView {
             focus_preview: false,
             pairing_network: 0,
             preview_image: None,
+            preview_capacity: 0,
             qr_image: None,
             qr_payload_cached: None,
             focus_handle: None,
@@ -96,19 +98,23 @@ impl AppView {
     ///
     /// Returns the previously consumed preview buffer if it can be recycled.
     pub fn set_preview(&mut self, pixels: Vec<u8>, width: u32, height: u32) -> Option<Vec<u8>> {
-        let recycled = self.preview_image.take().and_then(|arc_img| {
-            std::sync::Arc::try_unwrap(arc_img).ok().and_then(|render_img| {
-                let (ptr, len) = if let Some(bytes) = render_img.as_bytes(0) {
-                    (bytes.as_ptr() as *mut u8, bytes.len())
-                } else {
-                    return None;
-                };
-                std::mem::forget(render_img);
-                Some(unsafe { Vec::from_raw_parts(ptr, len, len) })
-            })
-        });
+        self.set_preview_in(pixels, width, height, None)
+    }
 
+    /// Installs a decoded picture and drops the previous GPU texture from `window`.
+    pub fn set_preview_in(
+        &mut self,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        window: Option<&mut Window>,
+    ) -> Option<Vec<u8>> {
+        let recycled =
+            recycle_preview_image(&mut self.preview_image, &mut self.preview_capacity, window);
+
+        let cap = pixels.capacity();
         if let Some(buffer) = image::RgbaImage::from_raw(width, height, pixels) {
+            self.preview_capacity = cap;
             self.preview_image =
                 Some(std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buffer)])));
         }
@@ -117,23 +123,23 @@ impl AppView {
     }
 
     pub fn clear_preview(&mut self) -> Option<Vec<u8>> {
-        self.preview_image.take().and_then(|arc_img| {
-            std::sync::Arc::try_unwrap(arc_img).ok().and_then(|render_img| {
-                let (ptr, len) = if let Some(bytes) = render_img.as_bytes(0) {
-                    (bytes.as_ptr() as *mut u8, bytes.len())
-                } else {
-                    return None;
-                };
-                std::mem::forget(render_img);
-                Some(unsafe { Vec::from_raw_parts(ptr, len, len) })
-            })
-        })
+        self.clear_preview_in(None)
+    }
+
+    /// Clears the active preview image and drops its GPU texture from `window`.
+    pub fn clear_preview_in(&mut self, window: Option<&mut Window>) -> Option<Vec<u8>> {
+        recycle_preview_image(&mut self.preview_image, &mut self.preview_capacity, window)
     }
 
     /// Renders the pairing code once per payload, not once per frame.
-    fn ensure_qr(&mut self, payload: &str) {
+    fn ensure_qr(&mut self, payload: &str, window: Option<&mut Window>) {
         if self.qr_payload_cached.as_deref() == Some(payload) && self.qr_image.is_some() {
             return;
+        }
+        if let Some(old_qr) = self.qr_image.take() {
+            if let Some(w) = window {
+                let _ = w.drop_image(old_qr);
+            }
         }
         self.qr_image = preview::qr_pixels(payload, crate::theme::QR_SIZE).and_then(
             |(buffer, w, h)| {
@@ -162,7 +168,7 @@ impl Render for AppView {
         let content = preview::stage_content(&self.state, self.pairing_network);
         if let StageContent::Pairing { payload, .. } = &content {
             if !payload.is_empty() {
-                self.ensure_qr(payload);
+                self.ensure_qr(payload, Some(window));
             }
         }
 
@@ -304,6 +310,29 @@ impl Render for AppView {
     }
 }
 
+/// Drops the GPU texture and reclaims the backing BGRA allocation with its original capacity.
+fn recycle_preview_image(
+    slot: &mut Option<std::sync::Arc<gpui::RenderImage>>,
+    stored_cap: &mut usize,
+    window: Option<&mut Window>,
+) -> Option<Vec<u8>> {
+    let old_cap = std::mem::take(stored_cap);
+    let arc_img = slot.take()?;
+    if let Some(w) = window {
+        let _ = w.drop_image(arc_img.clone());
+    }
+    std::sync::Arc::try_unwrap(arc_img).ok().and_then(|render_img| {
+        let (ptr, len) = if let Some(bytes) = render_img.as_bytes(0) {
+            (bytes.as_ptr() as *mut u8, bytes.len())
+        } else {
+            return None;
+        };
+        std::mem::forget(render_img);
+        let cap = old_cap.max(len);
+        Some(unsafe { Vec::from_raw_parts(ptr, len, cap) })
+    })
+}
+
 /// The window title, which names the phone so a screenshot is self-describing.
 pub fn window_title(state: &AppState) -> String {
     match state.device_name() {
@@ -425,6 +454,19 @@ mod tests {
         let recycled3 = r3.unwrap();
         assert_eq!(recycled3.len(), 100);
         assert_eq!(recycled3[0], 99);
+    }
+
+    #[test]
+    fn set_preview_preserves_original_vec_capacity() {
+        let mut view = AppView::new();
+        let mut buf1 = Vec::with_capacity(256);
+        buf1.resize(100, 7);
+        assert!(view.set_preview(buf1, 5, 5).is_none());
+
+        let buf2 = vec![1u8; 100];
+        let recycled = view.set_preview(buf2, 5, 5).expect("buffer should recycle");
+        assert_eq!(recycled.len(), 100);
+        assert!(recycled.capacity() >= 256, "capacity should be preserved, got {}", recycled.capacity());
     }
 }
 

@@ -144,6 +144,41 @@ class ProtoTest {
     }
 
     @Test
+    fun `video packets zero-alloc scratch overload writes identical framing`() {
+        val payload = byteArrayOf(9, 0, 0, 0, 1, 0x65, 0x88.toByte(), 0x99.toByte(), 7)
+        val scratch = ByteArray(Proto.VIDEO_FRAME_PREFIX_SIZE)
+        val output = ByteArrayOutputStream()
+
+        Framing.writeVideoPacket(
+            output = output,
+            frameId = 42L,
+            ptsUs = 500_000L,
+            flags = VideoFlags.KEYFRAME,
+            codec = 1,
+            payload = payload,
+            payloadOffset = 1,
+            payloadLength = 7,
+            headerScratch = scratch,
+            flush = false,
+        )
+        output.flush()
+
+        val bytes = output.toByteArray()
+        val totalLength = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.BIG_ENDIAN).int
+        assertEquals(Proto.VIDEO_HEADER_SIZE + 7, totalLength)
+        assertEquals(4 + totalLength, bytes.size)
+
+        val decoded = Framing.readVideoHeader(
+            java.nio.ByteBuffer.wrap(bytes, 4, Proto.VIDEO_HEADER_SIZE).order(java.nio.ByteOrder.BIG_ENDIAN),
+        )
+        assertEquals(42L, decoded.frameId)
+        assertEquals(500_000L, decoded.ptsUs)
+        assertEquals(VideoFlags.KEYFRAME, decoded.flags)
+        assertEquals(7, decoded.payloadLen)
+        assertArrayEquals(payload.copyOfRange(1, 8), bytes.copyOfRange(4 + Proto.VIDEO_HEADER_SIZE, bytes.size))
+    }
+
+    @Test
     fun `rejects an oversized control frame instead of allocating it`() {
         val oversized = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN)
             .putInt(Proto.MAX_CONTROL_JSON + 1)

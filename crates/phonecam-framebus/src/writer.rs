@@ -126,6 +126,44 @@ impl FrameWriter {
         Ok(())
     }
 
+    /// Publishes one NV12 frame by writing directly into the shared-memory
+    /// buffer under the seqlock, eliminating an intermediate NV12 copy.
+    ///
+    /// `write_fn` receives the destination slice of `self.capacity() as usize`
+    /// bytes and returns `true` on success. When `precomputed_mean_luma` is
+    /// `None` and `state == FrameState::Live`, mean luma is sampled from the
+    /// mapped buffer right after releasing the seqlock.
+    pub fn publish_with<F>(
+        &mut self,
+        pts_us: u64,
+        state: FrameState,
+        precomputed_mean_luma: Option<u8>,
+        write_fn: F,
+    ) -> Result<(), PublishRejection>
+    where
+        F: FnOnce(&mut [u8]) -> bool,
+    {
+        let expected_capacity = self.capacity() as usize;
+        let sample_dims = (state == FrameState::Live && precomputed_mean_luma.is_none())
+            .then_some((self.width, self.height));
+        let computed = self.inner.publish_with(
+            expected_capacity,
+            pts_us,
+            state,
+            &mut self.frame_index,
+            sample_dims,
+            write_fn,
+        )?;
+
+        if state == FrameState::Live {
+            if let Some(mean) = precomputed_mean_luma.or(computed) {
+                self.observe_mean_luma(mean);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Computes the mean luma of an NV12 frame by sampling every 16th pixel.
     pub fn compute_mean_luma(frame: &[u8], width: u32, height: u32) -> u8 {
         let luma_samples = (width as usize) * (height as usize);
@@ -413,6 +451,67 @@ mod imp {
             Ok(())
         }
 
+        pub fn publish_with<F>(
+            &self,
+            expected_capacity: usize,
+            pts_us: u64,
+            state: FrameState,
+            frame_index: &mut u64,
+            sample_luma_dims: Option<(u32, u32)>,
+            write_fn: F,
+        ) -> Result<Option<u8>, PublishRejection>
+        where
+            F: FnOnce(&mut [u8]) -> bool,
+        {
+            let capacity = unsafe {
+                std::ptr::read_unaligned(self.base.add(OFF_CAPACITY) as *const u32) as usize
+            };
+            if expected_capacity != capacity {
+                return Err(PublishRejection::SizeMismatch {
+                    expected: capacity,
+                    actual: expected_capacity,
+                });
+            }
+            if HEADER_SIZE + capacity > self.mapped_bytes {
+                return Err(PublishRejection::NoBuffer);
+            }
+
+            let seq = self.seq();
+            seq.fetch_add(1, Ordering::SeqCst);
+
+            let wrote = {
+                let dst = unsafe {
+                    std::slice::from_raw_parts_mut(self.base.add(HEADER_SIZE), capacity)
+                };
+                write_fn(dst)
+            };
+            if !wrote {
+                seq.fetch_add(1, Ordering::SeqCst);
+                fence(Ordering::SeqCst);
+                return Err(PublishRejection::SizeMismatch {
+                    expected: capacity,
+                    actual: 0,
+                });
+            }
+
+            unsafe {
+                self.write_u64(OFF_PTS, pts_us);
+                *frame_index += 1;
+                self.write_u64(OFF_FRAME_INDEX, *frame_index);
+                self.write_u32(OFF_STATE, state as u32);
+                self.write_u32(OFF_PAYLOAD_BYTES, capacity as u32);
+            }
+
+            seq.fetch_add(1, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
+
+            let mean = sample_luma_dims.map(|(w, h)| {
+                let buf = unsafe { std::slice::from_raw_parts(self.base.add(HEADER_SIZE), capacity) };
+                FrameWriter::compute_mean_luma(buf, w, h)
+            });
+            Ok(mean)
+        }
+
         pub fn set_transform(&self, mirror: bool, rotation: u32) {
             let seq = self.seq();
             seq.fetch_add(1, Ordering::SeqCst);
@@ -500,6 +599,20 @@ mod imp {
         ) -> Result<(), PublishRejection> {
             Err(PublishRejection::NoBuffer)
         }
+        pub fn publish_with<F>(
+            &self,
+            _expected_capacity: usize,
+            _pts_us: u64,
+            _state: FrameState,
+            _frame_index: &mut u64,
+            _sample_luma_dims: Option<(u32, u32)>,
+            _write_fn: F,
+        ) -> Result<Option<u8>, PublishRejection>
+        where
+            F: FnOnce(&mut [u8]) -> bool,
+        {
+            Err(PublishRejection::NoBuffer)
+        }
         pub fn set_transform(&self, _mirror: bool, _rotation: u32) {}
     }
 }
@@ -578,5 +691,54 @@ mod tests {
         let (s, e, rep) = observe(185, &mut last_mean_luma, &mut flicker_reported);
         assert!(!s && e, "must report stable transition");
         assert!(!rep);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publish_with_matches_publish_and_tracks_luma() {
+        let dir = std::env::temp_dir();
+        let unique = format!(
+            "phonecam-publish-with-{}-{}.shm",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = dir.join(unique);
+        let path_str = path.to_string_lossy().to_string();
+
+        let (w, h) = (32u32, 16u32);
+        let cap = crate::nv12_size(w, h) as usize;
+        let mut expected = vec![0u8; cap];
+        for (i, b) in expected.iter_mut().enumerate() {
+            *b = ((i * 17) & 0xFF) as u8;
+        }
+        // Force luma bytes to constant 120 so expected mean is 120.
+        expected[..(w * h) as usize].fill(120);
+
+        let mut writer = FrameWriter::open_at(&path_str, w, h).expect("open writer");
+        writer
+            .publish_with(42_000, FrameState::Live, None, |dst| {
+                assert_eq!(dst.len(), cap);
+                dst.copy_from_slice(&expected);
+                true
+            })
+            .expect("publish_with");
+
+        assert_eq!(writer.frame_index(), 1);
+        assert_eq!(writer.last_mean_luma(), Some(120));
+
+        let mut reader = crate::FrameReader::open(&path_str).expect("open reader");
+        let mut out = Vec::new();
+        let header = reader.read(&mut out).expect("read frame");
+        assert_eq!(header.pts_us, 42_000);
+        assert_eq!(header.frame_index, 1);
+        assert_eq!(header.state, FrameState::Live);
+        assert_eq!(out, expected);
+
+        drop(reader);
+        drop(writer);
+        let _ = std::fs::remove_file(&path);
     }
 }

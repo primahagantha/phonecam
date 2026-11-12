@@ -13,7 +13,8 @@ use crate::theme::rules;
 use crate::theme::{Accent, Fonts, Radius, SHELL, Space, Status, Text, Tone, Type};
 use crate::views::effects::{push_effect, SideEffect, Tab};
 use crate::views::state::{
-    format_log_time, resolution_label_of, thermal_label, AppState, LogSource, NoticeAction,
+    camera_facing_label, format_battery, format_log_time, resolution_label_of, screen_mode_label,
+    thermal_label, AppState, LogSource, NoticeAction,
 };
 use crate::views::widgets::{
     chip, empty_state, key_value, metric, prose, section, status_dot, tinted_box, Button, Panel,
@@ -143,6 +144,17 @@ pub fn status_strip(state: &AppState) -> AnyElement {
         .and_then(|p| thermal_label(p.thermal))
     {
         row = row.child(chip(label, if critical { Tone::Danger } else { Tone::Warn }));
+    }
+
+    if let Some(phone) = state.core.as_ref().and_then(|c| c.phone.as_ref()) {
+        if let Some(batt) = format_battery(phone.battery, phone.charging) {
+            let tone = if phone.battery <= 15 && !phone.charging {
+                Tone::Warn
+            } else {
+                Tone::Neutral
+            };
+            row = row.child(chip(batt, tone));
+        }
     }
 
     if streaming {
@@ -600,6 +612,46 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
     panel.children(children).into_element()
 }
 
+/// What action (or status hint) an ADB-listed USB row can offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbDeviceAction {
+    UsePhone,
+    AuthorizeHint,
+    OfflineHint,
+}
+
+/// Maps an ADB device `state` string to whether it is ready to connect.
+pub fn usb_device_action(state: &str) -> UsbDeviceAction {
+    match state {
+        "device" => UsbDeviceAction::UsePhone,
+        "unauthorized" => UsbDeviceAction::AuthorizeHint,
+        _ => UsbDeviceAction::OfflineHint,
+    }
+}
+
+/// Summary sentence above the USB device list.
+pub fn usb_list_summary(devices: &[phonecam_protocol::AdbDevice], forwarding: bool) -> &'static str {
+    if forwarding {
+        return "The cable tunnel is open. Open PhoneCam on the phone to connect.";
+    }
+    let ready_count = devices
+        .iter()
+        .filter(|d| usb_device_action(&d.state) == UsbDeviceAction::UsePhone)
+        .count();
+    if ready_count == 1 {
+        "A phone is on the cable, not connected yet."
+    } else if ready_count > 1 {
+        "Phones on the cable, none connected yet."
+    } else if devices
+        .iter()
+        .any(|d| usb_device_action(&d.state) == UsbDeviceAction::AuthorizeHint)
+    {
+        "Unlock your phone and tap Allow on the USB debugging prompt."
+    } else {
+        "Phone on the cable is offline. Reconnect the cable or restart ADB."
+    }
+}
+
 /// The cable list, which has four disjoint states.
 fn usb_list(state: &AppState) -> AnyElement {
     let usb = state.core.as_ref().map(|c| &c.usb);
@@ -617,18 +669,13 @@ fn usb_list(state: &AppState) -> AnyElement {
             .font_family(Fonts::SANS)
             .text_size(px(Type::XS))
             .text_color(Text::MUTED)
-            .child(if forwarding {
-                "The cable tunnel is open. Open PhoneCam on the phone to connect."
-            } else if device_count == 1 {
-                "A phone is on the cable, not connected yet."
-            } else {
-                "Phones on the cable, none connected yet."
-            });
+            .child(usb_list_summary(&devices, forwarding));
 
         for device in devices {
             let label = if device.model.is_empty() { device.serial.clone() } else { device.model.clone() };
             let serial_for_connect = device.serial.clone();
             let id_for_btn = device.serial.clone();
+            let action = usb_device_action(&device.state);
             column = column.child(
                 div()
                     .mt(px(Space::MD))
@@ -658,22 +705,30 @@ fn usb_list(state: &AppState) -> AnyElement {
                             .text_color(Text::MUTED)
                             .child(format!("serial {}", device.serial)),
                     )
-                    .child(if forwarding {
-                        Button::danger("Close tunnel").on_click(|_window, _cx| {
-                            push_effect(SideEffect::DisconnectUsb)
-                        })
-                        .into_any_element()
-                    } else {
-                        // Not primary: the cable is the fallback path.
-                        pill_button(
-                            format!("usb-use-{id_for_btn}"),
-                            "Use this phone",
-                            false,
-                            false,
-                            move |_window, _cx| {
-                                push_effect(SideEffect::ConnectUsb(Some(serial_for_connect.clone())))
-                            },
-                        )
+                    .child(match (forwarding, action) {
+                        (true, _) => Button::danger("Close tunnel")
+                            .on_click(|_window, _cx| push_effect(SideEffect::DisconnectUsb))
+                            .into_any_element(),
+                        (false, UsbDeviceAction::UsePhone) => {
+                            // Not primary: the cable is the fallback path.
+                            pill_button(
+                                format!("usb-use-{id_for_btn}"),
+                                "Use this phone",
+                                false,
+                               false,
+                                move |_window, _cx| {
+                                    push_effect(SideEffect::ConnectUsb(Some(
+                                        serial_for_connect.clone(),
+                                    )))
+                                },
+                            )
+                        }
+                        (false, UsbDeviceAction::AuthorizeHint) => {
+                            chip("Approve on phone", Tone::Warn)
+                        }
+                        (false, UsbDeviceAction::OfflineHint) => {
+                            chip("Offline", Tone::Neutral)
+                        }
                     }),
             );
         }
@@ -846,6 +901,14 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
         if let Some(version) = facts.android_version {
             children.push(key_value("Android", version.to_string(), false));
         }
+        if let Some(batt) = state
+            .core
+            .as_ref()
+            .and_then(|c| c.phone.as_ref())
+            .and_then(|p| format_battery(p.battery, p.charging))
+        {
+            children.push(key_value("Battery", batt, false));
+        }
         children.push(key_value("Device id", device.device_id.clone(), true));
     } else if let Some(id) = stored_id {
         children.push(key_value("Device id", id, true));
@@ -952,7 +1015,10 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             cycle_ids.push(fallback.to_string());
         }
     }
-    let resolved_id = selected_cam
+    let resolved_id = cameras
+        .iter()
+        .find(|c| c.id == selected)
+        .or_else(|| cameras.iter().find(|c| c.facing.as_str() == selected))
         .map(|c| c.id.as_str())
         .unwrap_or(selected.as_str())
         .to_string();
@@ -963,7 +1029,12 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
     children.push(section(
         "Which camera",
         vec![
-            camera_tiles(&cameras, &selected),
+            crate::views::widgets::field(
+                "Camera",
+                Some(format!("{} available", cameras.len()).into()),
+                camera_tiles(&cameras, &resolved_id),
+                None,
+            ),
             crate::views::widgets::field(
                 "Camera id",
                 Some("If the list missed one".into()),
@@ -1042,8 +1113,17 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         None
     };
 
-    let bitrate_dec = current_bitrate.saturating_sub(1_000_000).max(1_000_000);
-    let bitrate_inc = (current_bitrate + 1_000_000).min(20_000_000);
+    let bitrate_dec = current_bitrate.saturating_sub(500_000).max(1_000_000);
+    let bitrate_inc = (current_bitrate + 500_000).min(20_000_000);
+    let bitrate_presets: [(u64, &str); 7] = [
+        (1_500_000, "1.5M"),
+        (2_000_000, "2M"),
+        (4_000_000, "4M"),
+        (8_000_000, "8M"),
+        (12_000_000, "12M"),
+        (16_000_000, "16M"),
+        (20_000_000, "20M"),
+    ];
 
     children.push(section(
         "What it captures",
@@ -1120,12 +1200,11 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                             })
                         },
                     ))
-                    .children([2u64, 4, 8, 12, 16, 20].into_iter().map(|mbps| {
-                        let bps = mbps * 1_000_000;
+                    .children(bitrate_presets.into_iter().map(|(bps, label)| {
                         let active = current_bitrate == bps;
                         pill_button(
-                            format!("bitrate-{mbps}m"),
-                            format!("{mbps}M"),
+                            format!("bitrate-{label}"),
+                            label,
                             active,
                             false,
                             move |_window, _cx| {
@@ -1166,13 +1245,9 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             .filter(|z| *z > 0.0)
             .unwrap_or(1.0)
             .clamp(min_zoom, max_zoom);
-        let zoom_dec = ((live_zoom - 0.5).max(min_zoom) * 10.0).round() / 10.0;
-        let zoom_inc = ((live_zoom + 0.5).min(max_zoom) * 10.0).round() / 10.0;
-        let zoom_presets: Vec<f32> = [1.0f32, 1.5, 2.0, 3.0, 5.0]
-            .into_iter()
-            .filter(|&z| z >= min_zoom - 0.01 && z <= max_zoom + 0.01)
-            .map(|z| z.clamp(min_zoom, max_zoom))
-            .collect();
+        let zoom_dec = ((live_zoom - 0.1).max(min_zoom) * 10.0).round() / 10.0;
+        let zoom_inc = ((live_zoom + 0.1).min(max_zoom) * 10.0).round() / 10.0;
+        let zoom_presets = zoom_presets_for(min_zoom, max_zoom);
 
         crate::views::widgets::field(
             "Zoom",
@@ -1246,19 +1321,31 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             } else {
                 "Your resolution, frame rate and bitrate above are used exactly as set."
             }),
-            Toggle::new(
-                "Turn the phone screen off",
-                state.settings.screen_mode == phonecam_protocol::ScreenMode::Black,
-            )
-            .on_change(|off, _window, _cx| {
-                push_effect(SideEffect::SetScreenMode(if off {
-                    phonecam_protocol::ScreenMode::Black
-                } else {
-                    phonecam_protocol::ScreenMode::KeepOn
-                }))
-            })
-            .into_element(),
-            prose("The phone screen is not part of the stream. Turning it off saves battery on a long session."),
+            crate::views::widgets::field(
+                "Phone screen",
+                Some(screen_mode_label(state.settings.screen_mode).into()),
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(Space::SM))
+                    .children(
+                        [
+                            (phonecam_protocol::ScreenMode::KeepOn, "Keep on", "screen-keep-on"),
+                            (phonecam_protocol::ScreenMode::Dim, "Dim", "screen-dim"),
+                            (phonecam_protocol::ScreenMode::Black, "Off", "screen-black"),
+                        ]
+                        .into_iter()
+                        .map(|(mode, label, id)| {
+                            let active = state.settings.screen_mode == mode;
+                            pill_button(id, label, active, false, move |_window, _cx| {
+                                push_effect(SideEffect::SetScreenMode(mode))
+                            })
+                        }),
+                    )
+                    .into_any_element(),
+                Some("The phone screen is not part of the stream. Turning it off saves battery on a long session.".into()),
+            ),
         ],
     ));
 
@@ -1267,16 +1354,15 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
 
 fn camera_tiles(
     cameras: &[phonecam_protocol::CameraCapability],
-    selected: &str,
+    selected_id: &str,
 ) -> AnyElement {
     div()
         .flex()
         .flex_row()
         .flex_wrap()
         .gap(px(Space::LG))
-        .mb(px(Space::FIELD_GAP))
         .children(cameras.iter().map(|camera| {
-            let is_selected = camera.id == selected || camera.facing.as_str() == selected;
+            let is_selected = camera.id == selected_id;
             let id = camera.id.clone();
             div()
                 .id(gpui::ElementId::Name(SharedString::from(format!("camera-{id}"))))
@@ -1285,7 +1371,7 @@ fn camera_tiles(
                 .min_w(px(120.0))
                 .items_center()
                 .justify_center()
-                .gap(px(Space::SM))
+                .gap(px(Space::XS))
                 .rounded(px(Radius::LG))
                 .border_1()
                 .border_color(if is_selected { Accent::DEFAULT } else { SHELL.control })
@@ -1299,7 +1385,14 @@ fn camera_tiles(
                         .font_family(Fonts::SANS)
                         .text_size(px(14.0))
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .child(camera.facing.as_str().to_string()),
+                        .child(camera_facing_label(camera.facing)),
+                )
+                .child(
+                    div()
+                        .font_family(Fonts::MONO)
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(Text::MUTED)
+                        .child(format!("id {}", camera.id)),
                 )
                 .child(
                     div()
@@ -1379,28 +1472,35 @@ pub fn publish_panel(state: &AppState) -> AnyElement {
     let sideways = state.settings.output_rotation == 90 || state.settings.output_rotation == 270;
 
     let next_mirror = !state.settings.output_mirror;
-    let output_sizes: [(u32, u32); 5] = [
-        (1920, 1080),
-        (1280, 720),
-        (2560, 1440),
-        (3840, 2160),
-        (854, 480),
-    ];
+    let output_summary: SharedString = if state.settings.output_follows_stream {
+        match state.frame_size {
+            Some((w, h)) => format!("Follows phone ({w} × {h})").into(),
+            None => "Follows phone".into(),
+        }
+    } else {
+        format!("{} × {}", state.settings.output_width, state.settings.output_height).into()
+    };
 
     children.push(section(
         "Framing",
         vec![
+            Toggle::new("Follow phone stream", state.settings.output_follows_stream)
+                .on_change(|enabled, _window, _cx| {
+                    push_effect(SideEffect::SetOutputFollowsStream(enabled))
+                })
+                .into_element(),
             crate::views::widgets::field(
                 "Output size",
-                Some(format!("{} × {}", state.settings.output_width, state.settings.output_height).into()),
+                Some(output_summary),
                 div()
                     .flex()
                     .flex_row()
                     .flex_wrap()
                     .gap(px(Space::SM))
-                    .children(output_sizes.into_iter().map(|(w, h)| {
-                        let active =
-                            state.settings.output_width == w && state.settings.output_height == h;
+                    .children(OUTPUT_SIZE_PRESETS.into_iter().map(|(w, h)| {
+                        let active = !state.settings.output_follows_stream
+                            && state.settings.output_width == w
+                            && state.settings.output_height == h;
                         pill_button(
                             format!("out-size-{w}x{h}"),
                             format!("{w}x{h}"),
@@ -1411,7 +1511,7 @@ pub fn publish_panel(state: &AppState) -> AnyElement {
                     }))
                     .into_any_element(),
                 Some(
-                    "What apps receive. A sideways phone is fitted inside this frame, not stretched."
+                    "What apps receive. Pick a size to pin it, or follow the phone stream; sideways phones fit inside without stretching."
                         .into(),
                 ),
             ),
@@ -1649,6 +1749,13 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
             if let Some(version) = facts.android_version {
                 rows.push(key_value("Android", version.to_string(), false));
             }
+            let battery_value = state
+                .core
+                .as_ref()
+                .and_then(|c| c.phone.as_ref())
+                .and_then(|p| format_battery(p.battery, p.charging))
+                .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string());
+            rows.push(key_value("Battery", battery_value, false));
             rows.push(key_value(
                 "Cameras",
                 state
@@ -1675,16 +1782,21 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
     };
     children.push(section("Connected phone", phone_rows));
 
+    let published_output = if state.settings.output_follows_stream {
+        match state.frame_size {
+            Some((w, h)) => format!("Follow phone ({w}x{h})"),
+            None => "Follow phone stream".to_string(),
+        }
+    } else {
+        format!("{}x{}", state.settings.output_width, state.settings.output_height)
+    };
+
     children.push(section(
         "Being published",
         vec![
             key_value("Mirror", if state.settings.output_mirror { "On" } else { "Off" }, false),
             key_value("Rotation", format!("{}°", state.settings.output_rotation), false),
-            key_value(
-                "Output",
-                format!("{}x{}", state.settings.output_width, state.settings.output_height),
-                false,
-            ),
+            key_value("Output", published_output, false),
             key_value(
                 "Decoded",
                 state
@@ -1705,6 +1817,11 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                 false,
             ),
         ],
+    ));
+
+    children.push(section(
+        "This app",
+        vec![key_value("Build", app_metadata_summary(), false)],
     ));
 
     let matching_logs = filtered_logs(state);
@@ -2058,6 +2175,51 @@ fn pill_button(
     el.into_any_element()
 }
 
+const OUTPUT_SIZE_PRESETS: [(u32, u32); 6] = [
+    (1920, 1080),
+    (1280, 720),
+    (2560, 1440),
+    (3840, 2160),
+    (854, 480),
+    (640, 360),
+];
+
+fn app_metadata_summary() -> String {
+    let os = if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "Linux"
+    };
+    format!("PhoneCam v{} · {os} · Rust/GPUI", env!("CARGO_PKG_VERSION"))
+}
+
+fn zoom_presets_for(min_zoom: f32, max_zoom: f32) -> Vec<f32> {
+    let round1 = |v: f32| (v * 10.0).round() / 10.0;
+    let min_z = round1(min_zoom);
+    let max_z = round1(max_zoom.max(min_z));
+    let mut presets = Vec::new();
+    let mut push_unique = |val: f32| {
+        let v = round1(val.clamp(min_z, max_z));
+        if !presets.iter().any(|existing: &f32| (*existing - v).abs() < 0.05) {
+            presets.push(v);
+        }
+    };
+
+    if min_z < 0.99 {
+        push_unique(min_z);
+    }
+    for candidate in [1.0_f32, 1.5, 2.0, 3.0, 5.0, 8.0, 10.0] {
+        if candidate >= min_z - 0.01 && candidate <= max_z + 0.01 {
+            push_unique(candidate);
+        }
+    }
+    push_unique(max_z);
+    presets.sort_by(|a, b| a.total_cmp(b));
+    presets
+}
+
 fn resolution_presets(camera_resolutions: &[String], current: &str) -> Vec<String> {
     let mut out = vec!["auto".to_string()];
     let preferred = [
@@ -2066,21 +2228,27 @@ fn resolution_presets(camera_resolutions: &[String], current: &str) -> Vec<Strin
         "1920x1080",
         "1280x720",
         "854x480",
+        "640x480",
+        "640x360",
     ];
     if camera_resolutions.is_empty() {
-        for res in ["3840x2160", "1920x1080", "1280x720", "854x480"] {
+        for res in [
+            "3840x2160",
+            "1920x1080",
+            "1280x720",
+            "854x480",
+            "640x480",
+            "640x360",
+        ] {
             out.push(res.to_string());
         }
     } else {
         for res in preferred {
-            if camera_resolutions.iter().any(|r| r == res) && out.len() < 7 {
+            if camera_resolutions.iter().any(|r| r == res) {
                 out.push(res.to_string());
             }
         }
         for res in camera_resolutions {
-            if out.len() >= 7 {
-                break;
-            }
             if !out.iter().any(|existing| existing == res) {
                 out.push(res.clone());
             }
@@ -2172,6 +2340,91 @@ mod tests {
         let media_only = filtered_logs(&state);
         assert_eq!(media_only.len(), 1);
         assert_eq!(media_only[0].message, "media debug");
+    }
+
+    #[test]
+    fn usb_device_action_gates_unauthorized_and_offline_devices() {
+        assert_eq!(usb_device_action("device"), UsbDeviceAction::UsePhone);
+        assert_eq!(usb_device_action("unauthorized"), UsbDeviceAction::AuthorizeHint);
+        assert_eq!(usb_device_action("offline"), UsbDeviceAction::OfflineHint);
+    }
+
+    #[test]
+    fn usb_list_summary_counts_ready_and_pending_devices() {
+        let ready = vec![phonecam_protocol::AdbDevice {
+            serial: "s1".into(),
+            state: "device".into(),
+            model: "Pixel 8".into(),
+        }];
+        assert_eq!(
+            usb_list_summary(&ready, false),
+            "A phone is on the cable, not connected yet."
+        );
+        assert_eq!(
+            usb_list_summary(&ready, true),
+            "The cable tunnel is open. Open PhoneCam on the phone to connect."
+        );
+
+        let unauth = vec![phonecam_protocol::AdbDevice {
+            serial: "s1".into(),
+            state: "unauthorized".into(),
+            model: "Pixel 8".into(),
+        }];
+        assert_eq!(
+            usb_list_summary(&unauth, false),
+            "Unlock your phone and tap Allow on the USB debugging prompt."
+        );
+
+        let offline = vec![phonecam_protocol::AdbDevice {
+            serial: "s2".into(),
+            state: "offline".into(),
+            model: "Pixel 7".into(),
+        }];
+        assert_eq!(
+            usb_list_summary(&offline, false),
+            "Phone on the cable is offline. Reconnect the cable or restart ADB."
+        );
+    }
+
+    #[test]
+    fn resolution_presets_uncapped_and_includes_640_presets() {
+        let caps: Vec<String> = vec![
+            "3840x2160",
+            "2560x1440",
+            "1920x1080",
+            "1280x720",
+            "854x480",
+            "640x480",
+            "640x360",
+            "320x240",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let presets = resolution_presets(&caps, "auto");
+        assert_eq!(presets.len(), 9);
+        assert!(presets.contains(&"640x360".to_string()));
+        assert!(presets.contains(&"320x240".to_string()));
+    }
+
+    #[test]
+    fn output_size_presets_include_640x360() {
+        assert!(OUTPUT_SIZE_PRESETS.contains(&(640, 360)));
+    }
+
+    #[test]
+    fn zoom_presets_cover_min_one_and_max() {
+        let presets = zoom_presets_for(0.6, 8.0);
+        assert_eq!(presets.first().copied(), Some(0.6));
+        assert!(presets.contains(&1.0));
+        assert_eq!(presets.last().copied(), Some(8.0));
+    }
+
+    #[test]
+    fn app_metadata_summary_mentions_version_and_gpui() {
+        let summary = app_metadata_summary();
+        assert!(summary.contains(env!("CARGO_PKG_VERSION")));
+        assert!(summary.contains("Rust/GPUI"));
     }
 }
 

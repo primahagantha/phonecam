@@ -569,6 +569,59 @@ pub fn resolution_label_of(value: &str) -> String {
     phonecam_protocol::resolution_label(value)
 }
 
+/// Formats phone battery percentage and charging state when reported (`>= 0`).
+pub fn format_battery(battery: i32, charging: bool) -> Option<String> {
+    if battery < 0 {
+        return None;
+    }
+    Some(if charging {
+        format!("{battery}% (charging)")
+    } else {
+        format!("{battery}%")
+    })
+}
+
+/// Picks a sensible default bitrate for a resolution and frame rate.
+pub fn bitrate_for(resolution: &str, fps: u32, current: u64) -> u64 {
+    if resolution == "auto" {
+        return current;
+    }
+    let Some((w, h)) = phonecam_protocol::parse_resolution(resolution) else {
+        return current;
+    };
+    let short = w.min(h);
+    if short >= 2000 {
+        16_000_000
+    } else if short >= 1400 {
+        12_000_000
+    } else if short >= 1000 {
+        if fps >= 50 { 12_000_000 } else { 8_000_000 }
+    } else if short >= 700 {
+        4_000_000
+    } else {
+        1_500_000
+    }
+}
+
+/// Human-readable label for a phone camera facing direction.
+pub fn camera_facing_label(facing: phonecam_protocol::CameraFacing) -> &'static str {
+    match facing {
+        phonecam_protocol::CameraFacing::Back => "Back camera",
+        phonecam_protocol::CameraFacing::Front => "Front camera",
+        phonecam_protocol::CameraFacing::External => "External camera",
+        phonecam_protocol::CameraFacing::Unknown => "Camera",
+    }
+}
+
+/// Human-readable label for a phone screen mode.
+pub fn screen_mode_label(mode: ScreenMode) -> &'static str {
+    match mode {
+        ScreenMode::KeepOn => "Keep on",
+        ScreenMode::Dim => "Dim",
+        ScreenMode::Black => "Off",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,6 +789,39 @@ mod tests {
     #[test]
     fn preview_is_enabled_by_default() {
         assert!(Settings::default().preview_enabled);
+    }
+
+    #[test]
+    fn battery_formatting_respects_reported_and_charging_state() {
+        assert_eq!(format_battery(-1, false), None);
+        assert_eq!(format_battery(-1, true), None);
+        assert_eq!(format_battery(84, false).as_deref(), Some("84%"));
+        assert_eq!(format_battery(84, true).as_deref(), Some("84% (charging)"));
+        assert_eq!(format_battery(0, false).as_deref(), Some("0%"));
+    }
+
+    #[test]
+    fn bitrate_for_scales_cleanly_by_resolution_and_fps() {
+        assert_eq!(bitrate_for("auto", 30, 5_500_000), 5_500_000);
+        assert_eq!(bitrate_for("640x480", 30, 4_000_000), 1_500_000);
+        assert_eq!(bitrate_for("1280x720", 30, 8_000_000), 4_000_000);
+        assert_eq!(bitrate_for("1920x1080", 30, 4_000_000), 8_000_000);
+        assert_eq!(bitrate_for("1920x1080", 60, 4_000_000), 12_000_000);
+        assert_eq!(bitrate_for("1080x1920", 30, 4_000_000), 8_000_000);
+        assert_eq!(bitrate_for("3840x2160", 30, 4_000_000), 16_000_000);
+    }
+
+    #[test]
+    fn camera_and_screen_labels_cover_all_variants() {
+        use phonecam_protocol::CameraFacing;
+        assert_eq!(camera_facing_label(CameraFacing::Back), "Back camera");
+        assert_eq!(camera_facing_label(CameraFacing::Front), "Front camera");
+        assert_eq!(camera_facing_label(CameraFacing::External), "External camera");
+        assert_eq!(camera_facing_label(CameraFacing::Unknown), "Camera");
+
+        assert_eq!(screen_mode_label(ScreenMode::KeepOn), "Keep on");
+        assert_eq!(screen_mode_label(ScreenMode::Dim), "Dim");
+        assert_eq!(screen_mode_label(ScreenMode::Black), "Off");
     }
 }
 

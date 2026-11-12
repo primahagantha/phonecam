@@ -11,12 +11,12 @@ import java.nio.ByteBuffer
 
 /** One encoded H.264 access unit, still in Annex-B form. */
 class EncodedFrame(
-    val buffer: ByteBuffer,
-    val offset: Int,
-    val length: Int,
-    val ptsUs: Long,
-    val isKeyframe: Boolean,
-    val isCodecConfig: Boolean,
+    var buffer: ByteBuffer,
+    var offset: Int,
+    var length: Int,
+    var ptsUs: Long,
+    var isKeyframe: Boolean,
+    var isCodecConfig: Boolean,
 )
 
 /**
@@ -68,6 +68,8 @@ class H264Encoder(
 
     fun start(): Surface? {
         if (running) return inputSurface
+        var created: MediaCodec? = null
+        var input: Surface? = null
         return try {
             val format = MediaFormat.createVideoFormat(MIME, width, height).apply {
                 setInteger(
@@ -110,9 +112,9 @@ class H264Encoder(
                 setInteger(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000)
             }
 
-            val created = MediaCodec.createEncoderByType(MIME)
+            created = MediaCodec.createEncoderByType(MIME)
             created.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            val input = created.createInputSurface()
+            input = created.createInputSurface()
             created.start()
 
             codec = created
@@ -122,6 +124,9 @@ class H264Encoder(
             Log.i(TAG, "encoder started ${width}x$height@$fps ${bitrate}bps mode=CBR name=${created.name}")
             input
         } catch (t: Throwable) {
+            runCatching { created?.stop() }
+            runCatching { created?.release() }
+            runCatching { input?.release() }
             Log.e(TAG, "encoder start failed", t)
             onError("Couldn't start video encoding on this phone.")
             null
@@ -181,6 +186,7 @@ class H264Encoder(
     private fun startDrainLoop() {
         drainThread = Thread({
             val target = codec ?: return@Thread
+            var reusableFrame: EncodedFrame? = null
             while (running) {
                 try {
                     val index = target.dequeueOutputBuffer(bufferInfo, DEQUEUE_TIMEOUT_US)
@@ -192,22 +198,31 @@ class H264Encoder(
                     }
                     if (index < 0) continue
 
-                    val buffer = target.getOutputBuffer(index)
-                    if (buffer != null && bufferInfo.size > 0) {
-                        val isConfig = bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-                        val isKey = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
-                        onFrame(
-                            EncodedFrame(
+                    try {
+                        val buffer = target.getOutputBuffer(index)
+                        if (buffer != null && bufferInfo.size > 0) {
+                            val isConfig = bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+                            val isKey = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+                            val frame = reusableFrame?.apply {
+                                this.buffer = buffer
+                                this.offset = bufferInfo.offset
+                                this.length = bufferInfo.size
+                                this.ptsUs = bufferInfo.presentationTimeUs
+                                this.isKeyframe = isKey || isConfig
+                                this.isCodecConfig = isConfig
+                            } ?: EncodedFrame(
                                 buffer = buffer,
                                 offset = bufferInfo.offset,
                                 length = bufferInfo.size,
                                 ptsUs = bufferInfo.presentationTimeUs,
                                 isKeyframe = isKey || isConfig,
                                 isCodecConfig = isConfig,
-                            ),
-                        )
+                            ).also { reusableFrame = it }
+                            onFrame(frame)
+                        }
+                    } finally {
+                        target.releaseOutputBuffer(index, false)
                     }
-                    target.releaseOutputBuffer(index, false)
                 } catch (t: Throwable) {
                     // A codec stopped under a blocking dequeue throws; that is the
                     // normal teardown path, not an encoder failure.
