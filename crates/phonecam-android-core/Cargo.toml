@@ -1,0 +1,19 @@
+[package]
+name = "phonecam-android-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+phonecam-protocol = { workspace = true }
+phonecam-core = { workspace = true }
+
+jni = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }

@@ -7,6 +7,7 @@ members = [
     "crates/phonecam-core",
     "crates/phonecam-ui",
     "crates/phonecam-app",
+    "crates/phonecam-android-core",
 ]
 
 [workspace.package]
@@ -69,6 +70,8 @@ image = "0.25"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 dirs = "6"
+hex = "0.4"
+jni = "0.21"
 
 # The frame path is a tight per-pixel loop, so it is worth the build time.
 # Defaults are opt-level 3 with LTO off and 16 codegen units, which leaves the

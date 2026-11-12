@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The device secret is what authorises this phone to a paired PC, so it never
+    leaves the device through a backup or a device-to-device transfer (PRD §36).
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="phonecam_identity.xml" />
+        <exclude domain="file" path="logs" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="phonecam_identity.xml" />
+        <exclude domain="file" path="logs" />
+    </device-transfer>
+</data-extraction-rules>

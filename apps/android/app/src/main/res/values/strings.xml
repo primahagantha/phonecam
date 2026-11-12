@@ -1,0 +1,265 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Every string this app shows to a person lives here (PRD §38).
+
+    Prose that the session layer already produced (SessionState.notice,
+    SessionState.error, DialResult messages) is rendered verbatim: it is part of
+    the session contract, not of this screen's copy.
+-->
+<resources>
+    <string name="app_name">PhoneCam</string>
+    <string name="app_tagline">Your phone, as a webcam for your PC</string>
+
+    <!-- Foreground service notification -->
+    <string name="notification_channel_name">PhoneCam session</string>
+    <string name="notification_channel_description">Shows whether PhoneCam is ready or streaming.</string>
+    <string name="notification_title_ready">PhoneCam is ready</string>
+    <string name="notification_title_connecting">PhoneCam is connecting</string>
+    <string name="notification_title_streaming">PhoneCam is streaming</string>
+    <string name="notification_title_error">PhoneCam needs attention</string>
+    <string name="notification_text_idle">Waiting for PhoneCam Desktop.</string>
+    <string name="notification_text_connecting">Looking for your PC...</string>
+    <string name="notification_text_connecting_to">Talking to %1$s</string>
+    <string name="notification_text_connected">Connected to %1$s</string>
+    <string name="notification_text_streaming">Streaming to %1$s</string>
+    <string name="notification_text_streaming_unknown">Streaming to your PC</string>
+    <string name="notification_action_stop">Stop</string>
+    <string name="toast_stream_stopped">Stream stopped.</string>
+    <string name="toast_session_stopped">PhoneCam stopped.</string>
+
+    <!-- Permissions -->
+    <string name="permission_title">Camera access</string>
+    <string name="permission_rationale">PhoneCam streams this phone\'s camera to your PC over your own network. Nothing is recorded and nothing is uploaded.</string>
+    <string name="permission_action_grant">Allow camera access</string>
+    <string name="permission_denied_title">Camera access is off</string>
+    <string name="permission_denied_body">PhoneCam can\'t stream without camera access. Turn it on in Settings and start PhoneCam again.</string>
+    <string name="permission_action_settings">Open settings</string>
+    <string name="notification_permission_warning">Notifications are off, so the streaming status won\'t appear in your notification shade. Streaming still works.</string>
+    <string name="usb_hint_title">USB debugging</string>
+    <string name="usb_hint_body">A cable connection needs USB debugging turned on in Developer options on this phone. Settings → About phone → tap the OS version 7 times, then Settings → Additional settings → Developer options → USB debugging.</string>
+    <string name="action_dismiss">Dismiss</string>
+
+    <!-- Connection -->
+    <string name="section_connection">Connection</string>
+    <string name="action_start_session">Start PhoneCam</string>
+    <string name="action_stop_session">Stop PhoneCam</string>
+    <string name="action_search_now">Search again</string>
+    <string name="action_scan_qr">Scan pairing code</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_forget_pairing">Forget this PC</string>
+    <string name="session_stopped">PhoneCam is stopped. Start it to look for your PC.</string>
+    <string name="session_running">PhoneCam keeps running while this screen is open or closed.</string>
+    <string name="stream_start_hint">PhoneCam Desktop starts and stops the stream. This phone can end it by disconnecting.</string>
+    <string name="section_phone_preview">This phone</string>
+    <string name="preview_toggle_title">Show the picture on this phone</string>
+    <string name="preview_toggle_body">The viewfinder is a second camera output. Turning it off saves power and heat — your PC still receives the picture.</string>
+    <string name="preview_toggle_streaming_note">Changes apply right away. Your PC keeps receiving the picture either way.</string>
+    <string name="discovered_title">PCs on this network</string>
+    <string name="discovered_empty">No PC found yet. Make sure PhoneCam Desktop is running on the same network, or scan its pairing code.</string>
+    <string name="discovered_empty_not_found">Nothing answered that search. Check that PhoneCam Desktop is running and on the same network, or scan its pairing code.</string>
+    <string name="search_status_searching">Searching for your PC...</string>
+    <string name="search_status_not_found">No PC answered that search.</string>
+    <plurals name="search_status_found">
+        <item quantity="one">Found %1$d PC.</item>
+        <item quantity="other">Found %1$d PCs.</item>
+    </plurals>
+    <string name="discovered_state_present">Detected</string>
+    <string name="discovered_state_pairing">Pairing open</string>
+    <string name="discovered_state_known">Already paired</string>
+    <string name="discovered_state_busy">Busy with another phone</string>
+    <string name="paired_title">Paired PC</string>
+    <string name="paired_none">No PC paired yet</string>
+    <string name="manual_title">Connect by address</string>
+    <string name="action_manual_show">Connect by address instead</string>
+    <string name="action_manual_hide">Hide address form</string>
+    <string name="manual_host_label">PC address</string>
+    <string name="manual_host_hint">192.168.1.24</string>
+    <string name="manual_port_label">Port</string>
+    <string name="manual_hint">Use this when the PC isn\'t found automatically. A USB connection uses 127.0.0.1.</string>
+    <string name="error_invalid_host">Enter your PC\'s address, for example 192.168.1.24.</string>
+    <string name="error_invalid_port">Enter a port between 1 and 65535.</string>
+    <string name="error_invalid_qr">That code isn\'t a PhoneCam pairing code.</string>
+    <string name="qr_scan_prompt">Point the camera at the code on your PC</string>
+    <string name="paired_message">Pairing with %1$s</string>
+    <string name="forgotten_message">This PC has been forgotten.</string>
+
+    <!-- Status -->
+    <string name="section_status">Status</string>
+    <string name="phase_idle">Idle</string>
+    <string name="phase_discovering">Searching</string>
+    <string name="phase_connecting">Connecting</string>
+    <string name="phase_connected">Connected</string>
+    <string name="phase_streaming">Streaming</string>
+    <string name="phase_reconnecting">Reconnecting</string>
+    <string name="phase_error">Not connected</string>
+    <string name="phase_class_live">Live</string>
+    <string name="phase_class_ready">Ready</string>
+    <string name="phase_class_working">Working</string>
+    <string name="phase_class_problem">Needs attention</string>
+    <string name="phase_class_idle">Not running</string>
+    <string name="label_pc">PC</string>
+    <string name="label_transport">Connection</string>
+    <string name="transport_lan">Local network</string>
+    <string name="transport_usb">USB</string>
+    <string name="transport_none">Not connected</string>
+    <string name="label_address">Address</string>
+    <string name="label_camera_in_use">Camera</string>
+    <string name="label_requested_quality">Requested</string>
+    <string name="label_actual_quality">Sending</string>
+    <string name="label_stream_fps">Stream frame rate</string>
+    <string name="label_dropped">Dropped frames</string>
+    <string name="label_bitrate">Bitrate</string>
+    <string name="label_battery">Battery</string>
+    <string name="label_thermal">Phone temperature</string>
+    <string name="value_unknown">Unknown</string>
+    <string name="value_not_streaming">Not streaming</string>
+    <string name="value_auto">Auto</string>
+    <string name="value_yes">Yes</string>
+    <string name="value_no">No</string>
+    <string name="value_on">On</string>
+    <string name="format_resolution">%1$d x %2$d</string>
+    <string name="format_fps">%1$d fps</string>
+    <string name="format_fps_decimal">%1$.1f fps</string>
+    <string name="format_bitrate">%1$.1f Mbps</string>
+    <string name="format_percent">%1$d%%</string>
+    <string name="format_dropped">%1$.1f%%</string>
+    <string name="battery_charging">Charging</string>
+    <string name="battery_on_battery">On battery</string>
+    <string name="thermal_none">Normal</string>
+    <string name="thermal_light">Slightly warm</string>
+    <string name="thermal_moderate">Warm</string>
+    <string name="thermal_severe">Hot</string>
+    <string name="thermal_critical">Very hot</string>
+    <string name="thermal_emergency">Too hot</string>
+    <string name="thermal_shutdown">Overheating</string>
+    <string name="advice_thermal_moderate">Your phone is warming up. A lower resolution or frame rate will keep the stream steady.</string>
+    <string name="advice_thermal_severe">Phone temperature is getting high. Lower the resolution or frame rate, or connect the charger.</string>
+    <string name="advice_battery_low">Phone battery is low. Consider connecting the charger to keep streaming.</string>
+    <string name="advice_battery_very_low">Phone battery is very low. Connect the charger to keep streaming.</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_status">Status</string>
+    <string name="nav_camera">Camera</string>
+    <string name="nav_output">Output</string>
+    <string name="nav_diagnostics">Diagnostics</string>
+
+    <!-- Camera and quality -->
+    <string name="section_camera">Camera</string>
+    <string name="section_output">Output</string>
+    <string name="camera_owner_note">Your PC chooses the picture settings while it is streaming. You can switch the camera here at any time.</string>
+    <string name="camera_none">No camera has been reported yet.</string>
+    <string name="camera_loading">Looking for this phone\'s cameras...</string>
+    <string name="camera_capabilities_title">What this camera can do</string>
+    <string name="camera_capabilities_note">These are capabilities, not switches. Your PC chooses whether to use them while it streams.</string>
+    <string name="quality_ladder_title">Quality ladder</string>
+    <string name="quality_ladder_note">The filled rung is the one being sent. Outlined rungs are supported but not in use.</string>
+    <string name="settings_title">Picture settings</string>
+    <string name="settings_note">These follow what your PC asked for. Change them in PhoneCam Desktop.</string>
+    <string name="capability_available">Can do</string>
+    <string name="capability_unavailable">Cannot do</string>
+    <string name="token_state_in_use">In use</string>
+    <string name="token_state_available">Available</string>
+    <string name="token_state_unavailable">Not available</string>
+    <string name="token_state_none">No status</string>
+    <string name="camera_back">Back camera</string>
+    <string name="camera_front">Front camera</string>
+    <string name="camera_external">External camera</string>
+    <string name="camera_id">Camera %1$s</string>
+    <string name="camera_switch_action">Switch to %1$s</string>
+    <string name="camera_switch_selected">%1$s, in use</string>
+    <string name="camera_tile_in_use">In use</string>
+    <string name="camera_tile_switch">Tap to use</string>
+    <string name="camera_selected">Using %1$s (%2$s)</string>
+    <string name="camera_none_selected">No camera selected.</string>
+    <string name="control_resolution">Resolution</string>
+    <string name="control_frame_rate">Frame rate</string>
+    <string name="control_bitrate">Bitrate</string>
+    <string name="control_quality_mode">Quality mode</string>
+    <string name="control_mirror">Mirror</string>
+    <string name="control_rotation">Rotation</string>
+    <string name="control_torch">Torch</string>
+    <string name="control_zoom">Zoom</string>
+    <string name="control_screen_mode">Phone screen</string>
+    <string name="control_focus">Autofocus</string>
+    <string name="control_exposure">Exposure</string>
+    <string name="control_white_balance">White balance</string>
+    <string name="quality_auto">Auto</string>
+    <string name="quality_manual">Manual</string>
+    <string name="screen_keep_on">Keep on</string>
+    <string name="screen_dim">Dim</string>
+    <string name="screen_black">Black</string>
+    <string name="rotation_degrees">%1$d degrees</string>
+    <string name="zoom_factor">%1$.1fx</string>
+    <string name="reason_camera_no_resolutions">This camera didn\'t report any usable resolution.</string>
+    <string name="reason_no_flash">This camera has no flash.</string>
+    <string name="reason_no_zoom">This camera doesn\'t support zoom.</string>
+    <string name="reason_no_focus">This camera doesn\'t support autofocus.</string>
+    <string name="reason_no_exposure">This camera doesn\'t report exposure control.</string>
+    <string name="reason_no_white_balance">This camera doesn\'t report white balance control.</string>
+    <string name="capability_resolutions">Resolutions</string>
+    <string name="capability_fps">Frame rates</string>
+    <string name="capability_zoom">Zoom range</string>
+    <string name="capability_orientation">Sensor rotation</string>
+    <string name="capability_none">Not reported by this phone.</string>
+
+    <!-- Notices and errors -->
+    <string name="banner_notice_title">Using a supported setting</string>
+    <string name="banner_approval_title">Waiting for your PC</string>
+    <string name="banner_error_title">PhoneCam couldn\'t continue</string>
+    <string name="banner_local_title">Heads up</string>
+    <string name="action_retry">Try again</string>
+
+    <!-- Diagnostics -->
+    <string name="section_diagnostics">Diagnostics</string>
+    <string name="diagnostics_device_id">Device ID</string>
+    <string name="diagnostics_device_name">Device name</string>
+    <string name="diagnostics_secret">Pairing fingerprint</string>
+    <string name="diagnostics_secret_none">Not paired</string>
+    <string name="diagnostics_encoder">H.264 encoder</string>
+    <string name="diagnostics_encoder_hardware">Hardware</string>
+    <string name="diagnostics_encoder_software">Software</string>
+    <!--
+      Shown for a value the phone has not measured yet: the encoder probe (a
+      MediaCodecList query) and the camera probe both run off the main thread, so
+      for a moment after launch nothing has looked. "Software" or "Cameras found:
+      0" would assert an answer the phone has not earned.
+    -->
+    <string name="diagnostics_not_detected">Not detected yet</string>
+    <string name="diagnostics_cameras">Cameras found</string>
+    <string name="diagnostics_app_version">App version</string>
+    <string name="action_refresh_capabilities">Re-read camera capabilities</string>
+    <string name="action_copy_log">Copy log</string>
+    <string name="action_clear_log">Clear log</string>
+    <string name="action_show_log">Show log</string>
+    <string name="action_hide_log">Hide log</string>
+    <string name="diagnostics_log_empty">Nothing logged yet.</string>
+    <string name="diagnostics_copied">Diagnostics copied to the clipboard.</string>
+    <!--
+      The report is the log plus the context needed to act on it: device, session
+      shape, encoder, battery and thermal state. It is a separate action from
+      copying the log because the log alone cannot be reproduced from.
+    -->
+    <string name="action_copy_report">Copy report</string>
+    <string name="action_send_report">Send report</string>
+    <string name="diagnostics_report_copied">Report copied. Paste it wherever you want it fixed from.</string>
+    <string name="report_subject">PhoneCam bug report</string>
+
+    <!--
+      Toasts. These announce a change the user either caused or needs to notice.
+      They are deliberately short: a toast that has to be read twice is worse
+      than no toast, because it covers the thing it is describing.
+    -->
+    <string name="toast_camera_switched">Switched to %1$s</string>
+    <string name="toast_qr_dispatched">Pairing code accepted. Connecting…</string>
+    <string name="toast_connected_usb">Connected to %1$s over the cable</string>
+    <string name="toast_connected_wifi">Connected to %1$s over Wi-Fi</string>
+    <string name="toast_streaming_started">Streaming started</string>
+    <string name="toast_reconnecting">Connection lost. Reconnecting\u2026</string>
+    <string name="toast_your_pc">your PC</string>
+
+    <!-- Streaming overlay -->
+    <string name="overlay_streaming_title">Streaming to %1$s</string>
+    <string name="overlay_streaming_title_unknown">Streaming to your PC</string>
+    <string name="overlay_hint">Tap to show controls</string>
+    <string name="action_stop_stream">Stop streaming</string>
+</resources>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        The dark half of the window theme. A dark window background is not just
+        cosmetic here: this app is often launched in a dark room next to the
+        subject, and a white flash before Compose starts is the worst possible
+        first frame.
+    -->
+    <style name="Theme.PhoneCam" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/phonecam_background</item>
+        <item name="android:colorBackground">@color/phonecam_background</item>
+        <item name="android:statusBarColor">@color/phonecam_background</item>
+        <item name="android:navigationBarColor">@color/phonecam_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

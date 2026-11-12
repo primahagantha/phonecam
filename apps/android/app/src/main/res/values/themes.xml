@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        The window theme, painted before Compose draws its first frame.
+
+        It must match the scheme Compose is about to pick, or the app flashes the
+        wrong colour on launch. This file is the light half; `values-night` is the
+        dark half. Both read the same colours as `ui/theme/Theme.kt`.
+    -->
+    <style name="Theme.PhoneCam" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/phonecam_light_background</item>
+        <item name="android:colorBackground">@color/phonecam_light_background</item>
+        <item name="android:statusBarColor">@color/phonecam_light_background</item>
+        <item name="android:navigationBarColor">@color/phonecam_light_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>
