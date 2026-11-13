@@ -245,13 +245,13 @@ fn skip_scaling_list(r: &mut BitReader<'_>, size: usize) -> Option<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Builds a minimal baseline-profile SPS Annex-B buffer for a given size.
     ///
     /// Written by hand so the parser is tested against bytes it did not produce.
-    fn make_sps(width_mbs: u32, height_map_units: u32, crop_bottom_units: u32) -> Vec<u8> {
+    pub(crate) fn make_sps(width_mbs: u32, height_map_units: u32, crop_bottom_units: u32) -> Vec<u8> {
         let mut bits: Vec<u8> = Vec::new();
 
         fn push_bits(bits: &mut Vec<u8>, value: u32, count: u32) {

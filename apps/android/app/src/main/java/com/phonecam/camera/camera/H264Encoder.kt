@@ -183,7 +183,13 @@ class H264Encoder(
                     setInteger(MediaFormat.KEY_FRAME_RATE, cand.fps)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 }
-                created.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                try {
+                    created.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "basic configure failed on ${created.name}: ${e.message}")
+                    runCatching { created.release() }
+                    return null
+                }
             }
 
             val activeCodec = created ?: return null
@@ -241,6 +247,7 @@ class H264Encoder(
         drainThread = Thread({
             val target = codec ?: return@Thread
             var reusableFrame: EncodedFrame? = null
+            var cachedConfig: ByteArray? = null
             while (running) {
                 try {
                     val index = target.dequeueOutputBuffer(bufferInfo, DEQUEUE_TIMEOUT_US)
@@ -255,17 +262,53 @@ class H264Encoder(
                         if (buffer != null && bufferInfo.size > 0) {
                             val isConfig = bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
                             val isKey = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+
+                            if (isConfig) {
+                                val configBytes = ByteArray(bufferInfo.size)
+                                val pos = buffer.position()
+                                try {
+                                    buffer.position(bufferInfo.offset)
+                                    buffer.get(configBytes)
+                                } finally {
+                                    buffer.position(pos)
+                                }
+                                cachedConfig = configBytes
+                            }
+
+                            val outputBuf: ByteBuffer
+                            val outputOffset: Int
+                            val outputLength: Int
+                            val cfg = cachedConfig
+                            if (isKey && !isConfig && cfg != null && !hasAnnexBSps(buffer, bufferInfo.offset, bufferInfo.size)) {
+                                val combined = ByteArray(cfg.size + bufferInfo.size)
+                                System.arraycopy(cfg, 0, combined, 0, cfg.size)
+                                val pos = buffer.position()
+                                try {
+                                    buffer.position(bufferInfo.offset)
+                                    buffer.get(combined, cfg.size, bufferInfo.size)
+                                } finally {
+                                    buffer.position(pos)
+                                }
+                                outputBuf = ByteBuffer.wrap(combined)
+                                outputOffset = 0
+                                outputLength = combined.size
+                            } else {
+                                outputBuf = buffer
+                                outputOffset = bufferInfo.offset
+                                outputLength = bufferInfo.size
+                            }
+
                             val frame = reusableFrame?.apply {
-                                this.buffer = buffer
-                                this.offset = bufferInfo.offset
-                                this.length = bufferInfo.size
+                                this.buffer = outputBuf
+                                this.offset = outputOffset
+                                this.length = outputLength
                                 this.ptsUs = bufferInfo.presentationTimeUs
                                 this.isKeyframe = isKey || isConfig
                                 this.isCodecConfig = isConfig
                             } ?: EncodedFrame(
-                                buffer = buffer,
-                                offset = bufferInfo.offset,
-                                length = bufferInfo.size,
+                                buffer = outputBuf,
+                                offset = outputOffset,
+                                length = outputLength,
                                 ptsUs = bufferInfo.presentationTimeUs,
                                 isKeyframe = isKey || isConfig,
                                 isCodecConfig = isConfig,
@@ -295,5 +338,28 @@ class H264Encoder(
         private const val I_FRAME_INTERVAL_SECONDS = 1
         private const val DEQUEUE_TIMEOUT_US = 100_000L
         private const val DRAIN_JOIN_TIMEOUT_MS = 500L
+
+        private fun hasAnnexBSps(buffer: ByteBuffer, offset: Int, size: Int): Boolean {
+            if (size < 5) return false
+            val pos = buffer.position()
+            return try {
+                buffer.position(offset)
+                val b0 = buffer.get()
+                val b1 = buffer.get()
+                val b2 = buffer.get()
+                if (b0 == 0.toByte() && b1 == 0.toByte() && b2 == 0.toByte() && size >= 5) {
+                    val b3 = buffer.get()
+                    val b4 = buffer.get()
+                    b3 == 1.toByte() && (b4.toInt() and 0x1F) == 7
+                } else if (b0 == 0.toByte() && b1 == 0.toByte() && b2 == 1.toByte()) {
+                    val b3 = buffer.get()
+                    (b3.toInt() and 0x1F) == 7
+                } else {
+                    false
+                }
+            } finally {
+                buffer.position(pos)
+            }
+        }
     }
 }

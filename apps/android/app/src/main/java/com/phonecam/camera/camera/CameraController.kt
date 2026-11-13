@@ -654,10 +654,6 @@ class CameraController(private val context: Context) {
                     val clamped = zoomFactor.coerceIn(zoomRange.lower, zoomRange.upper)
                     zoom = clamped
                     builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, clamped)
-                    // Reset SCALER_CROP_REGION to full active array to avoid conflict
-                    if (sensorRect != null) {
-                        builder.set(CaptureRequest.SCALER_CROP_REGION, sensorRect)
-                    }
                     applyRequest(builder)
                     return
                 }

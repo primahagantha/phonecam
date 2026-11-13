@@ -26,7 +26,7 @@ use phonecam_core::session::{
 };
 use phonecam_core::transport::{Connection, DiscoverySocket, Listener, ReadResult};
 use phonecam_framebus::{FrameState, FrameWriter};
-use phonecam_media::{H264Decoder, YuvPlanes};
+use phonecam_media::{DecodeError, H264Decoder, YuvPlanes};
 use phonecam_protocol::{
     CapabilitiesPayload, CoreError, CoreState, DesktopBeacon, DesktopToPhone, FpsValue, LogLevel,
     NearbyPhone, PhoneToDesktop, QrPayload, QualityMode, ScreenMode, StreamPhase, TransportKind,
@@ -1072,7 +1072,11 @@ impl Runtime {
                         self.camera_retry_generation.fetch_add(1, Ordering::SeqCst);
                     }
                 }
-                Err(_) => {
+                Err(DecodeError::NoPicture) => {
+                    self.note_stage(1, now_us() - decode_started);
+                }
+                Err(error) => {
+                    tracing::warn!("decode error: {error}");
                     self.note_stage(1, now_us() - decode_started);
                     dropped += 1;
                     self.session.decode_struggling.store(true, Ordering::Relaxed);
@@ -1932,6 +1936,23 @@ impl Runtime {
         self.bump_state_version();
     }
 
+    pub fn clean_user_error_message(raw: &str) -> String {
+        let lower = raw.to_lowercase();
+        if lower.contains("no service started") || lower.contains("not found") {
+            "Could not start PhoneCam on the phone. Please open the PhoneCam app on your phone and try again.".to_string()
+        } else if lower.contains("couldn't start video encoding") || lower.contains("encoder_failed") {
+            "The phone could not start video encoding. Try switching camera or lowering the resolution.".to_string()
+        } else if lower.contains("camera is in use") || lower.contains("error_camera_in_use") {
+            "Camera is in use by another app on the phone. Please close other camera apps and retry.".to_string()
+        } else if lower.contains("timed out") {
+            "Connection timed out. Check that your phone and PC are connected to the same Wi-Fi or via USB cable.".to_string()
+        } else if lower.contains("unauthorized") {
+            "USB debugging authorization required. Please tap 'Allow' on your phone.".to_string()
+        } else {
+            raw.trim().to_string()
+        }
+    }
+
     pub fn log_error(&self, code: &str, message: &str) {
         let redacted = phonecam_protocol::redact(message);
         if crate::logging::is_initialized() {
@@ -1943,12 +1964,13 @@ impl Runtime {
         } else {
             self.log.write("ERROR", &format!("{code}: {redacted}"));
         }
+        let user_friendly = Self::clean_user_error_message(&redacted);
         {
             let mut state = self.state.lock();
             state.push_log(LogLevel::Error, LogSource::Core, redacted.clone());
             state.add_notice(
                 FailureCode::Generic,
-                vec![("message".into(), redacted.clone())],
+                vec![("message".into(), user_friendly)],
                 format!("core-error:{code}"),
             );
         }

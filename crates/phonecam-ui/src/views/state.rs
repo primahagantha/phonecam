@@ -27,7 +27,7 @@ pub struct Notice {
 }
 
 /// Every failure the desktop can name (§38 copy).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FailureCode {
     CoreUnreachable,
     CoreReconnecting,

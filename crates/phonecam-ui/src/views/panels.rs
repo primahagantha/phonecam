@@ -17,7 +17,7 @@ use crate::views::state::{
     thermal_label, AppState, LogSource, NoticeAction,
 };
 use crate::views::widgets::{
-    chip, empty_state, key_value, metric, prose, section, status_dot, tinted_box, Button, Panel,
+    chip, key_value, metric, prose, section, status_dot, tinted_box, Button, Panel,
     Toggle,
 };
 
@@ -184,6 +184,20 @@ pub fn notice_bar(state: &AppState) -> AnyElement {
         return div().into_any_element();
     }
 
+    let mut seen = std::collections::HashSet::new();
+    let mut unique_notices = Vec::new();
+    for notice in state.notices.iter().rev() {
+        let body = notice.code.body(&notice.values);
+        let key = (notice.code, body);
+        if seen.insert(key) {
+            unique_notices.push(notice);
+            if unique_notices.len() >= 2 {
+                break;
+            }
+        }
+    }
+    unique_notices.reverse();
+
     div()
         .flex()
         .flex_col()
@@ -191,7 +205,7 @@ pub fn notice_bar(state: &AppState) -> AnyElement {
         .gap(px(Space::MD))
         .px(px(Space::XL))
         .pt(px(Space::XL))
-        .children(state.notices.iter().map(|notice| {
+        .children(unique_notices.into_iter().map(|notice| {
             let tone = notice.code.tone();
             let id = notice.id;
             let primary = notice.code.action_is_primary();
@@ -1045,25 +1059,42 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         if streaming { Tone::Ok } else { Tone::Neutral },
     ));
 
-    if !state.status.connected || !state.has_device() {
-        return panel
-            .child(empty_state(
-                "No phone is connected.",
-                "Connect one from the Setup tab to see its camera controls.",
-            ))
-            .into_element();
-    }
-
-    let cameras = state.capabilities.as_ref().map(|c| c.cameras.clone()).unwrap_or_default();
-
-    if cameras.is_empty() {
-        return panel
-            .child(empty_state(
-                "Waiting for this phone's camera list.",
-                "The phone has not reported its capabilities yet. It retries on its own.",
-            ))
-            .into_element();
-    }
+    let not_connected = !state.status.connected || !state.has_device();
+    let probed_cameras = state.capabilities.as_ref().map(|c| c.cameras.clone()).unwrap_or_default();
+    let cameras = if probed_cameras.is_empty() {
+        vec![
+            phonecam_protocol::CameraCapability {
+                id: "0".to_string(),
+                facing: phonecam_protocol::CameraFacing::Back,
+                resolutions: vec!["1920x1080".into(), "1280x720".into(), "640x480".into()],
+                fps: vec![24, 25, 30, 60],
+                torch: true,
+                focus: true,
+                zoom: true,
+                exposure: true,
+                white_balance: true,
+                min_zoom: 1.0,
+                max_zoom: 10.0,
+                orientation_degrees: 90,
+            },
+            phonecam_protocol::CameraCapability {
+                id: "1".to_string(),
+                facing: phonecam_protocol::CameraFacing::Front,
+                resolutions: vec!["1920x1080".into(), "1280x720".into(), "640x480".into()],
+                fps: vec![24, 25, 30],
+                torch: false,
+                focus: true,
+                zoom: true,
+                exposure: true,
+                white_balance: true,
+                min_zoom: 1.0,
+                max_zoom: 10.0,
+                orientation_degrees: 270,
+            },
+        ]
+    } else {
+        probed_cameras
+    };
 
     let selected = state
         .pending_camera_id
@@ -1095,6 +1126,20 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
     let current_bitrate = state.settings.bitrate;
 
     let mut children: Vec<AnyElement> = Vec::new();
+
+    if not_connected {
+        children.push(tinted_box(
+            Tone::Neutral,
+            vec![
+                div()
+                    .font_family(Fonts::SANS)
+                    .text_size(px(Type::XS))
+                    .text_color(Text::MUTED)
+                    .child("No phone connected. Settings below will apply automatically once connected.")
+                    .into_any_element(),
+            ],
+        ));
+    }
 
     // Quick camera ID cycle list: known camera IDs plus fallback 0..=4.
     let mut cycle_ids: Vec<String> = cameras.iter().map(|c| c.id.clone()).collect();
@@ -1776,6 +1821,9 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
     let panel = Panel::new("Diagnostics")
         .action(Button::new("Refresh").on_click(|_window, _cx| {
             push_effect(SideEffect::RefreshState)
+        }))
+        .action(Button::new("Open log").on_click(|_window, _cx| {
+            push_effect(SideEffect::OpenLogFile)
         }))
         .action(Button::new("Export").on_click(|_window, _cx| {
             push_effect(SideEffect::ExportDiagnostics)

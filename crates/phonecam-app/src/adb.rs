@@ -235,9 +235,13 @@ impl Adb {
         let mut last_error = String::from("no PhoneCam package answered");
 
         for package in ["com.phonecam.camera.debug", "com.phonecam.camera"] {
-            let component = format!("{package}/com.phonecam.camera.service.CameraStreamService");
+            if !self.is_package_installed(package, serial) {
+                continue;
+            }
+
+            let component = build_service_component(package);
             let port_text = port.to_string();
-            let output = self.run_for_serial(
+            let mut output = self.run_for_serial(
                 serial,
                 &[
                     "shell",
@@ -257,28 +261,68 @@ impl Adb {
                 Duration::from_secs(10),
             )?;
 
+            if is_foreground_service_not_found(&output) {
+                let activity = build_activity_component(package);
+                let _ = self.run_for_serial(
+                    serial,
+                    &["shell", "am", "start", "-n", &activity],
+                    Duration::from_secs(10),
+                );
+                std::thread::sleep(Duration::from_millis(500));
+                output = self.run_for_serial(
+                    serial,
+                    &[
+                        "shell",
+                        "am",
+                        "start-foreground-service",
+                        "-n",
+                        &component,
+                        "-a",
+                        "com.phonecam.camera.action.CONNECT_MANUAL",
+                        "--es",
+                        "host",
+                        "127.0.0.1",
+                        "--ei",
+                        "port",
+                        &port_text,
+                    ],
+                    Duration::from_secs(10),
+                )?;
+            }
+
             // Capitalised here, unlike `enable_reverse`: the two adb surfaces
             // word their failures differently and both spellings are real.
             if !output.contains("Error") && !output.contains("Exception") {
                 return Ok(());
             }
-            last_error = output.trim().to_string();
+            if is_foreground_service_not_found(&output) {
+                last_error = String::from("PhoneCam app could not be started in background. Please open PhoneCam on your phone and try again.");
+            } else {
+                last_error = output.trim().to_string();
+            }
         }
 
         Err(last_error)
     }
 
+    /// Checks whether a specific package is installed on the device via `pm path`.
+    pub fn is_package_installed(&self, package: &str, serial: Option<&str>) -> bool {
+        if let Ok(output) = self.run_for_serial(
+            serial,
+            &["shell", "pm", "path", package],
+            Duration::from_secs(4),
+        ) {
+            is_pm_path_installed(&output)
+        } else {
+            false
+        }
+    }
+
     /// Checks whether the PhoneCam app (or debug build) is installed on the device.
     pub fn is_app_installed(&self, serial: Option<&str>) -> bool {
         for package in ["com.phonecam.camera", "com.phonecam.camera.debug"] {
-            if let Ok(output) = self.run_for_serial(
-                serial,
-                &["shell", "pm", "path", package],
-                Duration::from_secs(4),
-            ) {
-                if output.contains("package:") {
-                    return true;
-                }
+            if self.is_package_installed(package, serial) {
+                return true;
             }
         }
         false
@@ -346,6 +390,27 @@ pub fn parse_devices(output: &str) -> Vec<AdbDevice> {
     }
 
     devices
+}
+
+/// Returns true if `pm path` output indicates the package is installed.
+pub fn is_pm_path_installed(output: &str) -> bool {
+    output.contains("package:")
+}
+
+/// Returns true if `start-foreground-service` failed because the service was not found or app is not running.
+pub fn is_foreground_service_not_found(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("not found") && lower.contains("no service started")
+}
+
+/// Builds the component string to launch MainActivity for the given package.
+pub fn build_activity_component(package: &str) -> String {
+    format!("{package}/com.phonecam.camera.ui.MainActivity")
+}
+
+/// Builds the component string for CameraStreamService for the given package.
+pub fn build_service_component(package: &str) -> String {
+    format!("{package}/com.phonecam.camera.service.CameraStreamService")
 }
 
 /// Hides the console window a child process would otherwise flash.
@@ -513,6 +578,53 @@ mod tests {
         assert_eq!(
             build_serial_args(Some("XYZ123"), &["reverse", "tcp:48721", "tcp:48721"]),
             vec!["-s", "XYZ123", "reverse", "tcp:48721", "tcp:48721"]
+        );
+    }
+
+    #[test]
+    fn pm_path_installed_detection() {
+        assert!(is_pm_path_installed("package:/data/app/~~a/com.phonecam.camera-b/base.apk\r\n"));
+        assert!(is_pm_path_installed("package:/system/priv-app/com.phonecam.camera.debug/base.apk"));
+        assert!(!is_pm_path_installed(""));
+        assert!(!is_pm_path_installed("Error: package com.phonecam.camera not found\n"));
+    }
+
+    #[test]
+    fn foreground_service_not_found_detection() {
+        assert!(is_foreground_service_not_found(
+            "Error: Not found; no service started"
+        ));
+        assert!(is_foreground_service_not_found(
+            "Error: Not found; no service started."
+        ));
+        assert!(is_foreground_service_not_found(
+            "Error: not found; no service started\r\n"
+        ));
+        assert!(!is_foreground_service_not_found(
+            "Starting service: Intent { cmp=com.phonecam.camera/.service.CameraStreamService }\n"
+        ));
+        assert!(!is_foreground_service_not_found(
+            "java.lang.SecurityException: Permission Denial"
+        ));
+    }
+
+    #[test]
+    fn component_builders_match_android_manifest() {
+        assert_eq!(
+            build_activity_component("com.phonecam.camera"),
+            "com.phonecam.camera/com.phonecam.camera.ui.MainActivity"
+        );
+        assert_eq!(
+            build_activity_component("com.phonecam.camera.debug"),
+            "com.phonecam.camera.debug/com.phonecam.camera.ui.MainActivity"
+        );
+        assert_eq!(
+            build_service_component("com.phonecam.camera"),
+            "com.phonecam.camera/com.phonecam.camera.service.CameraStreamService"
+        );
+        assert_eq!(
+            build_service_component("com.phonecam.camera.debug"),
+            "com.phonecam.camera.debug/com.phonecam.camera.service.CameraStreamService"
         );
     }
 }

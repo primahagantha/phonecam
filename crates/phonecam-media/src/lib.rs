@@ -512,6 +512,8 @@ pub struct H264Decoder {
     parameter_sets: Vec<u8>,
     /// The size the decoder is currently producing, if anything has decoded.
     dimensions: Option<Dimensions>,
+    /// Reusable buffer for prepending parameter sets to access units.
+    combined_buf: Vec<u8>,
 }
 
 impl std::fmt::Debug for H264Decoder {
@@ -523,7 +525,7 @@ impl std::fmt::Debug for H264Decoder {
 impl H264Decoder {
     pub fn new() -> Result<Self, DecodeError> {
         let inner = Decoder::new().map_err(|e| DecodeError::Init(format!("{e}")))?;
-        Ok(Self { inner, parameter_sets: Vec::new(), dimensions: None })
+        Ok(Self { inner, parameter_sets: Vec::new(), dimensions: None, combined_buf: Vec::new() })
     }
 
     pub fn dimensions(&self) -> Option<Dimensions> {
@@ -544,6 +546,7 @@ impl H264Decoder {
                 self.parameter_sets.clear();
                 self.parameter_sets.extend_from_slice(data);
                 self.dimensions = Some(dims);
+                let _ = self.inner.decode(data);
                 true
             }
             None => false,
@@ -569,16 +572,27 @@ impl H264Decoder {
         // Re-read the size from every keyframe: the adaptive ladder restarts the
         // phone's encoder at a new size, and a decoder sized to the first one
         // rejects every frame after the change.
-        if let Some(dims) = parse_avc_dimensions(access_unit) {
+        let parsed_dims = parse_avc_dimensions(access_unit);
+        if let Some(dims) = parsed_dims {
             if self.dimensions != Some(dims) {
                 tracing::info!("stream resized to {}x{}", dims.width, dims.height);
                 self.dimensions = Some(dims);
             }
         }
 
+        let input = if parsed_dims.is_none() && !self.parameter_sets.is_empty() {
+            self.combined_buf.clear();
+            self.combined_buf.reserve(self.parameter_sets.len() + access_unit.len());
+            self.combined_buf.extend_from_slice(&self.parameter_sets);
+            self.combined_buf.extend_from_slice(access_unit);
+            &self.combined_buf[..]
+        } else {
+            access_unit
+        };
+
         let yuv = self
             .inner
-            .decode(access_unit)
+            .decode(input)
             .map_err(|e| {
                 tracing::debug!("decode error: {e}");
                 DecodeError::Rejected
@@ -671,7 +685,10 @@ impl H264Decoder {
 
     /// Drops the current picture state so the next keyframe re-syncs.
     pub fn reset(&mut self) {
-        if let Ok(fresh) = Decoder::new() {
+        if let Ok(mut fresh) = Decoder::new() {
+            if !self.parameter_sets.is_empty() {
+                let _ = fresh.decode(&self.parameter_sets);
+            }
             self.inner = fresh;
         }
     }
@@ -935,6 +952,25 @@ mod tests {
         idr.extend_from_slice(&[0x88; 16]);
         assert!(!decoder.set_parameter_sets(&idr));
         assert!(decoder.parameter_sets().is_empty());
+    }
+
+    #[test]
+    fn parameter_sets_are_preloaded_preserved_on_reset_and_prepended() {
+        let mut decoder = H264Decoder::new().unwrap();
+        let sps = sps::tests::make_sps(80, 45, 0); // 1280x720
+        assert!(decoder.set_parameter_sets(&sps));
+        assert_eq!(decoder.parameter_sets(), &sps[..]);
+        assert_eq!(decoder.dimensions(), Some(Dimensions { width: 1280, height: 720 }));
+
+        // reset preserves parameter sets and re-decodes them
+        decoder.reset();
+        assert_eq!(decoder.parameter_sets(), &sps[..]);
+
+        // A standalone IDR without SPS: parse_avc_dimensions is None, so parameter_sets are prepended
+        let standalone_idr = vec![0u8, 0, 0, 1, 0x65, 0x88, 0x88];
+        assert!(parse_avc_dimensions(&standalone_idr).is_none());
+        // Decoding malformed NAL payload fails, but combined buffer was formed and rejected cleanly
+        assert!(decoder.decode(&standalone_idr).is_err());
     }
 
     fn grey_frame() -> DecodedFrame {
