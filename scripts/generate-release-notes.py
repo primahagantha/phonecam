@@ -128,11 +128,12 @@ def generate_markdown(version, commits):
     md.append(f"## PhoneCam Release {version}\n")
     md.append("> Ultra-low latency, native Rust PC webcam system for Android with zero cloud dependencies.\n")
     
+    raw_ver = version.lstrip('v')
     # Highlights / Summary table
     md.append("### 📦 Release Assets & Artifacts")
-    md.append("- **Windows 11 / 10 Installer**: `PhoneCam-Setup-1.0.0.exe` (NSIS all-in-one installer including desktop app, virtual camera drivers, bundled ADB, and Android APK)")
-    md.append("- **Windows 64-bit Portable**: `PhoneCam-v1.0.0-windows-x64.zip` (Zero-install standalone bundle with `run-portable.bat` and 1-click driver registration scripts)")
-    md.append("- **Linux 64-bit Binary**: `PhoneCam-v1.0.0-linux-x64.tar.gz` (Native binary supporting Arch, Debian/Ubuntu, Fedora/DNF with `v4l2loopback`)")
+    md.append(f"- **Windows 11 / 10 Installer**: `PhoneCam-Setup-{raw_ver}.exe` (NSIS all-in-one installer including desktop app, virtual camera drivers, bundled ADB, and Android APK)")
+    md.append(f"- **Windows 64-bit Portable**: `PhoneCam-v{raw_ver}-windows-x64.zip` (Zero-install standalone bundle with `run-portable.bat` and 1-click driver registration scripts)")
+    md.append(f"- **Linux 64-bit Binary**: `PhoneCam-v{raw_ver}-linux-x64.tar.gz` (Native binary supporting Arch, Debian/Ubuntu, Fedora/DNF with `v4l2loopback`)")
     md.append("- **Android APKs**: Universal package (`PhoneCam.apk`) + Multi-ABI splits (`arm64-v8a`, `armeabi-v7a`, `x86_64`)\n")
 
     # Categories

@@ -211,15 +211,15 @@ jobs:
           }
           makensis scripts/installer.nsi
           
-          # Ensure PhoneCam-Setup-1.0.0.exe is generated or mapped
-          $installer = Get-ChildItem -Path dist/installer/PhoneCam-Setup-*.exe | Select-Object -First 1
-          if ($installer -and $installer.Name -ne "PhoneCam-Setup-1.0.0.exe") {
-            Copy-Item $installer.FullName -Destination "dist/installer/PhoneCam-Setup-1.0.0.exe" -Force
-          }
+          # Ensure PhoneCam-Setup-<version>.exe matches target release tag
           $tag = "${{ needs.check-gate.outputs.tag_name }}"
           $version = $tag.TrimStart('v')
-          if ($version -and $version -ne "1.0.0") {
-            Copy-Item "dist/installer/PhoneCam-Setup-1.0.0.exe" -Destination "dist/installer/PhoneCam-Setup-$version.exe" -Force
+          $installer = Get-ChildItem -Path dist/installer/PhoneCam-Setup-*.exe | Select-Object -First 1
+          if ($installer -and $version) {
+            $targetName = "PhoneCam-Setup-$version.exe"
+            if ($installer.Name -ne $targetName) {
+              Move-Item $installer.FullName -Destination "dist/installer/$targetName" -Force
+            }
           }
 
       - name: Create portable zip archive
@@ -229,10 +229,7 @@ jobs:
           $portableDir = "dist/portable_staging"
           New-Item -ItemType Directory -Force -Path $portableDir
           Get-ChildItem -Path dist/unpacked | Copy-Item -Destination $portableDir -Recurse -Force
-          Compress-Archive -Path "$portableDir/*" -DestinationPath "dist/PhoneCam-v1.0.0-windows-x64.zip" -Force
-          if ($tag -ne "v1.0.0") {
-            Copy-Item "dist/PhoneCam-v1.0.0-windows-x64.zip" -Destination "dist/PhoneCam-$tag-windows-x64.zip" -Force
-          }
+          Compress-Archive -Path "$portableDir/*" -DestinationPath "dist/PhoneCam-$tag-windows-x64.zip" -Force
 
       - name: Upload Windows Installer artifact
         uses: actions/upload-artifact@v4
@@ -293,10 +290,7 @@ jobs:
           cp target/release/phonecam dist/staging-linux/
           [ -f README.md ] && cp README.md dist/staging-linux/ || true
           [ -f LICENSE ] && cp LICENSE* dist/staging-linux/ || true
-          tar -czvf "dist/PhoneCam-v1.0.0-linux-x64.tar.gz" -C dist/staging-linux .
-          if [ "$TAG" != "v1.0.0" ]; then
-            cp "dist/PhoneCam-v1.0.0-linux-x64.tar.gz" "dist/PhoneCam-${TAG}-linux-x64.tar.gz"
-          fi
+          tar -czvf "dist/PhoneCam-${TAG}-linux-x64.tar.gz" -C dist/staging-linux .
           echo "Packaged Linux release:"
           ls -la dist/*.tar.gz
 
