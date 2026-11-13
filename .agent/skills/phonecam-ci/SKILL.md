@@ -70,6 +70,7 @@ The primary CI workflow is defined at `.github/workflows/ci.yml` and triggers on
     libfontconfig1-dev \
     libfreetype6-dev \
     libxkbcommon-dev \
+    libxkbcommon-x11-dev \
     libx11-dev \
     libxcb1-dev \
     libx11-xcb-dev \
