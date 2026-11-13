@@ -23,8 +23,8 @@ pub use framing::{
 };
 
 pub use messages::{
-    AdbDevice, AuthMode, CameraCapability, CameraFacing, CapabilitiesPayload, ChannelRole,
-    CommandReply, ConnectionStats, CoreError, CoreState, CoreToDesktop, DesktopBeacon,
+    AdbDevice, AntiFlickerMode, AuthMode, CameraCapability, CameraFacing, CapabilitiesPayload,
+    ChannelRole, CommandReply, ConnectionStats, CoreError, CoreState, CoreToDesktop, DesktopBeacon,
     DesktopToCore, DesktopToPhone, DeviceCapabilities, DeviceIdentity, DiscoveryMessage,
     DiscoveryProbe, FpsValue, HandshakeStatus, LogLevel, NearbyPhone, OutputTransform,
     PairingStatus, PhoneBeacon, PhoneState, PhoneStats, PhoneToDesktop, QrPayload, QualityMode,

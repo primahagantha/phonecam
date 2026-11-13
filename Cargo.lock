@@ -3856,7 +3856,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phonecam-android-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hex",
  "jni",
@@ -3870,7 +3870,7 @@ dependencies = [
 
 [[package]]
 name = "phonecam-app"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -3892,7 +3892,7 @@ dependencies = [
 
 [[package]]
 name = "phonecam-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -3913,7 +3913,7 @@ dependencies = [
 
 [[package]]
 name = "phonecam-framebus"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "thiserror 2.0.21",
  "tracing",
@@ -3922,7 +3922,7 @@ dependencies = [
 
 [[package]]
 name = "phonecam-media"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "openh264",
  "phonecam-framebus",
@@ -3933,7 +3933,7 @@ dependencies = [
 
 [[package]]
 name = "phonecam-protocol"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hex",
  "hmac 0.13.0",
@@ -3946,7 +3946,7 @@ dependencies = [
 
 [[package]]
 name = "phonecam-ui"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "gpui",
  "image",

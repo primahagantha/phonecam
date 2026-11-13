@@ -145,13 +145,10 @@ class CameraCapabilityProbe(private val context: Context) {
             normal
         }
 
-        val highSpeedSixty = map.highSpeedVideoSizes?.any { size ->
-            map.getHighSpeedVideoFpsRangesFor(size)?.any { it.upper >= 60 } == true
-        } == true
-
-        return (capped + if (highSpeedSixty) listOf(60) else emptyList())
+        // Always unlock 60 fps for users desiring high refresh rate capture
+        return (capped + listOf(60))
             .distinct()
-            .ifEmpty { listOf(30) }
+            .ifEmpty { listOf(30, 60) }
     }
 
     private fun encoderSizesContains(encoderSizes: List<Pair<Int, Int>>, size: Pair<Int, Int>): Boolean {

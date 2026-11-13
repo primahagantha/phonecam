@@ -1385,6 +1385,148 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         ],
     ));
 
+    // Camera Responsiveness (Latency & Frame Cadence in ms)
+    let latency_ms = state
+        .core
+        .as_ref()
+        .map(|c| c.stats.latency_ms)
+        .unwrap_or(-1.0);
+    let active_fps = phone
+        .map(|p| p.actual_fps)
+        .filter(|&f| f > 0)
+        .or_else(|| phone.map(|p| p.fps).filter(|&f| f > 0))
+        .unwrap_or(if state.settings.fps == 0 {
+            30
+        } else {
+            state.settings.fps
+        });
+    let frame_interval_ms = if active_fps > 0 {
+        1000.0 / active_fps as f32
+    } else {
+        33.3
+    };
+
+    let (latency_val, status_badge, status_color) = if not_connected || latency_ms < 0.0 {
+        ("-- ms".to_string(), "Idle", Text::MUTED)
+    } else if latency_ms < 25.0 {
+        (format!("{latency_ms:.1} ms"), "Ultra-Low", Status::OK)
+    } else if latency_ms < 50.0 {
+        (format!("{latency_ms:.1} ms"), "Responsive", Accent::DEFAULT)
+    } else if latency_ms < 100.0 {
+        (format!("{latency_ms:.1} ms"), "Normal", Status::WARN)
+    } else {
+        (format!("{latency_ms:.1} ms"), "Queued", Status::DANGER)
+    };
+
+    let sensor_cadence_str = format!("{frame_interval_ms:.1} ms ({active_fps} fps)");
+
+    let responsiveness_card = div()
+        .flex()
+        .flex_col()
+        .gap(px(Space::XS))
+        .rounded(px(Radius::MD))
+        .border_1()
+        .border_color(SHELL.border)
+        .bg(SHELL.panel)
+        .p(px(Space::MD))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_between()
+                .items_center()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .font_family(Fonts::SANS)
+                                .text_size(px(Type::TWO_XS))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(Text::MUTED)
+                                .child("CAMERA RESPONSIVENESS & LATENCY"),
+                        )
+                        .child(
+                            div()
+                                .font_family(Fonts::SANS)
+                                .text_size(px(Type::TWO_XS))
+                                .text_color(Text::MUTED)
+                                .child("Real-time round trip & sensor exposure cadence"),
+                        ),
+                )
+                .child(
+                    div()
+                        .font_family(Fonts::SANS)
+                        .text_size(px(Type::TWO_XS))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(status_color)
+                        .bg(SHELL.control)
+                        .px(px(Space::SM))
+                        .py(px(Space::XS))
+                        .rounded(px(Radius::SM))
+                        .child(status_badge),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(Space::MD))
+                .mt(px(Space::XS))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .bg(SHELL.base)
+                        .rounded(px(Radius::SM))
+                        .p(px(Space::SM))
+                        .child(
+                            div()
+                                .font_family(Fonts::SANS)
+                                .text_size(px(Type::TWO_XS))
+                                .text_color(Text::MUTED)
+                                .child("Round-Trip Latency (RTT)"),
+                        )
+                        .child(
+                            div()
+                                .font_family(Fonts::MONO)
+                                .text_size(px(Type::TWO_SM))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(Accent::DEFAULT)
+                                .child(latency_val),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .bg(SHELL.base)
+                        .rounded(px(Radius::SM))
+                        .p(px(Space::SM))
+                        .child(
+                            div()
+                                .font_family(Fonts::SANS)
+                                .text_size(px(Type::TWO_XS))
+                                .text_color(Text::MUTED)
+                                .child("Sensor Frame Cadence"),
+                        )
+                        .child(
+                            div()
+                                .font_family(Fonts::MONO)
+                                .text_size(px(Type::TWO_SM))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(Text::PRIMARY)
+                                .child(sensor_cadence_str),
+                        ),
+                ),
+        )
+        .into_any_element();
+
+    children.push(section("Camera Responsiveness", vec![responsiveness_card]));
+
     let zoom_element = if zoom_supported {
         let min_zoom = selected_cam
             .map(|c| if c.min_zoom > 0.0 { c.min_zoom } else { 1.0 })
@@ -1546,7 +1688,49 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         )
     };
 
-    children.push(section("How it behaves", vec![zoom_element, torch_element]));
+    let current_flicker = state.settings.anti_flicker;
+    let anti_flicker_hint = match current_flicker {
+        phonecam_protocol::AntiFlickerMode::Auto => "Auto (Dynamic detection)",
+        phonecam_protocol::AntiFlickerMode::Hz50 => "50 Hz (EU, Asia, UK, AU)",
+        phonecam_protocol::AntiFlickerMode::Hz60 => "60 Hz (US, Americas, JP)",
+        phonecam_protocol::AntiFlickerMode::Off => "Off (No filter)",
+    };
+
+    let anti_flicker_element = crate::views::widgets::field(
+        "Anti-flicker",
+        Some(anti_flicker_hint.into()),
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(Space::SM))
+            .children(
+                [
+                    (phonecam_protocol::AntiFlickerMode::Auto, "Auto", "flicker-auto"),
+                    (phonecam_protocol::AntiFlickerMode::Hz50, "50 Hz", "flicker-50hz"),
+                    (phonecam_protocol::AntiFlickerMode::Hz60, "60 Hz", "flicker-60hz"),
+                    (phonecam_protocol::AntiFlickerMode::Off, "Off", "flicker-off"),
+                ]
+                .into_iter()
+                .map(|(mode, label, id)| {
+                    let active = current_flicker == mode;
+                    pill_button(
+                        id,
+                        label,
+                        active,
+                        false,
+                        move |_window, _cx| push_effect(SideEffect::SetAntiFlicker(mode)),
+                    )
+                }),
+            )
+            .into_any_element(),
+        Some("Eliminates rolling stripes and pulsing beat flicker from indoor AC lights and monitors.".into()),
+    );
+
+    children.push(section(
+        "How it behaves",
+        vec![zoom_element, torch_element, anti_flicker_element],
+    ));
 
     let auto = state.settings.quality_mode == phonecam_protocol::QualityMode::Auto;
     children.push(section(
@@ -2958,6 +3142,10 @@ fn fps_presets(camera_fps: &[u32], current: Option<u32>) -> Vec<Option<u32>> {
     } else {
         camera_fps.to_vec()
     };
+    // Always unlock 60 fps so the user can stream at high refresh rates
+    if !fixed.contains(&60) {
+        fixed.push(60);
+    }
     if let Some(f) = current {
         if !fixed.contains(&f) {
             fixed.push(f);
@@ -3005,6 +3193,12 @@ mod tests {
     fn fps_presets_include_auto_and_sort_unique() {
         let presets = fps_presets(&[60, 30, 15, 30], Some(24));
         assert_eq!(presets, vec![None, Some(15), Some(24), Some(30), Some(60)]);
+    }
+
+    #[test]
+    fn fps_presets_always_unlocks_60_fps() {
+        let presets = fps_presets(&[30, 24], None);
+        assert_eq!(presets, vec![None, Some(24), Some(30), Some(60)]);
     }
 
     #[test]

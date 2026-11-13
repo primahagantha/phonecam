@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use phonecam_protocol::{LogLevel, QualityMode, ScreenMode};
+use phonecam_protocol::{AntiFlickerMode, LogLevel, QualityMode, ScreenMode};
 use phonecam_ui::views::state::Settings;
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +47,8 @@ struct SettingsFile {
     quality_mode: Option<String>,
     #[serde(default)]
     screen_mode: Option<String>,
+    #[serde(default)]
+    anti_flicker: Option<String>,
     #[serde(default)]
     log_level: Option<String>,
     #[serde(default)]
@@ -136,6 +138,11 @@ fn coerce(file: SettingsFile) -> Settings {
             Some("black") => ScreenMode::Black,
             _ => defaults.screen_mode,
         },
+        anti_flicker: file
+            .anti_flicker
+            .as_deref()
+            .and_then(AntiFlickerMode::from_str_opt)
+            .unwrap_or(defaults.anti_flicker),
         log_level: match file.log_level.as_deref() {
             Some("error") => LogLevel::Error,
             Some("warn") => LogLevel::Warn,
@@ -193,6 +200,7 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
         bitrate: Some(settings.bitrate),
         quality_mode: Some(settings.quality_mode.as_str().to_string()),
         screen_mode: Some(settings.screen_mode.as_str().to_string()),
+        anti_flicker: Some(settings.anti_flicker.as_str().to_string()),
         log_level: Some(settings.log_level.as_str().to_string()),
         always_on_top: Some(settings.always_on_top),
         window_x: settings.window_x,
@@ -304,6 +312,14 @@ mod tests {
         assert_eq!(
             parse(r#"{"log_level": "debug"}"#).log_level,
             LogLevel::Debug
+        );
+        assert_eq!(
+            parse(r#"{"anti_flicker": "50hz"}"#).anti_flicker,
+            AntiFlickerMode::Hz50
+        );
+        assert_eq!(
+            parse(r#"{"anti_flicker": "60hz"}"#).anti_flicker,
+            AntiFlickerMode::Hz60
         );
         // An unknown string is not an error.
         assert_eq!(

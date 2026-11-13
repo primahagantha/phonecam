@@ -361,6 +361,45 @@ impl QualityMode {
     }
 }
 
+/// Anti-flicker / anti-banding mode for camera sensor exposure (§6.2).
+/// Eliminates beat flicker caused by 50 Hz or 60 Hz AC electrical grid lighting.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AntiFlickerMode {
+    /// Dynamic hal-level frequency detection.
+    #[default]
+    Auto,
+    /// 50 Hz AC grid (Europe, Asia, Australia, UK, Africa).
+    #[serde(rename = "50hz")]
+    Hz50,
+    /// 60 Hz AC grid (Americas, Japan 60Hz areas, Taiwan, Philippines).
+    #[serde(rename = "60hz")]
+    Hz60,
+    /// Antibanding filter disabled.
+    Off,
+}
+
+impl AntiFlickerMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Hz50 => "50hz",
+            Self::Hz60 => "60hz",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "50hz" | "50" => Some(Self::Hz50),
+            "60hz" | "60" => Some(Self::Hz60),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ThermalState {
@@ -457,6 +496,8 @@ pub struct PhoneState {
     pub battery: i32,
     pub charging: bool,
     pub thermal: ThermalState,
+    #[serde(default, rename = "antiFlicker")]
+    pub anti_flicker: AntiFlickerMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -510,6 +551,8 @@ pub enum DesktopToPhone {
     },
     #[serde(rename = "set_torch")]
     SetTorch { enabled: bool },
+    #[serde(rename = "set_anti_flicker")]
+    SetAntiFlicker { mode: AntiFlickerMode },
     #[serde(rename = "set_screen")]
     SetScreen { mode: ScreenMode },
     #[serde(rename = "set_quality_mode")]
@@ -667,6 +710,8 @@ pub enum DesktopToCore {
     },
     #[serde(rename = "set_torch")]
     SetTorch { enabled: bool },
+    #[serde(rename = "set_anti_flicker")]
+    SetAntiFlicker { mode: AntiFlickerMode },
     #[serde(rename = "set_screen")]
     SetScreen { mode: ScreenMode },
     #[serde(rename = "set_quality_mode")]

@@ -137,9 +137,10 @@ class CameraController(private val context: Context) {
             if (range.lower in 1..120) out += range.lower
         }
         val normal = listOf(24, 25, 30).filter { candidate -> out.any { it >= candidate } }
-        return (normal + if (supportsHighSpeedFps(characteristics, 60)) listOf(60) else emptyList())
+        // Always unlock 60 fps for ultra-smooth video capture
+        return (normal + listOf(60))
             .distinct()
-            .ifEmpty { listOf(30) }
+            .ifEmpty { listOf(30, 60) }
     }
 
     /** True when some high speed configuration reaches [fps]. */
@@ -320,6 +321,11 @@ class CameraController(private val context: Context) {
             return containing.minByOrNull { it.upper - it.lower }!!
         }
 
+        val highest = ranges.maxByOrNull { it.upper }
+        if (highest != null && highest.upper < targetFps) {
+            return highest
+        }
+
         return Range(targetFps, targetFps)
     }
 
@@ -361,18 +367,49 @@ class CameraController(private val context: Context) {
         }.onFailure { Log.w(TAG, "applyRequest rejected by camera session: ${it.message}") }
     }
 
+    @Volatile
+    private var configuredAntibanding: String = "auto"
+
+    /** Re-applies the requested antibanding mode without tearing down the session. */
+    fun setAntibandingMode(mode: String) {
+        configuredAntibanding = mode.lowercase()
+        val builder = requestBuilder ?: return
+        val characteristics = device?.id?.let { getCharacteristics(it) } ?: return
+        val targetMode = resolveAntibandingMode(characteristics, configuredAntibanding)
+        runCatching {
+            builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, targetMode)
+            applyRequest(builder)
+            Log.i(TAG, "Applied antibanding mode: $configuredAntibanding ($targetMode)")
+        }.onFailure { Log.d(TAG, "antibanding change rejected: ${it.javaClass.simpleName}") }
+    }
+
     /**
-     * Selects antibanding mode. Prefers AUTO when supported so the camera HAL
-     * dynamically detects 50 Hz vs 60 Hz flicker (eliminating lighting and monitor
-     * beat flicker), falling back to 50 Hz then 60 Hz.
+     * Resolves antibanding mode based on user preference and hardware support.
+     * AUTO dynamically detects 50 Hz vs 60 Hz flicker, while 50 Hz and 60 Hz lock to AC mains frequency.
      */
-    private fun selectAntibandingMode(characteristics: CameraCharacteristics): Int {
+    private fun resolveAntibandingMode(characteristics: CameraCharacteristics, requested: String): Int {
         val modes = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES) ?: intArrayOf()
-        return when {
-            modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
-            modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
-            modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ
-            else -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
+        return when (requested.lowercase()) {
+            "50hz", "50" -> if (modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ)) {
+                CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
+            } else if (modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)) {
+                CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+            } else CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
+
+            "60hz", "60" -> if (modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ)) {
+                CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ
+            } else if (modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)) {
+                CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+            } else CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
+
+            "off" -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
+
+            else -> when {
+                modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+                modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
+                modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ
+                else -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
+            }
         }
     }
 
@@ -407,7 +444,7 @@ class CameraController(private val context: Context) {
 
             val characteristics = getCharacteristics(camera.id)
             val afMode = characteristics?.let { selectAfMode(it) } ?: CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-            val antibandingMode = characteristics?.let { selectAntibandingMode(it) } ?: CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
+            val antibandingMode = characteristics?.let { resolveAntibandingMode(it, configuredAntibanding) } ?: CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
             val hasValidPreview = previewSurface != null && previewSurface.isValid
 
             // 60 fps and above is a *constrained high speed* session on Camera2. It
@@ -668,8 +705,10 @@ class CameraController(private val context: Context) {
     /** Re-applies the requested frame rate without tearing down the session. */
     fun setFrameRate(fps: Int) {
         val builder = requestBuilder ?: return
+        val characteristics = device?.id?.let { getCharacteristics(it) }
+        val range = characteristics?.let { selectFpsRange(it, fps) } ?: Range(fps, fps)
         runCatching {
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps, fps))
+            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, range)
             applyRequest(builder)
         }.onFailure { Log.d(TAG, "fps change rejected: ${it.javaClass.simpleName}") }
     }

@@ -112,7 +112,7 @@ impl<'a> BitReader<'a> {
     /// Exp-Golomb signed.
     fn se(&mut self) -> Option<i32> {
         let value = self.ue()?;
-        let magnitude = ((value + 1) / 2) as i32;
+        let magnitude = value.div_ceil(2) as i32;
         Some(if value % 2 == 1 {
             magnitude
         } else {
@@ -203,18 +203,14 @@ fn parse_sps_payload(rbsp: &[u8]) -> Option<Dimensions> {
         chroma_format_idc
     };
 
-    let crop_unit_x = if chroma_array_type == 0 {
-        1
-    } else if chroma_array_type == 3 {
+    let crop_unit_x = if chroma_array_type == 0 || chroma_array_type == 3 {
         1
     } else {
         2
     };
 
     let frame_factor: u32 = if frame_mbs_only { 1 } else { 2 };
-    let crop_unit_y = if chroma_array_type == 0 {
-        frame_factor
-    } else if chroma_array_type == 3 {
+    let crop_unit_y = if chroma_array_type == 0 || chroma_array_type == 3 {
         frame_factor
     } else {
         2 * frame_factor
@@ -306,7 +302,7 @@ pub(crate) mod tests {
         push_bits(&mut bits, 0, 1); // rbsp_stop
 
         // Pack bits into bytes, then insert emulation prevention.
-        while bits.len() % 8 != 0 {
+        while !bits.len().is_multiple_of(8) {
             bits.push(0);
         }
         let mut raw = Vec::new();

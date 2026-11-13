@@ -74,6 +74,7 @@ data class SessionState(
     val droppedPercent: Double = 0.0,
     val screenMode: String = "keepOn",
     val qualityMode: String = "auto",
+    val antiFlicker: String = "auto",
     /**
      * Whether this phone draws its own viewfinder while streaming.
      *
@@ -1048,6 +1049,7 @@ class StreamSession(
                 battery = current.batteryPercent,
                 charging = current.charging,
                 thermal = current.thermal,
+                antiFlicker = current.antiFlicker,
             ),
         )
     }
@@ -1173,6 +1175,11 @@ class StreamSession(
             is DesktopMessage.SetVideo -> applyVideoRequest(message)
             is DesktopMessage.SetImage -> applyImageRequest(message)
             is DesktopMessage.SetTorch -> applyTorch(message.enabled)
+            is DesktopMessage.SetAntiFlicker -> {
+                camera.setAntibandingMode(message.mode)
+                _state.value = _state.value.copy(antiFlicker = message.mode)
+                sendState()
+            }
             is DesktopMessage.SetScreen -> {
                 _state.value = _state.value.copy(screenMode = message.mode)
                 sendState()

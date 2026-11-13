@@ -14,6 +14,16 @@
 //!   Frame Server, fed through the same `framebuffer-v2.bin` with the same
 //!   68-byte header.
 
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::collapsible_if,
+    clippy::manual_is_multiple_of,
+    clippy::upper_case_acronyms,
+    clippy::manual_range_contains,
+    clippy::redundant_closure,
+    clippy::unnecessary_cast
+)]
+
 use phonecam_app::{logging, runtime, settings, tray};
 
 use std::sync::atomic::Ordering;
@@ -443,6 +453,7 @@ fn apply_effect(
         }
         SideEffect::SetQualityMode(auto) => runtime.set_quality_mode(auto),
         SideEffect::SetScreenMode(mode) => runtime.set_screen_mode(mode),
+        SideEffect::SetAntiFlicker(mode) => runtime.set_anti_flicker(mode),
         SideEffect::SetTorch(enabled) => runtime.set_torch(enabled),
         SideEffect::SetZoom(zoom) => runtime.set_zoom(zoom),
         SideEffect::SetLogLevel(level) => {

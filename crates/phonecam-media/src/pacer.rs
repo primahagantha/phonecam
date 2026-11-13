@@ -113,7 +113,7 @@ impl FramePacer {
         let delta = pts_us as i64 - self.anchor_pts_us as i64;
 
         // PTS backwards jump or jump > 5s: re-anchor.
-        if delta < 0 || delta > 5_000_000 {
+        if !(0..=5_000_000).contains(&delta) {
             self.anchor_at = Some(now);
             self.anchor_pts_us = pts_us;
             self.last_publish_at = Some(now);

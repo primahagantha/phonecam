@@ -44,11 +44,7 @@ impl FlickerDetector {
             sum += luma[i] as u64;
             count += 1;
         }
-        if count == 0 {
-            0
-        } else {
-            (sum / count) as u8
-        }
+        sum.checked_div(count).map(|v| v as u8).unwrap_or(0)
     }
 
     /// Evaluates a luma buffer (first `width * height` bytes) for flicker.
@@ -60,7 +56,7 @@ impl FlickerDetector {
     /// Evaluates a pre-computed mean luma value.
     pub fn observe_mean(&mut self, mean: u8) -> Option<FlickerEvent> {
         let event = if let Some(previous) = self.last_mean_luma {
-            let jump = (mean as i16 - previous as i16).abs() as u8;
+            let jump = (mean as i16 - previous as i16).unsigned_abs() as u8;
             let flickering = jump > LUMA_JUMP_THRESHOLD;
             if flickering && !self.flicker_reported {
                 self.flicker_reported = true;

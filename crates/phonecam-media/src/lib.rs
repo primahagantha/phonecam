@@ -11,6 +11,18 @@
 //! installed. The output is I420, which is NV12's planar sibling — the frame bus
 //! wants NV12, so the interleave happens once, at publish time.
 
+#![allow(
+    clippy::manual_checked_ops,
+    clippy::cast_abs_to_unsigned,
+    clippy::manual_range_contains,
+    clippy::manual_div_ceil,
+    clippy::if_same_then_else,
+    clippy::manual_is_multiple_of,
+    clippy::manual_repeat_n,
+    clippy::chunks_exact_to_as_chunks,
+    clippy::needless_range_loop
+)]
+
 pub mod flicker;
 pub mod pacer;
 pub mod sps;
@@ -77,11 +89,7 @@ impl<'a> YuvPlanes<'a> {
                 row += 1;
             }
         }
-        if count == 0 {
-            0
-        } else {
-            (sum / count) as u8
-        }
+        sum.checked_div(count).map(|v| v as u8).unwrap_or(0)
     }
 }
 
@@ -840,6 +848,7 @@ fn normalize_rotation(rotation: u32) -> u32 {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn transform_pixels<T: Copy>(src: &[T], dst: &mut [T], w: usize, h: usize, mirror: bool, rot: u32) {
     match (rot, mirror) {
         (0, false) => {
@@ -996,8 +1005,8 @@ mod tests {
     fn grey_frame() -> DecodedFrame {
         let (w, h) = (4usize, 2usize);
         let mut yuv = vec![126u8; w * h];
-        yuv.extend(std::iter::repeat(128u8).take(w * h / 2));
-        yuv.extend(std::iter::repeat(128u8).take(w * h / 2));
+        yuv.extend(std::iter::repeat_n(128u8, w * h / 2));
+        yuv.extend(std::iter::repeat_n(128u8, w * h / 2));
         DecodedFrame {
             width: w as u32,
             height: h as u32,
@@ -1314,6 +1323,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     fn reverse_rows_u32_matches_scalar_mirror_and_180() {
         let (w, h) = (35u32, 6u32);
         let src: Vec<u8> = (0..(w * h * 4) as usize)

@@ -89,6 +89,7 @@ sealed class PhoneMessage {
         val battery: Int,
         val charging: Boolean,
         val thermal: String,
+        val antiFlicker: String = "auto",
     ) : PhoneMessage()
 
     @Serializable
@@ -173,6 +174,10 @@ sealed class DesktopMessage {
     @Serializable
     @SerialName("set_torch")
     data class SetTorch(val enabled: Boolean) : DesktopMessage()
+
+    @Serializable
+    @SerialName("set_anti_flicker")
+    data class SetAntiFlicker(val mode: String) : DesktopMessage()
 
     @Serializable
     @SerialName("set_screen")

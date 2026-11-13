@@ -226,6 +226,11 @@ class ProtoTest {
         assertEquals(-1, decodedAuto.fps)
         assertEquals(8_000_000, decodedAuto.bitrate)
 
+        val setAntiFlicker = """{"t":"set_anti_flicker","mode":"50hz"}"""
+        val decodedFlicker = ControlCodec.decodeDesktop(setAntiFlicker.toByteArray())
+        assertTrue(decodedFlicker is DesktopMessage.SetAntiFlicker)
+        assertEquals("50hz", (decodedFlicker as DesktopMessage.SetAntiFlicker).mode)
+
         // Forward compatibility: a newer desktop may send a command this build
         // does not know, which must be ignored rather than throwing (docs §6).
         val unknown = """{"t":"a_command_from_the_future","payload":{"x":1}}"""

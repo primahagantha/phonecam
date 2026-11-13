@@ -7,6 +7,8 @@
 //!
 //! Run with `cargo run --example real_device --release`.
 
+#![allow(clippy::field_reassign_with_default)]
+
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -21,12 +23,14 @@ fn main() {
         )
         .init();
 
-    let mut settings = Settings::default();
     // A real phone's own defaults, so the stream matches what the app would ask
     // for: 720p30 at 4 Mbps.
-    settings.resolution = "1280x720".into();
-    settings.fps = 30;
-    settings.bitrate = 4_000_000;
+    let settings = Settings {
+        resolution: "1280x720".into(),
+        fps: 30,
+        bitrate: 4_000_000,
+        ..Settings::default()
+    };
 
     let runtime = Runtime::new(&settings);
     let Some(port) = runtime.start() else {

@@ -13,6 +13,18 @@
 //! The preview is never a tab. It is always visible, because an answer you have
 //! to navigate to is not an answer.
 
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::assertions_on_constants,
+    clippy::derivable_impls,
+    clippy::chunks_exact_to_as_chunks,
+    clippy::type_complexity,
+    clippy::question_mark,
+    clippy::collapsible_if,
+    clippy::collapsible_else_if,
+    clippy::obfuscated_if_else
+)]
+
 pub mod theme;
 pub mod views;
 

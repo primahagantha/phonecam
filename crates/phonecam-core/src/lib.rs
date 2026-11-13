@@ -8,6 +8,8 @@
 //! one decode, and no IPC hop between "the thing that decodes" and "the thing
 //! that draws".
 
+#![allow(clippy::manual_range_contains)]
+
 pub mod adaptive_quality;
 pub mod pairing;
 pub mod session;

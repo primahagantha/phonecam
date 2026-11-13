@@ -37,6 +37,7 @@ pub enum SideEffect {
     SetQualityMode(bool),
     SetScreenMode(phonecam_protocol::ScreenMode),
     SetTorch(bool),
+    SetAntiFlicker(phonecam_protocol::AntiFlickerMode),
     SetZoom(f32),
     SetLogLevel(phonecam_protocol::LogLevel),
     SetLogFilterLevel(Option<phonecam_protocol::LogLevel>),

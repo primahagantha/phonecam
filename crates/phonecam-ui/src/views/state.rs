@@ -7,7 +7,8 @@
 //! view model is what keeps preview latency low.
 
 use phonecam_protocol::{
-    CapabilitiesPayload, CoreState, LogLevel, PhoneStats, QualityMode, ScreenMode, StreamPhase,
+    AntiFlickerMode, CapabilitiesPayload, CoreState, LogLevel, PhoneStats, QualityMode, ScreenMode,
+    StreamPhase,
 };
 
 // Re-exported so callers can name a log level without depending on the protocol
@@ -266,6 +267,7 @@ pub struct Settings {
     pub bitrate: u64,
     pub quality_mode: QualityMode,
     pub screen_mode: ScreenMode,
+    pub anti_flicker: AntiFlickerMode,
     pub log_level: LogLevel,
     pub always_on_top: bool,
     pub window_x: Option<f32>,
@@ -295,6 +297,7 @@ impl Default for Settings {
             bitrate: 4_000_000,
             quality_mode: QualityMode::Auto,
             screen_mode: ScreenMode::KeepOn,
+            anti_flicker: AntiFlickerMode::Auto,
             log_level: LogLevel::Info,
             always_on_top: false,
             window_x: None,

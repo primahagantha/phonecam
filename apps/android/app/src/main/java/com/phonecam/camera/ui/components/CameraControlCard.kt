@@ -150,6 +150,15 @@ private fun OutputSettings(state: SessionState) {
         label = stringResource(R.string.control_screen_mode),
         value = screenModeLabel(context, state.appliedScreenMode()),
     )
+    LabeledValue(
+        label = "Anti-Flicker",
+        value = when (state.antiFlicker.lowercase()) {
+            "50hz" -> "50 Hz (Mains)"
+            "60hz" -> "60 Hz (Mains)"
+            "off" -> "Off"
+            else -> "Auto"
+        },
+    )
     // Torch is shown only when it is actually on. "Torch: Off" on a camera that
     // has a flash is the default and says nothing; whether the camera *has* one
     // is the capability list's job, not this block's. When the torch is lit it is

@@ -28,10 +28,10 @@ use phonecam_core::transport::{Connection, DiscoverySocket, Listener, ReadResult
 use phonecam_framebus::{FrameState, FrameWriter};
 use phonecam_media::{DecodeError, H264Decoder, YuvPlanes};
 use phonecam_protocol::{
-    CapabilitiesPayload, CoreError, CoreState, DesktopBeacon, DesktopToPhone, FpsValue, LogLevel,
-    NearbyPhone, PhoneToDesktop, QrPayload, QualityMode, ScreenMode, StreamPhase, TransportKind,
-    VcamState, VcamStatus, VideoFlags, BEACON_INTERVAL_MS, DISCOVERY_PORT, MAX_VIDEO_PAYLOAD,
-    SERVICE_PORT, VIDEO_HEADER_SIZE,
+    AntiFlickerMode, CapabilitiesPayload, CoreError, CoreState, DesktopBeacon, DesktopToPhone,
+    FpsValue, LogLevel, NearbyPhone, PhoneToDesktop, QrPayload, QualityMode, ScreenMode,
+    StreamPhase, TransportKind, VcamState, VcamStatus, VideoFlags, BEACON_INTERVAL_MS,
+    DISCOVERY_PORT, MAX_VIDEO_PAYLOAD, SERVICE_PORT, VIDEO_HEADER_SIZE,
 };
 use phonecam_ui::views::state::{AppState, CoreStatus, FailureCode, LogSource};
 
@@ -1450,6 +1450,9 @@ impl Runtime {
         self.queue_command(DesktopToPhone::SetScreen {
             mode: settings.screen_mode,
         });
+        self.queue_command(DesktopToPhone::SetAntiFlicker {
+            mode: settings.anti_flicker,
+        });
         self.queue_command(DesktopToPhone::StartStream);
     }
 
@@ -1528,6 +1531,20 @@ impl Runtime {
             let _ = crate::settings::save(&state.settings);
         }
         self.send_to_phone(DesktopToPhone::SetScreen { mode });
+        self.broadcast_state();
+    }
+
+    /// Sets camera antibanding / anti-flicker mode (Auto, 50Hz, 60Hz, Off).
+    pub fn set_anti_flicker(&self, mode: AntiFlickerMode) {
+        {
+            let mut state = self.state.lock();
+            state.settings.anti_flicker = mode;
+            let _ = crate::settings::save(&state.settings);
+            if let Some(phone) = self.session.phone_state.lock().as_mut() {
+                phone.anti_flicker = mode;
+            }
+        }
+        self.send_to_phone(DesktopToPhone::SetAntiFlicker { mode });
         self.broadcast_state();
     }
 
@@ -3320,6 +3337,7 @@ mod tests {
         runtime.set_torch(true);
         runtime.set_zoom(2.0);
         runtime.set_screen_mode(ScreenMode::Black);
+        runtime.set_anti_flicker(AntiFlickerMode::Hz50);
         runtime.set_quality_mode(false);
         runtime.sync_output_transform(true, 90);
         runtime.set_log_level(LogLevel::Debug);
@@ -3350,13 +3368,19 @@ mod tests {
         ));
         assert!(matches!(
             outbox[5],
+            DesktopToPhone::SetAntiFlicker {
+                mode: AntiFlickerMode::Hz50
+            }
+        ));
+        assert!(matches!(
+            outbox[6],
             DesktopToPhone::SetQualityMode {
                 mode: QualityMode::Manual
             }
         ));
         assert_eq!(
             outbox.len(),
-            6,
+            7,
             "sync_output_transform operates locally without polluting outbox"
         );
 
@@ -3367,6 +3391,7 @@ mod tests {
             assert_eq!(state.settings.fps, 0);
             assert_eq!(state.settings.bitrate, 8_000_000);
             assert_eq!(state.settings.screen_mode, ScreenMode::Black);
+            assert_eq!(state.settings.anti_flicker, AntiFlickerMode::Hz50);
             assert_eq!(state.settings.quality_mode, QualityMode::Manual);
             assert!(state.settings.output_mirror);
             assert_eq!(state.settings.output_rotation, 90);
@@ -3587,6 +3612,7 @@ mod tests {
             battery: 80,
             charging: false,
             thermal: phonecam_protocol::ThermalState::None,
+            anti_flicker: phonecam_protocol::AntiFlickerMode::Auto,
         };
         runtime.reconcile_resolution_downgrade(&downgraded);
         assert!(runtime
