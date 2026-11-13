@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "💬 GitHub Discussions"
+    url: "https://github.com/phonecam/phonecam/discussions"
+    about: "Ask questions, share setups, or discuss ideas with the community."
+  - name: "📖 PhoneCam Documentation"
+    url: "https://github.com/phonecam/phonecam#readme"
+    about: "Read the setup guide, architecture overview, and troubleshooting docs."

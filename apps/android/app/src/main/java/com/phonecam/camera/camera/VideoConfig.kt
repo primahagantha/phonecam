@@ -164,9 +164,13 @@ object VideoConfigResolver {
         )
     }
 
-    /** The largest supported size, preferring landscape orientation. */
-    private fun largest(sizes: List<Pair<Int, Int>>): Pair<Int, Int> =
-        sizes.maxByOrNull { it.first.toLong() * it.second } ?: sizes.first()
+    /** The largest supported size, preferring landscape orientation, capped at 1080p for streaming. */
+    private fun largest(sizes: List<Pair<Int, Int>>): Pair<Int, Int> {
+        val landscape = sizes.map { (w, h) -> if (w >= h) w to h else h to w }
+        val capped = landscape.filter { (w, h) -> w <= 1920 && h <= 1080 }
+        val pool = if (capped.isNotEmpty()) capped else landscape
+        return pool.maxByOrNull { it.first.toLong() * it.second } ?: pool.first()
+    }
 
     /**
      * Picks the supported size closest to [width] x [height], comparing by area

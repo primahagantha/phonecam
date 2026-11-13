@@ -395,7 +395,17 @@ impl AppState {
                     .core
                     .as_ref()
                     .and_then(|c| c.error.as_ref())
-                    .map(|e| (e.code.clone(), e.message.clone())),
+                    .map(|e| {
+                        let lower = e.message.to_lowercase();
+                        let clean = if lower.contains("no service started") || lower.contains("not found") {
+                            "Could not start PhoneCam on the phone. Please open the PhoneCam app on your phone and try again.".to_string()
+                        } else if lower.contains("couldn't start video encoding") || lower.contains("encoder_failed") {
+                            "The phone could not start video encoding. Try switching camera or lowering the resolution.".to_string()
+                        } else {
+                            e.message.clone()
+                        };
+                        (e.code.clone(), clean)
+                    }),
                 device_name: self.device_name(),
                 resolution: self
                     .core

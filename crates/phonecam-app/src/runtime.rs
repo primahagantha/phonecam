@@ -1970,12 +1970,12 @@ impl Runtime {
             state.push_log(LogLevel::Error, LogSource::Core, redacted.clone());
             state.add_notice(
                 FailureCode::Generic,
-                vec![("message".into(), user_friendly)],
+                vec![("message".into(), user_friendly.clone())],
                 format!("core-error:{code}"),
             );
         }
         self.bump_state_version();
-        self.session.set_error(code, &redacted);
+        self.session.set_error(code, &user_friendly);
     }
 
     /// Refreshes the snapshot the window draws.

@@ -192,17 +192,57 @@ class H264Encoder(
                 }
             }
 
-            val activeCodec = created ?: return null
-            surface = activeCodec.createInputSurface()
-            activeCodec.start()
+            val primary = created ?: return null
+            var activeCodec: MediaCodec = primary
+            var surface: Surface? = null
+            var started = false
+
+            try {
+                surface = primary.createInputSurface()
+                primary.start()
+                started = true
+            } catch (startErr: Throwable) {
+                Log.w(TAG, "initial start failed on ${primary.name} (${cand.width}x${cand.height}): ${startErr.message}")
+                runCatching { primary.stop() }
+                runCatching { primary.release() }
+                runCatching { surface?.release() }
+                surface = null
+            }
+
+            if (!started) {
+                // Secondary fallback: re-create clean codec with simplest baseline format
+                val fallback = if (specificCodecName != null) {
+                    runCatching { MediaCodec.createByCodecName(specificCodecName) }.getOrNull()
+                } else {
+                    runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull()
+                } ?: return null
+
+                val basicFormat = MediaFormat.createVideoFormat(MIME, cand.width, cand.height).apply {
+                    setInteger(
+                        MediaFormat.KEY_COLOR_FORMAT,
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+                    )
+                    setInteger(MediaFormat.KEY_BIT_RATE, cand.bitrate)
+                    setInteger(MediaFormat.KEY_FRAME_RATE, cand.fps)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                }
+                fallback.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                val fallbackSurface = fallback.createInputSurface()
+                fallback.start()
+                activeCodec = fallback
+                surface = fallbackSurface
+            }
+
+            val validSurface = surface ?: return null
 
             codec = activeCodec
-            inputSurface = surface
+            inputSurface = validSurface
             configuredCodecName = activeCodec.name
             running = true
             startDrainLoop()
-            surface
+            validSurface
         } catch (t: Throwable) {
+            Log.w(TAG, "encoder candidate failed (${cand.width}x${cand.height}, codec=$specificCodecName): ${t.message}")
             runCatching { created?.stop() }
             runCatching { created?.release() }
             runCatching { surface?.release() }

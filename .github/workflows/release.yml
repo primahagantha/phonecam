@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag or release version (e.g. v1.0.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows Release & Installer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "rust-release-windows"
+
+      - name: Build PhoneCam Windows binary
+        run: cargo build --release -p phonecam-app
+
+      - name: Prepare unpacked distribution folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/unpacked
+          Copy-Item target/release/phonecam.exe -Destination dist/unpacked/phonecam.exe -Force
+
+      - name: Compile NSIS Installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/installer
+          if (Get-Command makensis -ErrorAction SilentlyContinue) {
+            makensis scripts/installer.nsi
+          } elseif (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe") {
+            & "C:\Program Files (x86)\NSIS\makensis.exe" scripts/installer.nsi
+          } else {
+            choco install nsis -y
+            & "C:\Program Files (x86)\NSIS\makensis.exe" scripts/installer.nsi
+          }
+
+      - name: Create portable zip archive
+        shell: pwsh
+        run: |
+          $portableDir = "dist/portable_staging"
+          New-Item -ItemType Directory -Force -Path $portableDir
+          Get-ChildItem -Path dist/unpacked -Exclude "*.apk" | Copy-Item -Destination $portableDir -Recurse -Force
+          Compress-Archive -Path "$portableDir/*" -DestinationPath "dist/PhoneCam-portable.zip" -Force
+
+      - name: Upload Windows Installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/installer/PhoneCam-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Upload Windows Portable Zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: dist/PhoneCam-portable.zip
+          if-no-files-found: error
+
+  build-android:
+    name: Build Android Release APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build phonecam-android-core host library
+        run: cargo build -p phonecam-android-core --release
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x apps/android/gradlew
+
+      - name: Build Android Release APK
+        working-directory: apps/android
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Package APK for release
+        shell: bash
+        run: |
+          mkdir -p dist
+          APK_PATH=$(find apps/android/app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: Release APK not found in apps/android/app/build/outputs/apk/release!"
+            exit 1
+          fi
+          echo "Discovered release APK: $APK_PATH"
+          cp "$APK_PATH" dist/PhoneCam.apk
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/PhoneCam.apk
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Windows Installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: release-assets
+
+      - name: Download Windows Portable Zip
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-portable
+          path: release-assets
+
+      - name: Download Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: release-assets
+
+      - name: Inspect release assets
+        shell: bash
+        run: ls -la release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/PhoneCam-Setup-*.exe
+            release-assets/PhoneCam-portable.zip
+            release-assets/PhoneCam.apk
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false

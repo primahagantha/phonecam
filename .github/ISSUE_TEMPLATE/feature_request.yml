@@ -1,0 +1,58 @@
+name: "💡 Feature Request"
+description: "Suggest an idea or enhancement for PhoneCam"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! Please explain the use case and how this would benefit PhoneCam users.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem or limitation?
+      placeholder: "I find it challenging when..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution or new feature you would like to see.
+      placeholder: "Add support for..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Target Component
+      description: Which component of PhoneCam does this feature request affect?
+      options:
+        - Desktop App (Windows/Linux UI)
+        - Android App (Camera Client)
+        - Virtual Camera Driver / DirectShow
+        - Video Codec & Processing (OpenH264 / Hardware)
+        - Network & Transport (ADB / Wi-Fi)
+        - Other / Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any alternative solutions or workarounds?
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context / Mockups
+      description: Add any other context, UI mockups, or screenshots.
+    validations:
+      required: false

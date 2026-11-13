@@ -1,14 +1,44 @@
-/target
-/dist
+# Rust build outputs
+/target/
+**/*.rs.bk
+Cargo.lock.orig
+
+# Android & Gradle artifacts
+/apps/android/.gradle/
+/apps/android/.kotlin/
+/apps/android/.idea/
+/apps/android/build/
+/apps/android/app/build/
+/apps/android/local.properties
+*.hprof
+*.keystore
+!debug.keystore
+
+# Generated APKs and install artifacts
+/dist/installer/*.exe
+/dist/unpacked/phonecam.exe
+/dist/unpacked/PhoneCam.apk
+/dist/PhoneCam.apk
+*.apk
+*.aab
+
+# Keep Android JNI libraries built from phonecam-android-core
+!apps/android/app/src/main/jniLibs/**/*.so
+
+# Keep Windows Virtual Camera driver assets and bundled ADB tools needed for packaging
+!dist/unpacked/PhoneCamVirtualCamera.dll
+!dist/unpacked/phonecam-vcam-register.exe
+!dist/unpacked/icon.ico
+!dist/unpacked/adb.exe
+!dist/unpacked/AdbWinApi.dll
+!dist/unpacked/AdbWinUsbApi.dll
+
+# OS & Editor files
 *.log
 .DS_Store
 Thumbs.db
-/apps/android/.gradle
-/apps/android/.kotlin
-/apps/android/.idea
-/apps/android/build
-/apps/android/app/build
-/apps/android/local.properties
-*.apk
-*.aab
-*.so
+ehthumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
