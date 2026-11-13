@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "release_enabled": true,
+  "release_enabled": false,
   "version": "1.1.0",
   "approved_by": "primahagantha",
   "allow_prerelease": false,
