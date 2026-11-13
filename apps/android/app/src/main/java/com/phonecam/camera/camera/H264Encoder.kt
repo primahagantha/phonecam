@@ -20,9 +20,9 @@ class EncodedFrame(
 )
 
 /**
- * Hardware H.264 encoder fed from a [Surface].
+ * Hardware / resilient software H.264 encoder fed from a [Surface].
  *
- * The encoder renders into a Surface provided by CameraX, so frames never travel
+ * The encoder renders into a Surface provided by Camera2, so frames never travel
  * through the app's heap as raw pixels — the encoder's own buffer queue is the
  * only place pixel data lives (PRD §12: never send raw frames).
  *
@@ -44,91 +44,162 @@ class H264Encoder(
     private var inputSurface: Surface? = null
     private val bufferInfo = MediaCodec.BufferInfo()
 
+    var configuredWidth: Int = width
+        private set
+    var configuredHeight: Int = height
+        private set
+    var configuredFps: Int = fps
+        private set
+    var configuredBitrate: Int = bitrate
+        private set
+    var configuredCodecName: String = "unknown"
+        private set
+    var isSubstituted: Boolean = false
+        private set
+
     @Volatile
     private var running = false
 
-    /**
-     * The drain thread, held so [stop] can join it.
-     *
-     * The thread blocks in `dequeueOutputBuffer`, so it is unblocked by
-     * `codec.stop()` rather than by a flag alone; joining after that is what
-     * guarantees it has released its output buffers before the codec is torn
-     * down, which `MediaCodec` requires and the previous fire-and-forget thread
-     * did not guarantee.
-     */
     @Volatile
     private var drainThread: Thread? = null
 
-    /** The Surface to hand to CameraX as an output target. */
+    /** The Surface to hand to Camera2 as an output target. */
     val surface: Surface?
         get() = inputSurface
 
     val codecName: String?
-        get() = runCatching { codec?.name }.getOrNull()
+        get() = runCatching { codec?.name }.getOrNull() ?: configuredCodecName
+
+    private data class EncodeCandidate(
+        val width: Int,
+        val height: Int,
+        val fps: Int,
+        val bitrate: Int,
+    )
 
     fun start(): Surface? {
         if (running) return inputSurface
+
+        Log.i(TAG, "requesting encoder: ${width}x${height} @ ${fps}fps, bitrate=$bitrate")
+
+        val candidates = buildList {
+            add(EncodeCandidate(width, height, fps, bitrate))
+            if (width > 1280 || height > 720) {
+                add(EncodeCandidate(1280, 720, fps.coerceAtMost(30), bitrate.coerceAtMost(4_000_000)))
+            }
+            if (width > 854 || height > 480) {
+                add(EncodeCandidate(854, 480, fps.coerceAtMost(30), bitrate.coerceAtMost(2_000_000)))
+            }
+            if (width > 640 || height > 480) {
+                add(EncodeCandidate(640, 480, fps.coerceAtMost(30), bitrate.coerceAtMost(1_500_000)))
+            }
+        }.distinctBy { it.width to it.height }
+
+        for ((index, cand) in candidates.withIndex()) {
+            val isFallback = index > 0
+            // First try default/hardware encoder, then software fallback
+            val codecAttempts = listOf<String?>(null, "c2.android.avc.encoder", "OMX.google.h264.encoder")
+
+            for (codecName in codecAttempts) {
+                val surface = tryConfigureAndStart(cand, codecName, isFallback)
+                if (surface != null) {
+                    configuredWidth = cand.width
+                    configuredHeight = cand.height
+                    configuredFps = cand.fps
+                    configuredBitrate = cand.bitrate
+                    isSubstituted = isFallback
+                    Log.i(
+                        TAG,
+                        "encoder successfully active: ${configuredWidth}x${configuredHeight}@${configuredFps} " +
+                            "(${configuredCodecName}, substituted=$isSubstituted)"
+                    )
+                    return surface
+                }
+            }
+        }
+
+        Log.e(TAG, "all encoder candidates failed")
+        onError("Couldn't start video encoding on this phone.")
+        return null
+    }
+
+    private fun tryConfigureAndStart(
+        cand: EncodeCandidate,
+        specificCodecName: String?,
+        isFallback: Boolean,
+    ): Surface? {
         var created: MediaCodec? = null
-        var input: Surface? = null
+        var surface: Surface? = null
+
         return try {
-            val format = MediaFormat.createVideoFormat(MIME, width, height).apply {
+            created = if (specificCodecName != null) {
+                runCatching { MediaCodec.createByCodecName(specificCodecName) }.getOrNull() ?: return null
+            } else {
+                runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull() ?: return null
+            }
+
+            val caps = runCatching { created.codecInfo.getCapabilitiesForType(MIME) }.getOrNull()
+            val isCbr = caps?.encoderCapabilities?.isBitrateModeSupported(
+                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+            ) == true
+
+            val format = MediaFormat.createVideoFormat(MIME, cand.width, cand.height).apply {
                 setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
                 )
-                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-                setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SECONDS)
-                // CBR, not VBR.
-                //
-                // With VBR a fast movement makes the encoder spend far more bits
-                // for a second, and a webcam feels that twice: the frames get
-                // larger exactly when the link and the decoder are busiest, so
-                // the preview queue fills, whole groups of pictures are dropped
-                // behind the movement, and the picture stairs and freezes. It
-                // also lets the bitrate overshoot the budget the user chose. CBR
-                // keeps each frame's cost predictable, which is what makes the
-                // motion look even; quality follows the bitrate the user set
-                // rather than spiking with the scene.
-                setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
-                setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
-                // Ask the codec to run at the rate we asked for. Without an
-                // operating rate some encoders pick a conservative default and
-                // settle well below the requested frame rate — the picture is
-                // sharp and the clock is fine, but the stream simply arrives at
-                // 20 fps instead of 30. It is a hint, not a promise, so a codec
-                // that ignores it behaves exactly as before.
-                setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
-                // One frame of pipeline, not a buffer of them. A webcam cannot
-                // use the quality a deep lookahead buys, and every buffered frame
-                // is latency the viewer waits through.
-                setInteger(MediaFormat.KEY_LATENCY, 1)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    // Lowest latency wins for a webcam; PRD §47 ranks latency
-                    // above image quality.
-                    setInteger(MediaFormat.KEY_PRIORITY, 0)
-                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                setInteger(MediaFormat.KEY_BIT_RATE, cand.bitrate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, cand.fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SECONDS)
+                if (isCbr && specificCodecName == null) {
+                    setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
                 }
-                setInteger(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000)
             }
 
-            created = MediaCodec.createEncoderByType(MIME)
-            created.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            input = created.createInputSurface()
-            created.start()
+            var configured = false
+            try {
+                created.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                configured = true
+            } catch (e: Throwable) {
+                Log.w(TAG, "configure failed on ${created.name} (${cand.width}x${cand.height}): ${e.message}")
+                runCatching { created.release() }
+                created = null
+            }
 
-            codec = created
-            inputSurface = input
+            if (!configured) {
+                // Try a clean fallback instance with simplest profile
+                created = if (specificCodecName != null) {
+                    runCatching { MediaCodec.createByCodecName(specificCodecName) }.getOrNull() ?: return null
+                } else {
+                    runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull() ?: return null
+                }
+
+                val basicFormat = MediaFormat.createVideoFormat(MIME, cand.width, cand.height).apply {
+                    setInteger(
+                        MediaFormat.KEY_COLOR_FORMAT,
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+                    )
+                    setInteger(MediaFormat.KEY_BIT_RATE, cand.bitrate)
+                    setInteger(MediaFormat.KEY_FRAME_RATE, cand.fps)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                }
+                created.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
+
+            val activeCodec = created ?: return null
+            surface = activeCodec.createInputSurface()
+            activeCodec.start()
+
+            codec = activeCodec
+            inputSurface = surface
+            configuredCodecName = activeCodec.name
             running = true
             startDrainLoop()
-            Log.i(TAG, "encoder started ${width}x$height@$fps ${bitrate}bps mode=CBR name=${created.name}")
-            input
+            surface
         } catch (t: Throwable) {
             runCatching { created?.stop() }
             runCatching { created?.release() }
-            runCatching { input?.release() }
-            Log.e(TAG, "encoder start failed", t)
-            onError("Couldn't start video encoding on this phone.")
+            runCatching { surface?.release() }
             null
         }
     }
@@ -154,10 +225,6 @@ class H264Encoder(
 
     fun stop() {
         running = false
-        // `stop()` first: the drain thread is blocked in dequeueOutputBuffer with
-        // an effectively infinite timeout, so a flag alone would not wake it.
-        // Stopping the codec makes that call return, and the join then waits for
-        // the thread to release its buffers before they are torn down.
         runCatching { codec?.stop() }
         runCatching { drainThread?.join(DRAIN_JOIN_TIMEOUT_MS) }
         drainThread = null
@@ -169,19 +236,6 @@ class H264Encoder(
 
     /**
      * Drains the encoder on its own thread.
-     *
-     * A dedicated thread keeps encoder latency independent of the camera
-     * callback cadence, which is what holds end-to-end latency inside the
-     * PRD §46 targets.
-     *
-     * The dequeue blocks until a frame is ready instead of polling every 10 ms.
-     * `KEY_REPEAT_PREVIOUS_FRAME_AFTER` makes the codec emit a frame on its own
-     * cadence, so the thread still wakes once per frame and a live stream gains
-     * no latency; what it no longer does is wake 100 times a second between
-     * frames. On a max-priority thread that idle wake-up was itself a small
-     * amount of work on every frame, and the poll interval bounded the drain
-     * rate from above — a blocking wait does neither. `codec.stop()` is what
-     * unblocks the wait when the encoder is torn down.
      */
     private fun startDrainLoop() {
         drainThread = Thread({
@@ -192,8 +246,6 @@ class H264Encoder(
                     val index = target.dequeueOutputBuffer(bufferInfo, DEQUEUE_TIMEOUT_US)
                     if (index == MediaCodec.INFO_TRY_AGAIN_LATER) continue
                     if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        // Annex-B output means there is nothing to cache here; the
-                        // SPS/PPS ride along with each keyframe.
                         continue
                     }
                     if (index < 0) continue
@@ -224,8 +276,6 @@ class H264Encoder(
                         target.releaseOutputBuffer(index, false)
                     }
                 } catch (t: Throwable) {
-                    // A codec stopped under a blocking dequeue throws; that is the
-                    // normal teardown path, not an encoder failure.
                     if (!running) return@Thread
                     Log.e(TAG, "encoder drain failed", t)
                     onError("Video encoding stopped unexpectedly.")
@@ -234,9 +284,6 @@ class H264Encoder(
                 }
             }
         }, "phonecam-h264-encoder").apply {
-            // Above normal, below the audio path: the drain loop must not be
-            // starved by background work, but it no longer needs to out-rank
-            // everything on the device to make a 10 ms poll deadline.
             priority = Thread.NORM_PRIORITY + 2
             start()
         }
@@ -245,20 +292,8 @@ class H264Encoder(
     companion object {
         private const val TAG = "H264Encoder"
         private const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
-        private const val I_FRAME_INTERVAL_SECONDS = 0.5f
-
-        /**
-         * How long the drain loop waits for output before looping.
-         *
-         * Effectively infinite: the loop must not wake between frames, and the
-         * only reason to leave the wait is that the encoder produced a frame or
-         * that [stop] called `codec.stop()`. 100 ms is long enough to be free
-         * when idle and short enough that a spurious wake (or a teardown that
-         * races the flag) is noticed promptly.
-         */
+        private const val I_FRAME_INTERVAL_SECONDS = 1
         private const val DEQUEUE_TIMEOUT_US = 100_000L
-
-        /** Upper bound on waiting for the drain thread to finish after `codec.stop()`. */
         private const val DRAIN_JOIN_TIMEOUT_MS = 500L
     }
 }

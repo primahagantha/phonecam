@@ -48,6 +48,7 @@ pub enum FailureCode {
     DecoderFailed,
     DecoderUnsupported,
     PairOk,
+    PhoneAppMissing,
 }
 
 impl FailureCode {
@@ -73,6 +74,7 @@ impl FailureCode {
             Self::DecoderFailed => "No preview",
             Self::DecoderUnsupported => "This build cannot show the preview",
             Self::PairOk => "Phone paired",
+            Self::PhoneAppMissing => "PhoneCam app not installed",
         }
     }
 
@@ -123,6 +125,14 @@ impl FailureCode {
                 "The virtual camera is unaffected by this.".into()
             }
             Self::PairOk => format!("{} is connected.", get("name")),
+            Self::PhoneAppMissing => {
+                let msg = get("message");
+                if msg.is_empty() {
+                    "The PhoneCam app is not installed on this Android phone. Install PhoneCam on your phone, then reconnect.".into()
+                } else {
+                    msg
+                }
+            }
         }
     }
 
@@ -134,6 +144,7 @@ impl FailureCode {
             Self::Denied | Self::TokenExpired | Self::NoDevice => NoticeAction::ArmPairing,
             Self::StreamEnded => NoticeAction::StartStream,
             Self::UsbMissing | Self::UsbUnauthorized => NoticeAction::ConnectUsb,
+            Self::PhoneAppMissing => NoticeAction::InstallPhoneApp,
             Self::VersionMismatch | Self::BadRequest | Self::Busy => NoticeAction::RefreshState,
             Self::VcamUnavailable => NoticeAction::RestartVcam,
             // The prompt itself is the affordance.
@@ -150,13 +161,14 @@ impl FailureCode {
     /// Only two states may carry a primary button, so the app never offers the
     /// same job three times in two visual languages.
     pub fn action_is_primary(self) -> bool {
-        matches!(self, Self::StreamEnded | Self::NoDevice)
+        matches!(self, Self::StreamEnded | Self::NoDevice | Self::PhoneAppMissing)
     }
 
     pub fn tone(self) -> crate::theme::Tone {
         use crate::theme::Tone;
         match self {
-            Self::CoreUnreachable
+            Self::PhoneAppMissing
+            | Self::CoreUnreachable
             | Self::Denied
             | Self::VersionMismatch
             | Self::BadRequest
@@ -187,6 +199,7 @@ pub enum NoticeAction {
     ConnectUsb,
     RestartVcam,
     Dismiss,
+    InstallPhoneApp,
 }
 
 /// One line in the diagnostics log.
@@ -732,6 +745,7 @@ mod tests {
             FailureCode::DecoderFailed,
             FailureCode::DecoderUnsupported,
             FailureCode::PairOk,
+            FailureCode::PhoneAppMissing,
         ] {
             let values = vec![
                 ("message".to_string(), "x".to_string()),

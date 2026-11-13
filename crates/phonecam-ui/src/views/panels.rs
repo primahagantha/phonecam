@@ -258,6 +258,7 @@ fn action_button(action: NoticeAction, primary: bool, notice_id: u64) -> AnyElem
         NoticeAction::ConnectUsb => "Use the cable",
         NoticeAction::RestartVcam => "Turn the camera off and on",
         NoticeAction::Dismiss => "Dismiss",
+        NoticeAction::InstallPhoneApp => "Install app on phone",
     };
     let button = if primary { Button::primary(label) } else { Button::new(label) };
     button
@@ -270,6 +271,7 @@ fn action_button(action: NoticeAction, primary: bool, notice_id: u64) -> AnyElem
                 NoticeAction::ConnectUsb => SideEffect::ConnectUsb(None),
                 NoticeAction::RestartVcam => SideEffect::RestartVcam,
                 NoticeAction::Dismiss => SideEffect::DismissNotice(notice_id),
+                NoticeAction::InstallPhoneApp => SideEffect::InstallPhoneApp,
             };
             push_effect(effect);
         })

@@ -13,6 +13,7 @@
 //! `phonecam-core` and `phonecam-ui`, where they are unit tested; this file only
 //! moves bytes and state between them.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
@@ -2589,13 +2590,66 @@ impl Runtime {
         self.log_info(&format!("cable tunnel open on {SERVICE_PORT}"));
 
         if let Err(error) = adb.start_phone_session(SERVICE_PORT, target.as_deref()) {
-            // The tunnel is up but the phone did not start: say so rather than
-            // claiming a connection that is not there.
-            self.log_error("usb_session_failed", &error);
+            let not_installed = error.contains("Not found")
+                || error.contains("not found")
+                || error.contains("no service started")
+                || !adb.is_app_installed(target.as_deref());
+
+            if not_installed {
+                self.log_info("PhoneCam Android app is not installed on the connected device");
+                let mut state = self.state.lock();
+                state.add_notice(
+                    FailureCode::PhoneAppMissing,
+                    vec![(
+                        "message".into(),
+                        "The PhoneCam app is not installed on this Android device. Click \"Install app on phone\" to install automatically, then reconnect.".into(),
+                    )],
+                    "core-error:phone_app_missing".into(),
+                );
+            } else {
+                // The tunnel is up but the phone did not start: say so rather than
+                // claiming a connection that is not there.
+                self.log_error("usb_session_failed", &error);
+            }
         }
 
         self.poll_usb();
         self.broadcast_state();
+    }
+
+    /// Installs the bundled PhoneCam Android APK onto the connected phone via ADB.
+    pub fn install_phone_app(&self) {
+        let adb = self.adb.lock().clone();
+        let Some(adb) = adb else {
+            self.log_info("ADB is not available to install app");
+            return;
+        };
+        let serial = self.active_usb_serial.lock().clone();
+        let candidates = [
+            PathBuf::from("dist/unpacked/PhoneCam.apk"),
+            PathBuf::from("dist/PhoneCam.apk"),
+            PathBuf::from("apps/android/app/build/outputs/apk/release/app-release.apk"),
+            PathBuf::from("apps/android/app/build/outputs/apk/debug/app-debug.apk"),
+        ];
+        let found_apk = candidates.iter().find(|p| p.exists());
+        if let Some(apk) = found_apk {
+            self.log_info(&format!("installing PhoneCam APK from {}", apk.display()));
+            match adb.install_apk(apk, serial.as_deref()) {
+                Ok(()) => {
+                    self.log_info("PhoneCam APK installed successfully on phone");
+                    {
+                        let mut state = self.state.lock();
+                        state.dismiss_notice("core-error:phone_app_missing");
+                    }
+                    self.connect_usb_device(serial);
+                }
+                Err(err) => {
+                    self.log_error("install_apk_failed", &format!("Failed to install APK: {err}"));
+                }
+            }
+        } else {
+            self.log_info("No PhoneCam APK found to install. Please build or place PhoneCam.apk in dist/.");
+        }
     }
 
     /// Restarts the ADB server (or re-locates ADB if missing) and refreshes USB state.

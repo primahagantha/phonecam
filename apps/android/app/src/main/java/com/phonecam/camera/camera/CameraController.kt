@@ -348,15 +348,17 @@ class CameraController(private val context: Context) {
      */
     private fun applyRequest(builder: CaptureRequest.Builder) {
         val current = session ?: return
-        if (current is CameraConstrainedHighSpeedCaptureSession) {
-            current.setRepeatingBurst(
-                current.createHighSpeedRequestList(builder.build()),
-                null,
-                handler,
-            )
-        } else {
-            current.setRepeatingRequest(builder.build(), null, handler)
-        }
+        runCatching {
+            if (current is CameraConstrainedHighSpeedCaptureSession) {
+                current.setRepeatingBurst(
+                    current.createHighSpeedRequestList(builder.build()),
+                    null,
+                    handler,
+                )
+            } else {
+                current.setRepeatingRequest(builder.build(), null, handler)
+            }
+        }.onFailure { Log.w(TAG, "applyRequest rejected by camera session: ${it.message}") }
     }
 
     /**
@@ -472,7 +474,17 @@ class CameraController(private val context: Context) {
                 if (torchEnabled) {
                     set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
                 }
-                if (zoom > 1f && characteristics != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && characteristics != null) {
+                    val zoomRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                    if (zoomRange != null) {
+                        val clamped = zoom.coerceIn(zoomRange.lower, zoomRange.upper)
+                        set(CaptureRequest.CONTROL_ZOOM_RATIO, clamped)
+                    } else if (zoom > 1f) {
+                        computeCropRect(characteristics, zoom)?.let { crop ->
+                            set(CaptureRequest.SCALER_CROP_REGION, crop)
+                        }
+                    }
+                } else if (zoom > 1f && characteristics != null) {
                     computeCropRect(characteristics, zoom)?.let { crop ->
                         set(CaptureRequest.SCALER_CROP_REGION, crop)
                     }
@@ -605,11 +617,18 @@ class CameraController(private val context: Context) {
             return sensorRect
         }
         zoom = clamped
-        val cropWidth = (sensorRect.width() / clamped).toInt().coerceAtLeast(1)
-        val cropHeight = (sensorRect.height() / clamped).toInt().coerceAtLeast(1)
-        val left = sensorRect.left + (sensorRect.width() - cropWidth) / 2
-        val top = sensorRect.top + (sensorRect.height() - cropHeight) / 2
-        return Rect(left, top, left + cropWidth, top + cropHeight)
+        // Bayer CFA (Color Filter Array) and hardware scalers require coordinates aligned to 2 (even numbers)
+        val rawWidth = (sensorRect.width() / clamped).toInt().coerceAtLeast(2)
+        val rawHeight = (sensorRect.height() / clamped).toInt().coerceAtLeast(2)
+        val cropWidth = (rawWidth / 2) * 2
+        val cropHeight = (rawHeight / 2) * 2
+        val rawLeft = sensorRect.left + (sensorRect.width() - cropWidth) / 2
+        val rawTop = sensorRect.top + (sensorRect.height() - cropHeight) / 2
+        val left = (rawLeft / 2) * 2
+        val top = (rawTop / 2) * 2
+        val right = (left + cropWidth).coerceAtMost(sensorRect.right)
+        val bottom = (top + cropHeight).coerceAtMost(sensorRect.bottom)
+        return Rect(left, top, right, bottom)
     }
 
     /**
@@ -628,12 +647,17 @@ class CameraController(private val context: Context) {
         }
 
         runCatching {
+            val sensorRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val zoomRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
                 if (zoomRange != null) {
                     val clamped = zoomFactor.coerceIn(zoomRange.lower, zoomRange.upper)
                     zoom = clamped
                     builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, clamped)
+                    // Reset SCALER_CROP_REGION to full active array to avoid conflict
+                    if (sensorRect != null) {
+                        builder.set(CaptureRequest.SCALER_CROP_REGION, sensorRect)
+                    }
                     applyRequest(builder)
                     return
                 }

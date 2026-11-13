@@ -14,7 +14,7 @@
 //! The shipped app read the second as the first, so a PC on Wi-Fi with no cable
 //! told the user to install a tool it already had.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -266,6 +266,37 @@ impl Adb {
         }
 
         Err(last_error)
+    }
+
+    /// Checks whether the PhoneCam app (or debug build) is installed on the device.
+    pub fn is_app_installed(&self, serial: Option<&str>) -> bool {
+        for package in ["com.phonecam.camera", "com.phonecam.camera.debug"] {
+            if let Ok(output) = self.run_for_serial(
+                serial,
+                &["shell", "pm", "path", package],
+                Duration::from_secs(4),
+            ) {
+                if output.contains("package:") {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Installs a PhoneCam APK file onto the target device.
+    pub fn install_apk(&self, apk_path: &Path, serial: Option<&str>) -> Result<(), String> {
+        let apk_str = apk_path.to_str().ok_or_else(|| "invalid APK path".to_string())?;
+        let output = self.run_for_serial(
+            serial,
+            &["install", "-r", "-d", apk_str],
+            Duration::from_secs(60),
+        )?;
+        if output.contains("Success") {
+            Ok(())
+        } else {
+            Err(output.trim().to_string())
+        }
     }
 }
 

@@ -46,6 +46,7 @@ pub enum SideEffect {
     CopyDiagnosticsReport,
     ClearLogs,
     OpenLogFile,
+    InstallPhoneApp,
     ToggleAlwaysOnTop,
     SelectPairingNetwork(usize),
     CopyPairingPayload,

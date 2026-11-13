@@ -1650,12 +1650,18 @@ class StreamSession(
                 // through `stopStreaming` rather than this attempt's `finally`.
                 handedOff = true
 
+                val encWidth = h264.configuredWidth
+                val encHeight = h264.configuredHeight
+                val encFps = h264.configuredFps
+                val encBitrate = h264.configuredBitrate
+                val wasSubstituted = h264.isSubstituted
+
                 camera.start(
                     cameraId = cameraId,
                     targetSurface = surface,
-                    requestedResolution = _state.value.requestedResolution,
-                    requestedFps = _state.value.requestedFps,
-                    requestedBitrate = _state.value.requestedBitrate,
+                    requestedResolution = "${encWidth}x${encHeight}",
+                    requestedFps = encFps,
+                    requestedBitrate = encBitrate,
                     // Whatever the UI has on screen right now. A viewfinder that
                     // appears later is attached through `setPreviewSurface`, which
                     // rebuilds the session without reopening the camera.
@@ -1664,12 +1670,17 @@ class StreamSession(
                         scope.launch {
                             cameraStartFailures = 0
                             val appliedRes = "${applied.width}x${applied.height}"
+                            val subNotice = if (wasSubstituted && applied.notice == null) {
+                                "Using ${encWidth}x${encHeight} (hardware encoder limit)."
+                            } else {
+                                applied.notice
+                            }
                             _state.value = _state.value.copy(
                                 phase = SessionState.Phase.STREAMING,
                                 actualResolution = appliedRes,
                                 actualFps = applied.fps,
                                 bitrate = applied.bitrate,
-                                notice = applied.notice,
+                                notice = subNotice,
                                 // A substitution, so it goes back to the default heading.
                                 noticeKind = NoticeKind.Substitution,
                             )

@@ -490,6 +490,7 @@ fn apply_effect(
                     .spawn();
             }
         }
+        SideEffect::InstallPhoneApp => runtime.install_phone_app(),
         SideEffect::ToggleAlwaysOnTop => {
             let snapshot = {
                 let mut state = runtime.state.lock();
