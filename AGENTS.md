@@ -225,24 +225,61 @@ All commits must follow the [Conventional Commits](https://www.conventionalcommi
 
 ---
 
-## 6. Release Gatekeeper & Contributor Transparency
+## 6. Semantic Versioning 2.0.0 & Automated Semantic Release
 
-### 6.1 Gated Release Publishing (`release-gate.json`)
+PhoneCam implements the **[Semantic Versioning 2.0.0](https://semver.org/)** specification and automated **[Semantic Release](https://semantic-release.org/)** lifecycle.
+
+### 6.1 SemVer 2.0.0 Rules & Version Anatomy
+A release version follows `MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`:
+- **MAJOR (`X.0.0`)**: Incompatible API changes, breaking wire protocol alterations (`phonecam-protocol`), changing the 68-byte packed seqlock header (`phonecam-framebus`), or breaking Android JNI signatures. Resets MINOR and PATCH to 0.
+- **MINOR (`1.X.0`)**: Backward-compatible new functionality (e.g. adding Anti-Flicker mode, unlocking 60 FPS, adding latency telemetry) or deprecating existing features. Resets PATCH to 0.
+- **PATCH (`1.1.X`)**: Backward-compatible defect resolutions and bug fixes (e.g. resolving UI text clipping, fixing zoom stepper button truncation, Android Camera2 teardown order).
+- **Pre-Release (`-alpha.1`, `-beta.2`, `-rc.1`)**: Must use hyphen and dot-separated identifiers (`1.2.0-alpha.1`). Glued letters (`1.0.0a`) are strictly invalid. Pre-releases rank lower than normal releases.
+
+### 6.2 Conventional Commits to SemVer Bump Mapping
+Semantic release analyzes commits between `HEAD` and the previous release tag:
+| Commit Type | SemVer Bump | Example |
+| :--- | :---: | :--- |
+| `fix(...)`, `perf(...)` | **PATCH** | `fix(ui): prevent text clipping in setup panel` |
+| `feat(...)` | **MINOR** | `feat(ui): add anti-flicker toggle and unlock 60fps` |
+| `feat(...)!`, `fix(...)!`, `BREAKING CHANGE:` | **MAJOR** | `feat(protocol)!: overhaul wire contract for AV1` |
+| `docs(...)`, `refactor(...)`, `test(...)`, `chore(...)` | None | No release triggered unless paired with feat/fix |
+
+### 6.3 Cross-Platform Version Synchronization Matrix
+When bumping version to `X.Y.Z`, all 4 project targets must stay in 100% lockstep:
+1. **Rust Workspace**: `Cargo.toml` (`[workspace.package] version = "X.Y.Z"`) -> `cargo check --workspace` to update `Cargo.lock`.
+2. **Android Application**: `apps/android/app/build.gradle.kts`:
+   - `versionName = "X.Y.Z"`
+   - `versionCode = MAJOR * 10000 + MINOR * 100 + PATCH` (strictly monotonic integer for Google Play & APK package manager).
+3. **Windows NSIS Installer**: `scripts/installer.nsi`:
+   - `OutFile "..\dist\installer\PhoneCam-Setup-X.Y.Z.exe"`
+   - `DisplayVersion "X.Y.Z"`
+4. **Release Gatekeeper**: `release-gate.json`:
+   - `"version": "X.Y.Z"`
+   - `"release_enabled": true` (when authorizing release).
+
+---
+
+## 7. Release Gatekeeper & Contributor Transparency
+
+### 7.1 Gated Release Publishing (`release-gate.json`)
 - Routine commits and feature pushes to `master` do **not** publish releases automatically.
 - Automated release builds and GitHub Releases are gated by `release-gate.json`:
   ```json
   {
     "release_enabled": false,
-    "version": "1.0.0",
-    "approved_by": "RegenadeJester"
+    "version": "1.1.1",
+    "approved_by": "primahagantha"
   }
   ```
 - To authorize a public multi-platform release:
-  1. Change `"release_enabled"` to `true`.
-  2. Verify all tests pass (`cargo test --workspace` & `./gradlew test`).
-  3. Commit and push. GitHub Actions validates the gate and compiles the full multi-platform matrix (Windows NSIS + portable ZIP, Linux tarball, Android universal & multi-ABI APKs).
+  1. Synchronize version in `Cargo.toml`, `build.gradle.kts`, and `scripts/installer.nsi`.
+  2. Change `"release_enabled"` to `true` and update `"version"` in `release-gate.json`.
+  3. Verify all tests pass (`cargo test --workspace` & `./gradlew test`).
+  4. Commit and push. GitHub Actions validates the gate and compiles the full multi-platform matrix (Windows NSIS + portable ZIP, Linux tarball, Android universal & multi-ABI APKs).
+  5. Close the gate (`release_enabled = false`) in a follow-up commit to protect against unintended releases.
 
-### 6.2 Contributor Avatars & Release Notes
+### 7.2 Contributor Avatars & Release Notes
 - GitHub release notes are configured via `.github/release.yml` and synthesized via `scripts/generate-release-notes.py`.
 - Every release automatically includes:
   - Categorized changelog entries linked to commits and PRs.

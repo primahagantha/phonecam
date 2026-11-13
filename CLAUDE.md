@@ -159,9 +159,43 @@ docs(protocol): document monotonic nonce replay protection rules
 
 ---
 
-## 5. Release Gatekeeper & Contributor Avatars
+## 5. Semantic Versioning 2.0.0 & Automated Semantic Release
+
+PhoneCam strictly enforces the **[Semantic Versioning 2.0.0](https://semver.org/)** specification and automated **[Semantic Release](https://semantic-release.org/)** lifecycle.
+
+### 5.1 SemVer 2.0.0 Principles
+A version number follows `MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`:
+- **MAJOR (`X.0.0`)**: Incompatible API changes, breaking wire protocol alterations (`phonecam-protocol`), changing the 68-byte packed seqlock header (`phonecam-framebus`), or breaking Android JNI signatures. Resets MINOR and PATCH to 0.
+- **MINOR (`1.X.0`)**: Backward-compatible new functionality (e.g. adding Anti-Flicker mode, unlocking 60 FPS, adding latency telemetry) or deprecating existing features. Resets PATCH to 0.
+- **PATCH (`1.1.X`)**: Backward-compatible defect resolutions and bug fixes (e.g. resolving UI text clipping, fixing zoom stepper button truncation, Android Camera2 teardown order).
+- **Pre-Release (`-alpha.1`, `-beta.2`, `-rc.1`)**: Must use hyphen and dot-separated identifiers (`1.2.0-alpha.1`). Glued letters (`1.0.0a`) are strictly invalid. Pre-releases rank lower than normal releases.
+
+### 5.2 Conventional Commits to SemVer Mapping
+Semantic release analyzes commits between `HEAD` and the previous release tag:
+- `fix(...)`, `perf(...)` -> **PATCH** (`1.1.0` -> `1.1.1`)
+- `feat(...)` -> **MINOR** (`1.1.0` -> `1.2.0`)
+- `feat(...)!`, `fix(...)!`, `BREAKING CHANGE:` -> **MAJOR** (`1.1.0` -> `2.0.0`)
+- `docs(...)`, `refactor(...)`, `test(...)`, `chore(...)` -> No release triggered unless paired with feat/fix.
+
+### 5.3 Cross-Platform Version Synchronization Matrix
+When bumping version to `X.Y.Z`, all 4 project targets must stay in 100% lockstep:
+1. **Rust Workspace**: `Cargo.toml` (`[workspace.package] version = "X.Y.Z"`) -> `cargo check --workspace` to update `Cargo.lock`.
+2. **Android Application**: `apps/android/app/build.gradle.kts`:
+   - `versionName = "X.Y.Z"`
+   - `versionCode = MAJOR * 10000 + MINOR * 100 + PATCH` (strictly monotonic integer for Google Play & APK package manager).
+3. **Windows NSIS Installer**: `scripts/installer.nsi`:
+   - `OutFile "..\dist\installer\PhoneCam-Setup-X.Y.Z.exe"`
+   - `DisplayVersion "X.Y.Z"`
+4. **Release Gatekeeper**: `release-gate.json`:
+   - `"version": "X.Y.Z"`
+   - `"release_enabled": true` (when authorizing release).
+
+---
+
+## 6. Release Gatekeeper & Contributor Avatars
 
 - **Release Gate (`release-gate.json`)**: Commits to `master` do **not** trigger public releases automatically. Automated GitHub release publishing runs only when `"release_enabled": true` in `release-gate.json`.
 - **Release Notes Generator (`scripts/generate-release-notes.py`)**: Automatically categorizes commits and builds an author table complete with GitHub avatar images (`https://github.com/<user>.png`) and links.
 - **Enabling a Release**: Set `"release_enabled": true` in `release-gate.json`, commit, and push. GitHub Actions checks the gate, executes the multi-platform matrix (Windows, Linux, Android multi-ABI), and publishes the tagged release.
+- **Closing the Gate**: Immediately set `"release_enabled": false` after authorizing to prevent accidental re-releases on maintenance commits.
 
