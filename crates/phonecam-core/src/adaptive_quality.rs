@@ -1,4 +1,4 @@
-﻿//! The adaptive quality ladder (PRD Â§48, docs Â§11).
+//! The adaptive quality ladder (PRD Â§48, docs Â§11).
 //!
 //! The controller lives in the core, not the phone, because the evidence is
 //! split across both ends: the phone owns the encoder and the thermal sensor,
@@ -14,10 +14,11 @@
 use phonecam_protocol::ThermalState;
 
 /// One rung of the ladder, ordered worst-first so `+1` is always an improvement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum QualityRung {
     P480_30 = 0,
     P720_30 = 1,
+    #[default]
     P1080_30 = 2,
     P1080_60 = 3,
 }
@@ -100,19 +101,9 @@ impl QualityRung {
     /// Used as the ladder's ceiling. Returns `None` when nothing matches, which
     /// the caller treats as "no ceiling" rather than "no support".
     pub fn highest_supported(resolutions: &[String], frame_rates: &[u32]) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .rev()
-            .find(|r| {
-                resolutions.iter().any(|s| s == r.resolution())
-                    && frame_rates.contains(&r.fps())
-            })
-    }
-}
-
-impl Default for QualityRung {
-    fn default() -> Self {
-        Self::P1080_30
+        Self::ALL.into_iter().rev().find(|r| {
+            resolutions.iter().any(|s| s == r.resolution()) && frame_rates.contains(&r.fps())
+        })
     }
 }
 
@@ -171,7 +162,10 @@ pub struct QualityDecision {
 
 impl QualityDecision {
     fn hold() -> Self {
-        Self { action: QualityAction::Hold, reason: "" }
+        Self {
+            action: QualityAction::Hold,
+            reason: "",
+        }
     }
     pub fn target(&self) -> Option<QualityRung> {
         match self.action {
@@ -300,8 +294,8 @@ impl AdaptiveQuality {
         }
 
         let can_step_down = sample.current != QualityRung::P480_30;
-        let can_step_up = sample.current != QualityRung::P1080_60
-            && sample.current < sample.max_rung;
+        let can_step_up =
+            sample.current != QualityRung::P1080_60 && sample.current < sample.max_rung;
 
         // Critical thermal skips the dwell: the platform is about to clamp the
         // encoder anyway, so a controlled step keeps the stream alive instead of
@@ -312,7 +306,8 @@ impl AdaptiveQuality {
                 self.pending = Some(target);
                 return QualityDecision {
                     action: QualityAction::StepDown(target),
-                    reason: "Your phone is running hot. Lowering quality to keep the stream stable.",
+                    reason:
+                        "Your phone is running hot. Lowering quality to keep the stream stable.",
                 };
             }
         }
@@ -329,7 +324,10 @@ impl AdaptiveQuality {
                 };
                 self.reset_streaks();
                 self.pending = Some(target);
-                return QualityDecision { action: QualityAction::StepDown(target), reason };
+                return QualityDecision {
+                    action: QualityAction::StepDown(target),
+                    reason,
+                };
             }
         }
 
@@ -404,10 +402,22 @@ mod tests {
 
     #[test]
     fn for_stream_distinguishes_1080p30_from_1080p60() {
-        assert_eq!(QualityRung::for_stream("1920x1080", 30), Some(QualityRung::P1080_30));
-        assert_eq!(QualityRung::for_stream("1920x1080", 60), Some(QualityRung::P1080_60));
-        assert_eq!(QualityRung::for_stream("1280x720", 30), Some(QualityRung::P720_30));
-        assert_eq!(QualityRung::for_stream("640x480", 30), Some(QualityRung::P480_30));
+        assert_eq!(
+            QualityRung::for_stream("1920x1080", 30),
+            Some(QualityRung::P1080_30)
+        );
+        assert_eq!(
+            QualityRung::for_stream("1920x1080", 60),
+            Some(QualityRung::P1080_60)
+        );
+        assert_eq!(
+            QualityRung::for_stream("1280x720", 30),
+            Some(QualityRung::P720_30)
+        );
+        assert_eq!(
+            QualityRung::for_stream("640x480", 30),
+            Some(QualityRung::P480_30)
+        );
         // A size the ladder does not have is not a rung.
         assert_eq!(QualityRung::for_stream("3840x2160", 30), None);
         assert_eq!(QualityRung::for_stream("1280x720", 24), None);
@@ -447,7 +457,10 @@ mod tests {
         // The streak starts on the first bad sample but nothing moves yet.
         assert_eq!(q.observe(&s, 0).action, QualityAction::Hold);
         // One millisecond before the dwell elapses: still holding.
-        assert_eq!(q.observe(&s, STEP_DOWN_DWELL_MS - 1).action, QualityAction::Hold);
+        assert_eq!(
+            q.observe(&s, STEP_DOWN_DWELL_MS - 1).action,
+            QualityAction::Hold
+        );
         // At the dwell: one step down, never two.
         assert_eq!(
             q.observe(&s, STEP_DOWN_DWELL_MS).action,
@@ -468,8 +481,14 @@ mod tests {
         // The request is not a fact yet: further ticks hold until the phone
         // reports the new rung, so one period of trouble cannot walk two rungs.
         assert_eq!(q.pending(), Some(QualityRung::P1080_30));
-        assert_eq!(q.observe(&s, STEP_DOWN_DWELL_MS + 1).action, QualityAction::Hold);
-        assert_eq!(q.observe(&s, STEP_DOWN_DWELL_MS * 2).action, QualityAction::Hold);
+        assert_eq!(
+            q.observe(&s, STEP_DOWN_DWELL_MS + 1).action,
+            QualityAction::Hold
+        );
+        assert_eq!(
+            q.observe(&s, STEP_DOWN_DWELL_MS * 2).action,
+            QualityAction::Hold
+        );
 
         // Once confirmed, the ladder may act again.
         q.confirm(QualityRung::P1080_30);
@@ -505,7 +524,10 @@ mod tests {
         let mut q = AdaptiveQuality::new();
         let s = sample(QualityRung::P720_30);
         assert_eq!(q.observe(&s, 0).action, QualityAction::Hold);
-        assert_eq!(q.observe(&s, STEP_UP_DWELL_MS - 1).action, QualityAction::Hold);
+        assert_eq!(
+            q.observe(&s, STEP_UP_DWELL_MS - 1).action,
+            QualityAction::Hold
+        );
         assert_eq!(
             q.observe(&s, STEP_UP_DWELL_MS).action,
             QualityAction::StepUp(QualityRung::P1080_30)
@@ -522,7 +544,10 @@ mod tests {
         s.dropped_percent = 0.0;
         q.observe(&s, 0);
         // It also must not count as struggling, so it holds rather than drops.
-        assert_eq!(q.observe(&s, STEP_UP_DWELL_MS).action, QualityAction::StepUp(QualityRung::P1080_60));
+        assert_eq!(
+            q.observe(&s, STEP_UP_DWELL_MS).action,
+            QualityAction::StepUp(QualityRung::P1080_60)
+        );
     }
 
     #[test]
@@ -576,7 +601,10 @@ mod tests {
 
         // At the ceiling, a clean stream holds instead of climbing to 1080p.
         assert_eq!(q.observe(&s, 0).action, QualityAction::Hold);
-        assert_eq!(q.observe(&s, STEP_UP_DWELL_MS).action, QualityAction::StepUp(QualityRung::P720_30));
+        assert_eq!(
+            q.observe(&s, STEP_UP_DWELL_MS).action,
+            QualityAction::StepUp(QualityRung::P720_30)
+        );
 
         // Confirm the climb before the next decision, since one change at a time
         // means an unconfirmed target holds the ladder.
@@ -616,7 +644,8 @@ mod tests {
         s.dropped_percent = 0.0;
         q.observe(&s, STEP_UP_DWELL_MS);
         assert_eq!(
-            q.observe(&s, STEP_UP_DWELL_MS + STEP_UP_DWELL_MS - 1).action,
+            q.observe(&s, STEP_UP_DWELL_MS + STEP_UP_DWELL_MS - 1)
+                .action,
             QualityAction::Hold
         );
         assert_eq!(
@@ -625,6 +654,3 @@ mod tests {
         );
     }
 }
-
-
-

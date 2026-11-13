@@ -79,6 +79,7 @@ const _: () = assert!(std::mem::size_of::<FrameHeader>() == HEADER_SIZE);
 /// `w*h + w*((h+1)/2)`, which equals `w*h*3/2` for even heights — and heights
 /// are always even, because odd output sizes are rejected. The `+1` matters for
 /// the odd case the C++ side tolerates.
+#[allow(clippy::manual_div_ceil)]
 pub const fn nv12_size(width: u32, height: u32) -> u32 {
     width * height + width * ((height + 1) / 2)
 }
@@ -102,11 +103,15 @@ pub enum PublishRejection {
     NoBuffer,
     /// The payload must equal `capacity` exactly; anything else is a silent
     /// no-op on the C++ side too, and here it is said out loud.
-    SizeMismatch { expected: usize, actual: usize },
+    SizeMismatch {
+        expected: usize,
+        actual: usize,
+    },
 }
 
 /// Both dimensions must be even: NV12 stores chroma in interleaved pairs, so an
 /// odd size has no valid layout.
+#[allow(clippy::manual_is_multiple_of)]
 pub const fn dimensions_are_valid(width: u32, height: u32) -> bool {
     width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0
 }
@@ -166,7 +171,10 @@ mod tests {
         assert_eq!(LAYOUT_VERSION, 2);
         assert_eq!(HEADER_SIZE, 68);
         assert_eq!(BUFFER_PATH, r"C:\ProgramData\PhoneCam\framebuffer-v2.bin");
-        assert_eq!(BUFFER_SDDL, "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)(A;;GRGW;;;LS)");
+        assert_eq!(
+            BUFFER_SDDL,
+            "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)(A;;GRGW;;;LS)"
+        );
     }
 
     #[test]

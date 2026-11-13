@@ -113,7 +113,11 @@ impl<'a> BitReader<'a> {
     fn se(&mut self) -> Option<i32> {
         let value = self.ue()?;
         let magnitude = ((value + 1) / 2) as i32;
-        Some(if value % 2 == 1 { magnitude } else { -magnitude })
+        Some(if value % 2 == 1 {
+            magnitude
+        } else {
+            -magnitude
+        })
     }
 }
 
@@ -193,7 +197,11 @@ fn parse_sps_payload(rbsp: &[u8]) -> Option<Dimensions> {
         crop_bottom = r.ue()?;
     }
 
-    let chroma_array_type = if separate_colour_plane { 0 } else { chroma_format_idc };
+    let chroma_array_type = if separate_colour_plane {
+        0
+    } else {
+        chroma_format_idc
+    };
 
     let crop_unit_x = if chroma_array_type == 0 {
         1
@@ -251,7 +259,11 @@ pub(crate) mod tests {
     /// Builds a minimal baseline-profile SPS Annex-B buffer for a given size.
     ///
     /// Written by hand so the parser is tested against bytes it did not produce.
-    pub(crate) fn make_sps(width_mbs: u32, height_map_units: u32, crop_bottom_units: u32) -> Vec<u8> {
+    pub(crate) fn make_sps(
+        width_mbs: u32,
+        height_map_units: u32,
+        crop_bottom_units: u32,
+    ) -> Vec<u8> {
         let mut bits: Vec<u8> = Vec::new();
 
         fn push_bits(bits: &mut Vec<u8>, value: u32, count: u32) {
@@ -331,21 +343,39 @@ pub(crate) mod tests {
         // 1080p is coded as 120x68 macroblocks and cropped by 4 chroma units.
         let sps = make_sps(120, 68, 4);
         let dims = parse_avc_dimensions(&sps).expect("1080p SPS must parse");
-        assert_eq!(dims, Dimensions { width: 1920, height: 1080 });
+        assert_eq!(
+            dims,
+            Dimensions {
+                width: 1920,
+                height: 1080
+            }
+        );
     }
 
     #[test]
     fn parses_720p() {
         let sps = make_sps(80, 45, 0);
         let dims = parse_avc_dimensions(&sps).expect("720p SPS must parse");
-        assert_eq!(dims, Dimensions { width: 1280, height: 720 });
+        assert_eq!(
+            dims,
+            Dimensions {
+                width: 1280,
+                height: 720
+            }
+        );
     }
 
     #[test]
     fn parses_480p() {
         let sps = make_sps(40, 30, 0);
         let dims = parse_avc_dimensions(&sps).expect("480p SPS must parse");
-        assert_eq!(dims, Dimensions { width: 640, height: 480 });
+        assert_eq!(
+            dims,
+            Dimensions {
+                width: 640,
+                height: 480
+            }
+        );
     }
 
     /// Without the emulation-prevention strip the escape bytes are read as

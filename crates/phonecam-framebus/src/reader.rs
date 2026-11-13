@@ -138,7 +138,8 @@ impl VcamTimestampTracker {
                     // so the consumer sees an honest still image rather than invented motion.
                     return self.last_sample_time_100ns;
                 }
-                let frame_delta_100ns = (delivered_pts_us as i64 - self.last_delivered_pts_us as i64) * 10;
+                let frame_delta_100ns =
+                    (delivered_pts_us as i64 - self.last_delivered_pts_us as i64) * 10;
                 let candidate = self.last_sample_time_100ns + frame_delta_100ns;
                 now = if frame_delta_100ns > 0 {
                     candidate
@@ -198,13 +199,13 @@ mod imp {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows::Win32::System::Memory::{
-        CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, VirtualQuery,
-        FILE_MAP_ALL_ACCESS, FILE_MAP_READ, MEMORY_BASIC_INFORMATION,
-        MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READONLY, PAGE_READWRITE,
+        CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, VirtualQuery, FILE_MAP_ALL_ACCESS,
+        FILE_MAP_READ, MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READONLY,
+        PAGE_READWRITE,
     };
 
     const OFF_MAGIC: usize = 0;
@@ -275,7 +276,11 @@ mod imp {
                 CreateFileMappingW(
                     file,
                     None,
-                    if writable { PAGE_READWRITE } else { PAGE_READONLY },
+                    if writable {
+                        PAGE_READWRITE
+                    } else {
+                        PAGE_READONLY
+                    },
                     0,
                     0,
                     PCWSTR::null(),
@@ -285,7 +290,9 @@ mod imp {
 
             if mapping.is_invalid() && writable {
                 writable = false;
-                unsafe { let _ = CloseHandle(file); }
+                unsafe {
+                    let _ = CloseHandle(file);
+                }
                 file = unsafe {
                     CreateFileW(
                         PCWSTR(path_w.as_ptr()),
@@ -299,21 +306,26 @@ mod imp {
                 }
                 .map_err(|e| ReaderError::Open(e.message().to_string()))?;
 
-                mapping = unsafe {
-                    CreateFileMappingW(file, None, PAGE_READONLY, 0, 0, PCWSTR::null())
-                }
-                .map_err(|e| ReaderError::Map(e.message().to_string()))?;
+                mapping =
+                    unsafe { CreateFileMappingW(file, None, PAGE_READONLY, 0, 0, PCWSTR::null()) }
+                        .map_err(|e| ReaderError::Map(e.message().to_string()))?;
             }
 
             if mapping.is_invalid() {
-                unsafe { let _ = CloseHandle(file); }
+                unsafe {
+                    let _ = CloseHandle(file);
+                }
                 return Err(ReaderError::Map("invalid mapping handle".into()));
             }
 
             let view: MEMORY_MAPPED_VIEW_ADDRESS = unsafe {
                 MapViewOfFile(
                     mapping,
-                    if writable { FILE_MAP_ALL_ACCESS } else { FILE_MAP_READ },
+                    if writable {
+                        FILE_MAP_ALL_ACCESS
+                    } else {
+                        FILE_MAP_READ
+                    },
                     0,
                     0,
                     0,
@@ -325,7 +337,10 @@ mod imp {
                     let _ = CloseHandle(mapping);
                     let _ = CloseHandle(file);
                 }
-                return Err(ReaderError::Map(format!("{}", std::io::Error::last_os_error())));
+                return Err(ReaderError::Map(format!(
+                    "{}",
+                    std::io::Error::last_os_error()
+                )));
             }
 
             let mut info = MEMORY_BASIC_INFORMATION::default();
@@ -376,9 +391,9 @@ mod imp {
         }
 
         pub fn is_stale(&self) -> bool {
-            let capacity = unsafe {
-                std::ptr::read_unaligned(self.base.add(OFF_CAPACITY) as *const u32)
-            } as usize;
+            let capacity =
+                unsafe { std::ptr::read_unaligned(self.base.add(OFF_CAPACITY) as *const u32) }
+                    as usize;
             HEADER_SIZE + capacity > self.mapped_bytes
         }
 
@@ -391,9 +406,8 @@ mod imp {
         }
 
         pub fn has_new_frame(&self, last_frame_index: u64) -> bool {
-            let current_index = unsafe {
-                std::ptr::read_unaligned(self.base.add(OFF_FRAME_INDEX) as *const u64)
-            };
+            let current_index =
+                unsafe { std::ptr::read_unaligned(self.base.add(OFF_FRAME_INDEX) as *const u64) };
             current_index != last_frame_index
         }
 
@@ -402,7 +416,8 @@ mod imp {
                 let width = std::ptr::read_unaligned(self.base.add(OFF_WIDTH) as *const u32);
                 let height = std::ptr::read_unaligned(self.base.add(OFF_HEIGHT) as *const u32);
                 let pts_us = std::ptr::read_unaligned(self.base.add(OFF_PTS) as *const u64);
-                let frame_index = std::ptr::read_unaligned(self.base.add(OFF_FRAME_INDEX) as *const u64);
+                let frame_index =
+                    std::ptr::read_unaligned(self.base.add(OFF_FRAME_INDEX) as *const u64);
                 let state_raw = std::ptr::read_unaligned(self.base.add(OFF_STATE) as *const u32);
                 let mirror = std::ptr::read_unaligned(self.base.add(OFF_MIRROR) as *const u32) != 0;
                 let rotation = std::ptr::read_unaligned(self.base.add(OFF_ROTATION) as *const u32);
@@ -442,11 +457,12 @@ mod imp {
         }
 
         pub fn read(&mut self, out: &mut Vec<u8>) -> Option<FrameSnapshot> {
-            let capacity = unsafe {
-                std::ptr::read_unaligned(self.base.add(OFF_CAPACITY) as *const u32)
-            } as usize;
+            let capacity =
+                unsafe { std::ptr::read_unaligned(self.base.add(OFF_CAPACITY) as *const u32) }
+                    as usize;
             let width = unsafe { std::ptr::read_unaligned(self.base.add(OFF_WIDTH) as *const u32) };
-            let height = unsafe { std::ptr::read_unaligned(self.base.add(OFF_HEIGHT) as *const u32) };
+            let height =
+                unsafe { std::ptr::read_unaligned(self.base.add(OFF_HEIGHT) as *const u32) };
 
             if width == 0 || height == 0 || capacity == 0 {
                 return None;
@@ -465,7 +481,11 @@ mod imp {
                     continue;
                 }
                 unsafe {
-                    std::ptr::copy_nonoverlapping(self.base.add(HEADER_SIZE), out.as_mut_ptr(), capacity);
+                    std::ptr::copy_nonoverlapping(
+                        self.base.add(HEADER_SIZE),
+                        out.as_mut_ptr(),
+                        capacity,
+                    );
                 }
                 let snapshot = self.read_snapshot_fields();
                 let after = seq.load(Ordering::Acquire);
@@ -507,7 +527,10 @@ mod imp {
 
     fn wide(text: &str) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
-        std::ffi::OsStr::new(text).encode_wide().chain(std::iter::once(0)).collect()
+        std::ffi::OsStr::new(text)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 }
 

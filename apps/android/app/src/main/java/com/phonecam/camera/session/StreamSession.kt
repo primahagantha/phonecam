@@ -1780,12 +1780,11 @@ class StreamSession(
         // second, which is what the notification de-duplication below now also
         // guards against.
         stopStatsLoop()
-        // Release the producer Surface before closing the Camera2 session.
-        // Camera HALs can report ERROR_CAMERA_DEVICE when the producer is
-        // invalidated underneath an active capture request.
+        // Stop Camera2 capture session first so no requests are delivered
+        // into a surface that is about to be released by MediaCodec.
+        camera.stop()
         encoder?.stop()
         encoder = null
-        camera.stop()
         // A camera switch keeps the channel: the desktop keeps its decoder and
         // the last decoded frame, so the switch has no placeholder gap. Every
         // other teardown closes it, because nothing will send on it again.

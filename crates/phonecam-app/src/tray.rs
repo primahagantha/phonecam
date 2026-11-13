@@ -1,4 +1,4 @@
-﻿//! The system tray icon.
+//! The system tray icon.
 //!
 //! GPUI 0.2.2 ships a status item on macOS only, so on Windows this is built
 //! directly on `Shell_NotifyIcon`. The shipped Electron build used a tray for two
@@ -71,7 +71,10 @@ pub fn build_menu(state: &AppState) -> TrayMenu {
         state.core.as_ref().map(|c| c.phase).unwrap_or_default(),
     );
 
-    let device = match (state.device_name(), state.core.as_ref().map(|c| c.transport.as_str())) {
+    let device = match (
+        state.device_name(),
+        state.core.as_ref().map(|c| c.transport.as_str()),
+    ) {
         (Some(name), Some(transport)) => {
             let transport_label = match transport {
                 "lan" => "Wi-Fi",
@@ -85,22 +88,26 @@ pub fn build_menu(state: &AppState) -> TrayMenu {
     };
 
     let vcam_state = state.vcam_state().unwrap_or("stopped");
-    let vcam =
-        match state.core.as_ref().and_then(|c| c.vcam.as_ref()).and_then(|v| v.error.clone()) {
-            Some(error) => format!("Virtual camera error: {error}"),
-            None => match vcam_state {
-                "running" => format!(
-                    "Virtual camera: {}",
-                    state
-                        .core
-                        .as_ref()
-                        .and_then(|c| c.vcam.as_ref())
-                        .map(|v| v.name.clone())
-                        .unwrap_or_else(|| "PhoneCam Camera".into())
-                ),
-                _ => "Virtual camera: off".to_string(),
-            },
-        };
+    let vcam = match state
+        .core
+        .as_ref()
+        .and_then(|c| c.vcam.as_ref())
+        .and_then(|v| v.error.clone())
+    {
+        Some(error) => format!("Virtual camera error: {error}"),
+        None => match vcam_state {
+            "running" => format!(
+                "Virtual camera: {}",
+                state
+                    .core
+                    .as_ref()
+                    .and_then(|c| c.vcam.as_ref())
+                    .map(|v| v.name.clone())
+                    .unwrap_or_else(|| "PhoneCam Camera".into())
+            ),
+            _ => "Virtual camera: off".to_string(),
+        },
+    };
 
     TrayMenu {
         status: format!("{} {status}", phase_dot(&phase)),
@@ -162,7 +169,11 @@ pub fn set_window_always_on_top(hwnd: isize, enabled: bool) {
         SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     };
     if hwnd != 0 {
-        let insert_after = if enabled { HWND_TOPMOST } else { HWND_NOTOPMOST };
+        let insert_after = if enabled {
+            HWND_TOPMOST
+        } else {
+            HWND_NOTOPMOST
+        };
         unsafe {
             let _ = SetWindowPos(
                 HWND(hwnd as *mut _),
@@ -239,7 +250,11 @@ pub fn set_window_icon(hwnd: isize) {
     };
 
     let fallback = if hicon_big.is_none() && hicon_small.is_none() {
-        unsafe { LoadIconW(None, IDI_APPLICATION).ok().filter(|h| !h.is_invalid()) }
+        unsafe {
+            LoadIconW(None, IDI_APPLICATION)
+                .ok()
+                .filter(|h| !h.is_invalid())
+        }
     } else {
         None
     };
@@ -268,7 +283,10 @@ pub fn set_window_icon(hwnd: isize) {
         }
     }
     if icon_path.is_some() {
-        tracing::info!("Applied PhoneCam window & taskbar icon from {:?}", icon_path);
+        tracing::info!(
+            "Applied PhoneCam window & taskbar icon from {:?}",
+            icon_path
+        );
     }
 }
 
@@ -300,7 +318,9 @@ pub fn acquire_single_instance_or_focus() -> Option<SingleInstanceGuard> {
     use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
 
-    let name: Vec<u16> = "Local\\PhoneCamDesktopSingleInstance\0".encode_utf16().collect();
+    let name: Vec<u16> = "Local\\PhoneCamDesktopSingleInstance\0"
+        .encode_utf16()
+        .collect();
     let handle = match unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) } {
         Ok(h) => h,
         Err(err) => {
@@ -363,7 +383,8 @@ fn focus_existing_window() {
         .unwrap_or(HWND::default());
     if found.is_invalid() || found.0.is_null() {
         let mut enumerated = HWND::default();
-        let _ = unsafe { EnumWindows(Some(enum_cb), LPARAM(&mut enumerated as *mut HWND as isize)) };
+        let _ =
+            unsafe { EnumWindows(Some(enum_cb), LPARAM(&mut enumerated as *mut HWND as isize)) };
         found = enumerated;
     }
 
@@ -549,7 +570,11 @@ pub fn find_icon_path() -> Option<std::path::PathBuf> {
     }
     candidates.push(std::path::PathBuf::from("assets").join("icon.ico"));
     candidates.push(std::path::PathBuf::from("resources").join("icon.ico"));
-    candidates.push(std::path::PathBuf::from("dist").join("unpacked").join("icon.ico"));
+    candidates.push(
+        std::path::PathBuf::from("dist")
+            .join("unpacked")
+            .join("icon.ico"),
+    );
     candidates.push(std::path::PathBuf::from("icon.ico"));
     find_icon_path_in(&candidates)
 }
@@ -663,11 +688,13 @@ mod imp {
             let class = wide("PhoneCamTrayWindow");
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(tray_wndproc),
-                hInstance: unsafe { GetModuleHandleW(PCWSTR::null()) }.unwrap_or_default().into(),
+                hInstance: unsafe { GetModuleHandleW(PCWSTR::null()) }
+                    .unwrap_or_default()
+                    .into(),
                 lpszClassName: PCWSTR(class.as_ptr()),
                 ..Default::default()
             };
-(unsafe { RegisterClassW(&wc) }) != 0
+            (unsafe { RegisterClassW(&wc) }) != 0
         })
     }
 
@@ -696,7 +723,6 @@ mod imp {
         .ok()?;
         Some(hwnd)
     }
-
 
     impl Tray {
         /// Registers the icon, posting its clicks to a window this module owns.
@@ -759,7 +785,13 @@ mod imp {
             let _ = unsafe { Shell_NotifyIconW(NIM_SETVERSION, &data) };
 
             tracing::info!("tray icon installed");
-            Some(Self { hwnd, target, added: true, owned_icon, commands })
+            Some(Self {
+                hwnd,
+                target,
+                added: true,
+                owned_icon,
+                commands,
+            })
         }
 
         /// Takes whatever the user asked for since the last call.
@@ -796,7 +828,11 @@ mod imp {
                 let _ = AppendMenuW(popup, MF_STRING | MF_GRAYED, 0, PCWSTR(vcam.as_ptr()));
                 let _ = AppendMenuW(popup, MF_SEPARATOR, 0, PCWSTR::null());
                 let _ = AppendMenuW(popup, MF_STRING, CMD_SHOW, PCWSTR(show.as_ptr()));
-                let vcam_flags = if menu.vcam_checked { MF_STRING | MF_CHECKED } else { MF_STRING };
+                let vcam_flags = if menu.vcam_checked {
+                    MF_STRING | MF_CHECKED
+                } else {
+                    MF_STRING
+                };
                 let _ = AppendMenuW(popup, vcam_flags, CMD_VCAM, PCWSTR(toggle.as_ptr()));
                 let _ = AppendMenuW(popup, MF_STRING, CMD_QR, PCWSTR(qr.as_ptr()));
                 let _ = AppendMenuW(popup, MF_SEPARATOR, 0, PCWSTR::null());
@@ -901,7 +937,14 @@ mod tests {
 
     #[test]
     fn every_phase_has_a_distinct_glyph() {
-        let phases = ["idle", "connecting", "connected", "streaming", "reconnecting", "error"];
+        let phases = [
+            "idle",
+            "connecting",
+            "connected",
+            "streaming",
+            "reconnecting",
+            "error",
+        ];
         let mut seen = std::collections::HashSet::new();
         for phase in phases {
             assert!(seen.insert(phase_dot(phase)), "{phase} reuses a glyph");
@@ -965,7 +1008,11 @@ mod tests {
 
         let menu = build_menu(&state);
         assert_eq!(menu.device, "Redmi Note 11 (Wi-Fi)");
-        assert!(menu.status.contains("Streaming"), "status was {}", menu.status);
+        assert!(
+            menu.status.contains("Streaming"),
+            "status was {}",
+            menu.status
+        );
         assert_eq!(tooltip(&state), "PhoneCam: Redmi Note 11 (Streaming)");
     }
 
@@ -984,7 +1031,11 @@ mod tests {
             ..Default::default()
         });
         let menu = build_menu(&state);
-        assert!(menu.vcam.contains("not registered"), "vcam was {}", menu.vcam);
+        assert!(
+            menu.vcam.contains("not registered"),
+            "vcam was {}",
+            menu.vcam
+        );
         assert!(!menu.vcam_checked);
     }
 
@@ -1002,7 +1053,10 @@ mod tests {
         let present = temp.join("resources").join("icon.ico");
         std::fs::write(&present, b"ico").unwrap();
 
-        assert_eq!(find_icon_path_in(&[missing.clone(), present.clone()]), Some(present.clone()));
+        assert_eq!(
+            find_icon_path_in(&[missing.clone(), present.clone()]),
+            Some(present.clone())
+        );
         assert_eq!(find_icon_path_in(&[missing]), None);
         let _ = std::fs::remove_dir_all(&temp);
     }
@@ -1020,13 +1074,3 @@ mod tests {
         assert!(p.exists(), "found path {:?} should exist", p);
     }
 }
-
-
-
-
-
-
-
-
-
-

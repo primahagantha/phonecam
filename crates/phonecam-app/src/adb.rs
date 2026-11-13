@@ -203,7 +203,8 @@ impl Adb {
     /// Opens the tunnel the phone dials through.
     pub fn enable_reverse(&self, port: u16, serial: Option<&str>) -> Result<(), String> {
         let spec = format!("tcp:{port}");
-        let output = self.run_for_serial(serial, &["reverse", &spec, &spec], Duration::from_secs(8))?;
+        let output =
+            self.run_for_serial(serial, &["reverse", &spec, &spec], Duration::from_secs(8))?;
         // adb reports most failures on stdout, and the two commands that matter
         // here phrase them differently.
         let lowered = output.to_lowercase();
@@ -215,8 +216,12 @@ impl Adb {
 
     pub fn disable_reverse(&self, port: u16, serial: Option<&str>) -> Result<(), String> {
         let spec = format!("tcp:{port}");
-        self.run_for_serial(serial, &["reverse", "--remove", &spec], Duration::from_secs(8))
-            .map(|_| ())
+        self.run_for_serial(
+            serial,
+            &["reverse", "--remove", &spec],
+            Duration::from_secs(8),
+        )
+        .map(|_| ())
     }
 
     /// Whether a reverse tunnel for `port` is already open.
@@ -330,7 +335,9 @@ impl Adb {
 
     /// Installs a PhoneCam APK file onto the target device.
     pub fn install_apk(&self, apk_path: &Path, serial: Option<&str>) -> Result<(), String> {
-        let apk_str = apk_path.to_str().ok_or_else(|| "invalid APK path".to_string())?;
+        let apk_str = apk_path
+            .to_str()
+            .ok_or_else(|| "invalid APK path".to_string())?;
         let output = self.run_for_serial(
             serial,
             &["install", "-r", "-d", apk_str],
@@ -534,7 +541,8 @@ mod tests {
 
         let target_release = root.0.join("target").join("release");
         std::fs::create_dir_all(&target_release).unwrap();
-        let found_from_release = Adb::locate(Some(&target_release)).expect("locate from target/release");
+        let found_from_release =
+            Adb::locate(Some(&target_release)).expect("locate from target/release");
         assert_eq!(
             found_from_release.path().canonicalize().unwrap(),
             dist_adb.canonicalize().unwrap()
@@ -583,10 +591,16 @@ mod tests {
 
     #[test]
     fn pm_path_installed_detection() {
-        assert!(is_pm_path_installed("package:/data/app/~~a/com.phonecam.camera-b/base.apk\r\n"));
-        assert!(is_pm_path_installed("package:/system/priv-app/com.phonecam.camera.debug/base.apk"));
+        assert!(is_pm_path_installed(
+            "package:/data/app/~~a/com.phonecam.camera-b/base.apk\r\n"
+        ));
+        assert!(is_pm_path_installed(
+            "package:/system/priv-app/com.phonecam.camera.debug/base.apk"
+        ));
         assert!(!is_pm_path_installed(""));
-        assert!(!is_pm_path_installed("Error: package com.phonecam.camera not found\n"));
+        assert!(!is_pm_path_installed(
+            "Error: package com.phonecam.camera not found\n"
+        ));
     }
 
     #[test]

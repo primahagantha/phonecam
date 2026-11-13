@@ -1,4 +1,4 @@
-﻿//! The side-effect queue.
+//! The side-effect queue.
 //!
 //! The panels are pure descriptions of state; they never hold the socket or the
 //! settings file. A click pushes an effect here, and the host drains the queue
@@ -126,7 +126,10 @@ mod tests {
         push_effect(SideEffect::StartStream);
         push_effect(SideEffect::StopStream);
         let drained = drain_effects();
-        assert_eq!(drained, vec![SideEffect::StartStream, SideEffect::StopStream]);
+        assert_eq!(
+            drained,
+            vec![SideEffect::StartStream, SideEffect::StopStream]
+        );
         assert!(drain_effects().is_empty(), "a drain empties the queue");
     }
 
@@ -160,4 +163,3 @@ mod tests {
         );
     }
 }
-

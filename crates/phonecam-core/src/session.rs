@@ -1,4 +1,4 @@
-﻿//! The server side of the phone-facing channels (docs Ã‚Â§4Ã¢â‚¬â€œÃ‚Â§7, Ã‚Â§12).
+//! The server side of the phone-facing channels (docs Ã‚Â§4Ã¢â‚¬â€œÃ‚Â§7, Ã‚Â§12).
 //!
 //! This is where a dial becomes a session: the greeting, the credential check,
 //! the control loop, the video loop, and the phase rules that decide when the UI
@@ -211,7 +211,10 @@ impl SessionState {
     pub fn note_decoded_frame(&self) {
         self.live_frame_seen.store(true, Ordering::Relaxed);
         let mut phase = self.phase.lock();
-        if matches!(*phase, StreamPhase::Connecting | StreamPhase::Connected | StreamPhase::Idle) {
+        if matches!(
+            *phase,
+            StreamPhase::Connecting | StreamPhase::Connected | StreamPhase::Idle
+        ) {
             *phase = StreamPhase::Streaming;
         }
     }
@@ -334,11 +337,7 @@ impl Authenticator<'_> {
     /// Reads the greeting/handshake exchange and validates the credential.
     ///
     /// On success the connection is left positioned for framed traffic.
-    pub fn authenticate(
-        &self,
-        conn: &Connection,
-        allow_loopback: bool,
-    ) -> HandshakeOutcome {
+    pub fn authenticate(&self, conn: &Connection, allow_loopback: bool) -> HandshakeOutcome {
         let is_loopback = conn.is_loopback();
 
         // A nonce we cannot generate is a reason to refuse, never a reason to
@@ -362,7 +361,12 @@ impl Authenticator<'_> {
         }
 
         if &fixed[0..4] != b"PCAM" {
-            self.refuse(conn, ChannelRole::Control, HandshakeStatus::BadRequest, "{}");
+            self.refuse(
+                conn,
+                ChannelRole::Control,
+                HandshakeStatus::BadRequest,
+                "{}",
+            );
             return HandshakeOutcome::refused("bad magic in the handshake");
         }
 
@@ -388,17 +392,20 @@ impl Authenticator<'_> {
         }
 
         let Ok(handshake) = ClientHandshake::parse(&whole) else {
-            self.refuse(conn, ChannelRole::Control, HandshakeStatus::BadRequest, "{}");
+            self.refuse(
+                conn,
+                ChannelRole::Control,
+                HandshakeStatus::BadRequest,
+                "{}",
+            );
             return HandshakeOutcome::refused("malformed handshake");
         };
 
         if handshake.proto_version != PROTOCOL_VERSION {
             let body = serde_json::json!({ "serverVersion": env!("CARGO_PKG_VERSION") });
-            if let Ok(bytes) = write_server_response(
-                HandshakeStatus::VersionMismatch,
-                handshake.role,
-                &body,
-            ) {
+            if let Ok(bytes) =
+                write_server_response(HandshakeStatus::VersionMismatch, handshake.role, &body)
+            {
                 conn.write_all(&bytes);
             }
             return HandshakeOutcome::refused(format!(
@@ -422,7 +429,12 @@ impl Authenticator<'_> {
                     );
                 }
                 if !is_loopback {
-                    self.refuse(conn, handshake.role, HandshakeStatus::UnauthorizedSource, "{}");
+                    self.refuse(
+                        conn,
+                        handshake.role,
+                        HandshakeStatus::UnauthorizedSource,
+                        "{}",
+                    );
                     return HandshakeOutcome::refused("loopback mode from a non-loopback peer");
                 }
                 // Every successful handshake must send a response frame, or the
@@ -551,7 +563,11 @@ impl Authenticator<'_> {
         }
 
         // Replay defence: the nonce must strictly increase per device.
-        if !self.pairing.lock().accept_nonce(device_id, handshake.client_nonce) {
+        if !self
+            .pairing
+            .lock()
+            .accept_nonce(device_id, handshake.client_nonce)
+        {
             self.refuse(conn, handshake.role, HandshakeStatus::Denied, "{}");
             return HandshakeOutcome::refused("replayed client nonce");
         }
@@ -792,7 +808,11 @@ pub struct StatsWindow {
 
 impl StatsWindow {
     pub fn new(now_us: i64) -> Self {
-        Self { frames: 0, bytes: 0, started_us: now_us }
+        Self {
+            frames: 0,
+            bytes: 0,
+            started_us: now_us,
+        }
     }
 
     /// When the current window began.
@@ -817,7 +837,13 @@ impl StatsWindow {
     }
 
     /// Produces the per-second figures and restarts the window.
-    pub fn take(&mut self, now_us: i64, rtt_us: i64, decoded: u64, dropped: u64) -> ConnectionStats {
+    pub fn take(
+        &mut self,
+        now_us: i64,
+        rtt_us: i64,
+        decoded: u64,
+        dropped: u64,
+    ) -> ConnectionStats {
         let elapsed_us = (now_us - self.started_us).max(1);
         let elapsed_s = elapsed_us as f64 / 1_000_000.0;
 
@@ -848,7 +874,11 @@ impl StatsWindow {
         ConnectionStats {
             fps,
             bitrate,
-            latency_ms: if rtt_us > 0 { rtt_us as f64 / 1000.0 } else { -1.0 },
+            latency_ms: if rtt_us > 0 {
+                rtt_us as f64 / 1000.0
+            } else {
+                -1.0
+            },
             dropped_percent,
             decoded_frames: decoded,
             decode_queue_depth: 0,
@@ -924,7 +954,11 @@ mod tests {
         assert_eq!(state.phase(), StreamPhase::Streaming);
         // A second video socket opens while the first picture is on screen.
         state.note_video_channel_opened();
-        assert_eq!(state.phase(), StreamPhase::Streaming, "a working stream must not look failed");
+        assert_eq!(
+            state.phase(),
+            StreamPhase::Streaming,
+            "a working stream must not look failed"
+        );
     }
 
     #[test]
@@ -948,11 +982,26 @@ mod tests {
 
     #[test]
     fn phase_after_phone_state_matches_the_rules() {
-        assert_eq!(phase_after_phone_state(StreamPhase::Idle, true), StreamPhase::Connecting);
-        assert_eq!(phase_after_phone_state(StreamPhase::Connected, true), StreamPhase::Connecting);
-        assert_eq!(phase_after_phone_state(StreamPhase::Streaming, true), StreamPhase::Streaming);
-        assert_eq!(phase_after_phone_state(StreamPhase::Streaming, false), StreamPhase::Connected);
-        assert_eq!(phase_after_phone_state(StreamPhase::Reconnecting, false), StreamPhase::Reconnecting);
+        assert_eq!(
+            phase_after_phone_state(StreamPhase::Idle, true),
+            StreamPhase::Connecting
+        );
+        assert_eq!(
+            phase_after_phone_state(StreamPhase::Connected, true),
+            StreamPhase::Connecting
+        );
+        assert_eq!(
+            phase_after_phone_state(StreamPhase::Streaming, true),
+            StreamPhase::Streaming
+        );
+        assert_eq!(
+            phase_after_phone_state(StreamPhase::Streaming, false),
+            StreamPhase::Connected
+        );
+        assert_eq!(
+            phase_after_phone_state(StreamPhase::Reconnecting, false),
+            StreamPhase::Reconnecting
+        );
     }
 
     #[test]
@@ -1029,7 +1078,10 @@ mod tests {
 
     #[test]
     fn a_ping_carries_the_wire_field_name() {
-        let bytes = control_frame(&DesktopToPhone::Ping { server_nonce: 12345 }).unwrap();
+        let bytes = control_frame(&DesktopToPhone::Ping {
+            server_nonce: 12345,
+        })
+        .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes[4..]).unwrap();
         assert_eq!(value["t"], "ping");
         assert_eq!(value["serverNonce"], 12345);
@@ -1137,16 +1189,28 @@ mod tests {
         assert_eq!(tracker.failures(), 0);
         assert!(tracker.can_retry());
 
-        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(500)));
+        assert_eq!(
+            tracker.record_failure(),
+            Some(std::time::Duration::from_millis(500))
+        );
         assert_eq!(tracker.failures(), 1);
 
-        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(1000)));
+        assert_eq!(
+            tracker.record_failure(),
+            Some(std::time::Duration::from_millis(1000))
+        );
         assert_eq!(tracker.failures(), 2);
 
-        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(2000)));
+        assert_eq!(
+            tracker.record_failure(),
+            Some(std::time::Duration::from_millis(2000))
+        );
         assert_eq!(tracker.failures(), 3);
 
-        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(4000)));
+        assert_eq!(
+            tracker.record_failure(),
+            Some(std::time::Duration::from_millis(4000))
+        );
         assert_eq!(tracker.failures(), 4);
 
         // Exhausted after 4 failures
@@ -1163,13 +1227,9 @@ mod tests {
 
         tracker.reset();
         assert_eq!(tracker.failures(), 0);
-        assert_eq!(tracker.record_failure(), Some(std::time::Duration::from_millis(500)));
+        assert_eq!(
+            tracker.record_failure(),
+            Some(std::time::Duration::from_millis(500))
+        );
     }
 }
-
-
-
-
-
-
-

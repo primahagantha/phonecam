@@ -1,4 +1,4 @@
-﻿//! The runtime: the threads that make the app actually work.
+//! The runtime: the threads that make the app actually work.
 //!
 //! The crates below this one are complete and tested in isolation; this module is
 //! what connects them into a running program. It owns:
@@ -339,7 +339,8 @@ impl Runtime {
     pub fn sync_output_transform(&self, mirror: bool, rotation: u32) {
         let normalized_rot = rotation % 360;
         self.output_mirror.store(mirror, Ordering::Relaxed);
-        self.output_rotation.store(normalized_rot, Ordering::Relaxed);
+        self.output_rotation
+            .store(normalized_rot, Ordering::Relaxed);
         {
             let mut state = self.state.lock();
             state.settings.output_mirror = mirror;
@@ -423,10 +424,7 @@ impl Runtime {
             std::env::consts::ARCH
         ));
         report.push_str(&format!("  App Version: {}\n", env!("CARGO_PKG_VERSION")));
-        report.push_str(&format!(
-            "  Log level: {:?}\n\n",
-            state.settings.log_level
-        ));
+        report.push_str(&format!("  Log level: {:?}\n\n", state.settings.log_level));
 
         report.push_str("Service Listeners:\n");
         report.push_str(&format!("  Control/Video: 0.0.0.0:{port}\n"));
@@ -570,7 +568,10 @@ impl Runtime {
         let out_size = if state.settings.output_follows_stream {
             "follow stream".to_string()
         } else {
-            format!("{}x{}", state.settings.output_width, state.settings.output_height)
+            format!(
+                "{}x{}",
+                state.settings.output_width, state.settings.output_height
+            )
         };
         report.push_str(&format!(
             "  Output: {} mirror={} rotation={}deg preview={}\n\n",
@@ -642,7 +643,11 @@ impl Runtime {
         let vcam_reg = self.vcam_registered.load(Ordering::Relaxed);
         report.push_str(&format!(
             "  {}\n",
-            if vcam_reg { "Installed" } else { "Not installed" }
+            if vcam_reg {
+                "Installed"
+            } else {
+                "Not installed"
+            }
         ));
         let vcam_state = if self.vcam_enabled.load(Ordering::Relaxed) {
             "running"
@@ -696,7 +701,11 @@ impl Runtime {
         let path = match custom_path {
             Some(p) => p.to_path_buf(),
             None => dirs::data_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_else(|_| ".".into())))
+                .unwrap_or_else(|| {
+                    std::path::PathBuf::from(
+                        std::env::var("APPDATA").unwrap_or_else(|_| ".".into()),
+                    )
+                })
                 .join("PhoneCam")
                 .join("diagnostics.txt"),
         };
@@ -738,7 +747,8 @@ impl Runtime {
             Err(error) => {
                 // Logged once, here: the caller reports the same failure to the
                 // UI, and writing it twice made the log look like two problems.
-                self.log.write("ERROR", &format!("port_unavailable: {error}"));
+                self.log
+                    .write("ERROR", &format!("port_unavailable: {error}"));
                 return None;
             }
         };
@@ -769,7 +779,8 @@ impl Runtime {
 
     /// One accepted connection: authenticate, then run its channel.
     fn handle_connection(self: Arc<Self>, conn: Connection) {
-        conn.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
+        conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .ok();
 
         let outcome = {
             let auth = Authenticator {
@@ -805,10 +816,12 @@ impl Runtime {
         self.connects.fetch_add(1, Ordering::Relaxed);
         {
             let mut registry = self.registry.lock();
-            match registry.iter_mut().find(|r| r.device_id == outcome.device_id) {
+            match registry
+                .iter_mut()
+                .find(|r| r.device_id == outcome.device_id)
+            {
                 Some(record) => record.last_seen_ms = now_ms(),
-                None => registry
-                    .push(DeviceRecord::new(&outcome.device_id, "", now_ms())),
+                None => registry.push(DeviceRecord::new(&outcome.device_id, "", now_ms())),
             }
             persist_registry(&registry);
         }
@@ -822,18 +835,13 @@ impl Runtime {
 
     /// Holds the pending socket open while a human decides, then delivers.
     fn wait_for_approval(self: &Arc<Self>, conn: &Connection, device_id: &str) {
-        conn.set_read_timeout(Some(std::time::Duration::from_millis(1000))).ok();
+        conn.set_read_timeout(Some(std::time::Duration::from_millis(1000)))
+            .ok();
         let deadline = now_ms() + phonecam_core::session::APPROVAL_WAIT_MS;
 
         while now_ms() < deadline && self.running.load(Ordering::Relaxed) {
-            if let Some(token) = self
-                .pairing
-                .lock()
-                .approved_token_for(device_id, now_ms())
-            {
-                if let Some(bytes) =
-                    control_frame(&DesktopToPhone::PairApproved { token })
-                {
+            if let Some(token) = self.pairing.lock().approved_token_for(device_id, now_ms()) {
+                if let Some(bytes) = control_frame(&DesktopToPhone::PairApproved { token }) {
                     conn.write_all(&bytes);
                 }
                 self.log_info("pairing approved");
@@ -865,7 +873,8 @@ impl Runtime {
 
     /// The control channel: JSON messages, one per frame.
     fn run_control(self: &Arc<Self>, conn: Connection) {
-        conn.set_read_timeout(Some(std::time::Duration::from_millis(1000))).ok();
+        conn.set_read_timeout(Some(std::time::Duration::from_millis(1000)))
+            .ok();
 
         // Tell the phone who we are before anything else.
         if let Some(bytes) = control_frame(&DesktopToPhone::Welcome {
@@ -882,8 +891,12 @@ impl Runtime {
         // If stream_wanted is true, the stream was running before the reconnect.
         // Ask the phone to resume!
         if self.session.stream_wanted.load(Ordering::Relaxed) {
-            self.log_info("the stream was running before the reconnect; asking the phone to resume");
-            tracing::info!("the stream was running before the reconnect; asking the phone to resume");
+            self.log_info(
+                "the stream was running before the reconnect; asking the phone to resume",
+            );
+            tracing::info!(
+                "the stream was running before the reconnect; asking the phone to resume"
+            );
             self.start_stream();
         }
 
@@ -925,7 +938,9 @@ impl Runtime {
                         *self.session.device_name.lock() = device_name;
                     }
                     *self.session.device_model.lock() = model;
-                    self.session.android_version.store(android_version as i64, Ordering::Relaxed);
+                    self.session
+                        .android_version
+                        .store(android_version as i64, Ordering::Relaxed);
                     self.broadcast_state();
                 }
                 PhoneToDesktop::Capabilities { device, cameras } => {
@@ -997,7 +1012,8 @@ impl Runtime {
 
     /// The video channel: H.264 packets in, decoded frames out.
     fn run_video(self: &Arc<Self>, conn: Connection) {
-        conn.set_read_timeout(Some(std::time::Duration::from_millis(2000))).ok();
+        conn.set_read_timeout(Some(std::time::Duration::from_millis(2000)))
+            .ok();
         self.session.note_video_channel_opened();
         self.session.live_frame_seen.store(false, Ordering::Relaxed);
         self.broadcast_state();
@@ -1023,14 +1039,16 @@ impl Runtime {
             // A video channel that goes quiet is a stalled stream, but a read
             // timeout is not proof the socket closed.
             let read_started = now_us();
-            let Some((flags, pts, total_len)) = read_video_packet_into(&conn, &mut packet_buf) else {
+            let Some((flags, pts, total_len)) = read_video_packet_into(&conn, &mut packet_buf)
+            else {
                 if conn.is_closed() {
                     break;
                 }
                 continue;
             };
             let payload = &packet_buf[VIDEO_HEADER_SIZE..total_len];
-            self.bytes_in.fetch_add(4 + total_len as u64, Ordering::Relaxed);
+            self.bytes_in
+                .fetch_add(4 + total_len as u64, Ordering::Relaxed);
 
             let read_us = now_us() - read_started;
             self.note_stage(0, read_us);
@@ -1079,7 +1097,9 @@ impl Runtime {
                     tracing::warn!("decode error: {error}");
                     self.note_stage(1, now_us() - decode_started);
                     dropped += 1;
-                    self.session.decode_struggling.store(true, Ordering::Relaxed);
+                    self.session
+                        .decode_struggling
+                        .store(true, Ordering::Relaxed);
                     saw_keyframe = false;
                     decoder.reset();
                 }
@@ -1127,7 +1147,8 @@ impl Runtime {
             if intervals.len() < 4096 {
                 intervals.push(now - previous);
             }
-            self.frame_interval_count.store(intervals.len(), Ordering::Relaxed);
+            self.frame_interval_count
+                .store(intervals.len(), Ordering::Relaxed);
         }
         // --- the virtual camera: NV12 into the shared buffer
         let mirror = self.output_mirror.load(Ordering::Relaxed);
@@ -1289,8 +1310,13 @@ impl Runtime {
                         // is slow, not that it is healthy.
                         runtime.session.rtt_us.store(0, Ordering::Relaxed);
                     }
-                    runtime.session.ping_sent_at_us.store(now_us(), Ordering::Relaxed);
-                    runtime.send_to_phone(DesktopToPhone::Ping { server_nonce: now as u64 });
+                    runtime
+                        .session
+                        .ping_sent_at_us
+                        .store(now_us(), Ordering::Relaxed);
+                    runtime.send_to_phone(DesktopToPhone::Ping {
+                        server_nonce: now as u64,
+                    });
 
                     runtime.tick_quality();
                 }
@@ -1344,7 +1370,10 @@ impl Runtime {
                 / 10.0,
             rtt_us: self.session.rtt_us.load(Ordering::Relaxed),
             thermal: self.session.thermal(),
-            decode_struggling: self.session.decode_struggling.swap(false, Ordering::Relaxed),
+            decode_struggling: self
+                .session
+                .decode_struggling
+                .swap(false, Ordering::Relaxed),
         };
 
         let decision = quality.observe(&sample, now_ms());
@@ -1405,7 +1434,9 @@ impl Runtime {
         };
         let zoom = f32::from_bits(self.zoom_bits.load(Ordering::Relaxed));
 
-        self.queue_command(DesktopToPhone::SetCamera { camera: settings.camera.clone() });
+        self.queue_command(DesktopToPhone::SetCamera {
+            camera: settings.camera.clone(),
+        });
         self.queue_command(DesktopToPhone::SetVideo {
             resolution: settings.resolution.clone(),
             fps: fps_value,
@@ -1416,7 +1447,9 @@ impl Runtime {
             rotation: settings.output_rotation,
             zoom,
         });
-        self.queue_command(DesktopToPhone::SetScreen { mode: settings.screen_mode });
+        self.queue_command(DesktopToPhone::SetScreen {
+            mode: settings.screen_mode,
+        });
         self.queue_command(DesktopToPhone::StartStream);
     }
 
@@ -1562,9 +1595,8 @@ impl Runtime {
                 (retry.failures(), retry.max_failures())
             };
             let delay_ms = delay.as_millis();
-            let log_msg = format!(
-                "camera start failed ({message}); retry {attempt}/{max} in {delay_ms}ms"
-            );
+            let log_msg =
+                format!("camera start failed ({message}); retry {attempt}/{max} in {delay_ms}ms");
             self.log_info(&log_msg);
             tracing::warn!("{log_msg}");
 
@@ -1588,9 +1620,8 @@ impl Runtime {
             true
         } else {
             let max = self.camera_retry.lock().max_failures();
-            let log_msg = format!(
-                "camera start failed ({message}); retry limit reached ({max} attempts)"
-            );
+            let log_msg =
+                format!("camera start failed ({message}); retry limit reached ({max} attempts)");
             self.log_info(&log_msg);
             tracing::error!("{log_msg}");
             false
@@ -1913,12 +1944,7 @@ impl Runtime {
         self.bump_state_version();
     }
 
-    pub fn set_notice(
-        &self,
-        code: FailureCode,
-        values: Vec<(String, String)>,
-        key: &str,
-    ) {
+    pub fn set_notice(&self, code: FailureCode, values: Vec<(String, String)>, key: &str) {
         self.state.lock().add_notice(code, values, key.to_string());
         self.bump_state_version();
     }
@@ -1940,7 +1966,9 @@ impl Runtime {
         let lower = raw.to_lowercase();
         if lower.contains("no service started") || lower.contains("not found") {
             "Could not start PhoneCam on the phone. Please open the PhoneCam app on your phone and try again.".to_string()
-        } else if lower.contains("couldn't start video encoding") || lower.contains("encoder_failed") {
+        } else if lower.contains("couldn't start video encoding")
+            || lower.contains("encoder_failed")
+        {
             "The phone could not start video encoding. Try switching camera or lowering the resolution.".to_string()
         } else if lower.contains("camera is in use") || lower.contains("error_camera_in_use") {
             "Camera is in use by another app on the phone. Please close other camera apps and retry.".to_string()
@@ -2086,7 +2114,9 @@ impl Runtime {
         }
 
         state.core = Some(core);
-        state.local_ip = local_ipv4_addresses().into_iter().find(|ip| ip != "127.0.0.1");
+        state.local_ip = local_ipv4_addresses()
+            .into_iter()
+            .find(|ip| ip != "127.0.0.1");
         state.status = CoreStatus {
             connected: true,
             last_error: None,
@@ -2101,7 +2131,6 @@ impl Runtime {
         self.state_version.fetch_add(1, Ordering::SeqCst);
     }
 }
-
 
 /// An empty remainder, kept so the retry path has one place to change.
 fn commands_remaining(_last: &[u8]) -> Vec<DesktopToPhone> {
@@ -2133,7 +2162,11 @@ fn windows_os_name() -> String {
                 let mut info = std::mem::zeroed::<OSVERSIONINFOEXW>();
                 info.dw_os_version_info_size = std::mem::size_of::<OSVERSIONINFOEXW>() as u32;
                 if rtl_get_version(&mut info) == 0 {
-                    let name = if info.dw_build_number >= 22000 { "11" } else { "10" };
+                    let name = if info.dw_build_number >= 22000 {
+                        "11"
+                    } else {
+                        "10"
+                    };
                     return format!("Windows {} (build {})", name, info.dw_build_number);
                 }
             }
@@ -2154,7 +2187,6 @@ fn human_bitrate(bits_per_second: u64) -> String {
         format!("{} kbps", bits_per_second / 1000)
     }
 }
-
 
 /// This machine's reachable IPv4 addresses.
 ///
@@ -2180,11 +2212,11 @@ pub fn local_ipv4_addresses() -> Vec<String> {
 
 #[cfg(windows)]
 fn windows_addresses() -> Vec<String> {
+    use windows::Win32::NetworkManagement::IpHelper::GET_ADAPTERS_ADDRESSES_FLAGS;
     use windows::Win32::NetworkManagement::IpHelper::{
         GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
         GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
     };
-    use windows::Win32::NetworkManagement::IpHelper::GET_ADAPTERS_ADDRESSES_FLAGS;
     use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
 
     /// Adapter descriptions that are never reachable from a phone.
@@ -2234,7 +2266,8 @@ fn windows_addresses() -> Vec<String> {
         let description = unsafe { wide_to_string(adapter.Description) };
         let blocked = BLOCKED.iter().any(|needle| description.contains(needle));
 
-        if !blocked && adapter.OperStatus == windows::Win32::NetworkManagement::Ndis::IfOperStatusUp {
+        if !blocked && adapter.OperStatus == windows::Win32::NetworkManagement::Ndis::IfOperStatusUp
+        {
             let mut unicast = adapter.FirstUnicastAddress;
             while !unicast.is_null() {
                 let entry = unsafe { &*unicast };
@@ -2244,8 +2277,10 @@ fn windows_addresses() -> Vec<String> {
                     if family == AF_INET {
                         let sin = unsafe { &*(sockaddr as *const SOCKADDR_IN) };
                         let octets = unsafe { sin.sin_addr.S_un.S_un_b };
-                        let text =
-                            format!("{}.{}.{}.{}", octets.s_b1, octets.s_b2, octets.s_b3, octets.s_b4);
+                        let text = format!(
+                            "{}.{}.{}.{}",
+                            octets.s_b1, octets.s_b2, octets.s_b3, octets.s_b4
+                        );
 
                         let excluded = text.starts_with("169.254.")
                             || text.starts_with("127.")
@@ -2399,7 +2434,8 @@ impl Runtime {
             // it for the user.
             let notice = if !devices.is_empty() && !authorized {
                 Some((FailureCode::UsbUnauthorized, "usb"))
-            } else if self.adb_checked.load(Ordering::Relaxed) && error.is_some() && !adb_available {
+            } else if self.adb_checked.load(Ordering::Relaxed) && error.is_some() && !adb_available
+            {
                 // Only a recorded failure counts. Absence of evidence is not
                 // evidence that the install is broken.
                 Some((FailureCode::UsbMissing, "usb"))
@@ -2430,8 +2466,10 @@ impl Runtime {
 
         let Some(registrar) = crate::vcam::Registrar::locate(exe_dir.as_deref()) else {
             self.vcam_registered.store(false, Ordering::Relaxed);
-            self.log
-                .write("WARN", "the virtual camera registrar was not found beside the app");
+            self.log.write(
+                "WARN",
+                "the virtual camera registrar was not found beside the app",
+            );
             return;
         };
 
@@ -2442,7 +2480,8 @@ impl Runtime {
         match state {
             crate::vcam::RegistrationState::Registered => {
                 *self.vcam_error.lock() = None;
-                self.log.write("INFO", "virtual camera: registered and enumerable");
+                self.log
+                    .write("INFO", "virtual camera: registered and enumerable");
             }
             crate::vcam::RegistrationState::NotRegistered { detail } => {
                 // Say what the tool said rather than guessing at a cause.
@@ -2450,8 +2489,10 @@ impl Runtime {
                     .write("WARN", &format!("virtual camera not registered: {detail}"));
             }
             crate::vcam::RegistrationState::Unavailable { detail } => {
-                self.log
-                    .write("WARN", &format!("virtual camera status unavailable: {detail}"));
+                self.log.write(
+                    "WARN",
+                    &format!("virtual camera status unavailable: {detail}"),
+                );
             }
         }
     }
@@ -2666,11 +2707,16 @@ impl Runtime {
                     self.connect_usb_device(serial);
                 }
                 Err(err) => {
-                    self.log_error("install_apk_failed", &format!("Failed to install APK: {err}"));
+                    self.log_error(
+                        "install_apk_failed",
+                        &format!("Failed to install APK: {err}"),
+                    );
                 }
             }
         } else {
-            self.log_info("No PhoneCam APK found to install. Please build or place PhoneCam.apk in dist/.");
+            self.log_info(
+                "No PhoneCam APK found to install. Please build or place PhoneCam.apk in dist/.",
+            );
         }
     }
 
@@ -2884,7 +2930,10 @@ mod tests {
     #[test]
     fn local_addresses_exclude_loopback_and_link_local() {
         for address in local_ipv4_addresses() {
-            assert!(!address.starts_with("169.254."), "link-local leaked: {address}");
+            assert!(
+                !address.starts_with("169.254."),
+                "link-local leaked: {address}"
+            );
         }
     }
 
@@ -3037,7 +3086,10 @@ mod tests {
         .unwrap();
 
         let queued = runtime.outbox.lock().len();
-        assert_eq!(queued, 1, "a command queued on another thread must be visible here");
+        assert_eq!(
+            queued, 1,
+            "a command queued on another thread must be visible here"
+        );
     }
     #[test]
     fn the_output_follows_the_stream_by_default() {
@@ -3115,21 +3167,25 @@ mod tests {
         let runtime = Runtime::new(&settings);
         runtime.broadcast_state();
         runtime.set_pairing_prompt("android-b");
-        runtime.pairing.lock().add_pending_request(
-            phonecam_core::pairing::PendingRequest {
+        runtime
+            .pairing
+            .lock()
+            .add_pending_request(phonecam_core::pairing::PendingRequest {
                 device_id: "android-b".into(),
                 name: "Android phone".into(),
                 model: "Android".into(),
                 requested_at_ms: 0,
-            },
-        );
+            });
 
         runtime.resolve_pair_request(true);
         let token = runtime
             .pairing
             .lock()
             .approved_token_for("android-b", now_ms());
-        assert!(token.is_some(), "approval must arm a token the retry can redeem");
+        assert!(
+            token.is_some(),
+            "approval must arm a token the retry can redeem"
+        );
     }
 
     #[test]
@@ -3146,7 +3202,10 @@ mod tests {
             .iter()
             .find(|l| l.level == LogLevel::Error)
             .expect("an error line");
-        assert!(!line.message.contains(&secret), "the secret must not survive");
+        assert!(
+            !line.message.contains(&secret),
+            "the secret must not survive"
+        );
         assert!(line.message.contains("[redacted]"));
     }
 
@@ -3205,7 +3264,8 @@ mod tests {
         assert!(report.contains("Latency:"));
         assert!(report.contains("Dropped Frames:"));
 
-        let temp_dir = std::env::temp_dir().join(format!("phonecam-test-diag-{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("phonecam-test-diag-{}", std::process::id()));
         let temp_file = temp_dir.join("test_diagnostics.txt");
         let result = runtime.export_diagnostics(Some(&temp_file));
         assert!(result.is_ok());
@@ -3274,17 +3334,31 @@ mod tests {
                 bitrate: 8_000_000
             } if resolution == "1920x1080"
         ));
-        assert!(matches!(outbox[2], DesktopToPhone::SetTorch { enabled: true }));
+        assert!(matches!(
+            outbox[2],
+            DesktopToPhone::SetTorch { enabled: true }
+        ));
         assert!(matches!(
             outbox[3],
             DesktopToPhone::SetImage { zoom, .. } if (zoom - 2.0).abs() < 0.01
         ));
-        assert!(matches!(outbox[4], DesktopToPhone::SetScreen { mode: ScreenMode::Black }));
+        assert!(matches!(
+            outbox[4],
+            DesktopToPhone::SetScreen {
+                mode: ScreenMode::Black
+            }
+        ));
         assert!(matches!(
             outbox[5],
-            DesktopToPhone::SetQualityMode { mode: QualityMode::Manual }
+            DesktopToPhone::SetQualityMode {
+                mode: QualityMode::Manual
+            }
         ));
-        assert_eq!(outbox.len(), 6, "sync_output_transform operates locally without polluting outbox");
+        assert_eq!(
+            outbox.len(),
+            6,
+            "sync_output_transform operates locally without polluting outbox"
+        );
 
         {
             let state = runtime.state.lock();
@@ -3373,7 +3447,16 @@ mod tests {
         runtime.vcam_starting.store(true, Ordering::Relaxed);
         runtime.broadcast_state();
         assert_eq!(
-            runtime.state.lock().core.as_ref().unwrap().vcam.as_ref().unwrap().state,
+            runtime
+                .state
+                .lock()
+                .core
+                .as_ref()
+                .unwrap()
+                .vcam
+                .as_ref()
+                .unwrap()
+                .state,
             VcamState::Starting
         );
 
@@ -3390,14 +3473,32 @@ mod tests {
         *runtime.vcam_error.lock() = None;
         runtime.broadcast_state();
         assert_eq!(
-            runtime.state.lock().core.as_ref().unwrap().vcam.as_ref().unwrap().state,
+            runtime
+                .state
+                .lock()
+                .core
+                .as_ref()
+                .unwrap()
+                .vcam
+                .as_ref()
+                .unwrap()
+                .state,
             VcamState::Running
         );
 
         runtime.vcam_enabled.store(false, Ordering::Relaxed);
         runtime.broadcast_state();
         assert_eq!(
-            runtime.state.lock().core.as_ref().unwrap().vcam.as_ref().unwrap().state,
+            runtime
+                .state
+                .lock()
+                .core
+                .as_ref()
+                .unwrap()
+                .vcam
+                .as_ref()
+                .unwrap()
+                .state,
             VcamState::Stopped
         );
     }
@@ -3558,39 +3659,3 @@ mod tests {
         );
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

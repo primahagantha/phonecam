@@ -1,4 +1,4 @@
-﻿//! The view model: everything the window draws, in one snapshot.
+//! The view model: everything the window draws, in one snapshot.
 //!
 //! The shipped renderer kept this shape deliberately, and the reason still
 //! holds. The loopback socket and the tray both push updates that must land in
@@ -12,8 +12,8 @@ use phonecam_protocol::{
 
 // Re-exported so callers can name a log level without depending on the protocol
 // crate directly.
-pub use phonecam_protocol::LogLevel as LogLevelExport;
 use crate::theme::rules::{DeviceFacts, StatusSummary};
+pub use phonecam_protocol::LogLevel as LogLevelExport;
 
 /// A failure banner.
 #[derive(Debug, Clone, PartialEq)]
@@ -161,7 +161,10 @@ impl FailureCode {
     /// Only two states may carry a primary button, so the app never offers the
     /// same job three times in two visual languages.
     pub fn action_is_primary(self) -> bool {
-        matches!(self, Self::StreamEnded | Self::NoDevice | Self::PhoneAppMissing)
+        matches!(
+            self,
+            Self::StreamEnded | Self::NoDevice | Self::PhoneAppMissing
+        )
     }
 
     pub fn tone(self) -> crate::theme::Tone {
@@ -181,10 +184,9 @@ impl FailureCode {
             | Self::ResolutionDowngraded
             | Self::DecoderFailed
             | Self::DecoderUnsupported => Tone::Warn,
-            Self::NoDevice
-            | Self::StreamEnded
-            | Self::Generic
-            | Self::ApprovalPending => Tone::Neutral,
+            Self::NoDevice | Self::StreamEnded | Self::Generic | Self::ApprovalPending => {
+                Tone::Neutral
+            }
             Self::QualityChanged | Self::PairOk => Tone::Accent,
         }
     }
@@ -373,11 +375,16 @@ impl AppState {
     }
 
     pub fn has_device(&self) -> bool {
-        self.core.as_ref().map(|c| c.device.is_some()).unwrap_or(false)
+        self.core
+            .as_ref()
+            .map(|c| c.device.is_some())
+            .unwrap_or(false)
     }
 
     pub fn device_name(&self) -> Option<String> {
-        self.core.as_ref().and_then(|c| c.device.as_ref().map(|d| d.name.clone()))
+        self.core
+            .as_ref()
+            .and_then(|c| c.device.as_ref().map(|d| d.name.clone()))
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -426,7 +433,10 @@ impl AppState {
     }
 
     pub fn vcam_state(&self) -> Option<&str> {
-        self.core.as_ref().and_then(|c| c.vcam.as_ref()).map(|v| v.state.as_str())
+        self.core
+            .as_ref()
+            .and_then(|c| c.vcam.as_ref())
+            .map(|v| v.state.as_str())
     }
 
     pub fn vcam_registered(&self) -> bool {
@@ -456,7 +466,12 @@ impl AppState {
             return;
         }
         let id = self.notices.iter().map(|n| n.id).max().unwrap_or(0) + 1;
-        self.notices.push(Notice { id, code, values, dedupe_key: key });
+        self.notices.push(Notice {
+            id,
+            code,
+            values,
+            dedupe_key: key,
+        });
     }
 
     pub fn dismiss_notice(&mut self, key: &str) {
@@ -620,7 +635,11 @@ pub fn bitrate_for(resolution: &str, fps: u32, current: u64) -> u64 {
     } else if short >= 1400 {
         12_000_000
     } else if short >= 1000 {
-        if fps >= 50 { 12_000_000 } else { 8_000_000 }
+        if fps >= 50 {
+            12_000_000
+        } else {
+            8_000_000
+        }
     } else if short >= 700 {
         4_000_000
     } else {
@@ -656,7 +675,11 @@ mod tests {
     fn an_empty_state_says_it_has_no_phone() {
         let state = AppState::default();
         assert!(!state.has_device());
-        assert_eq!(state.display_phase(), "connecting", "an unreachable service is not idle");
+        assert_eq!(
+            state.display_phase(),
+            "connecting",
+            "an unreachable service is not idle"
+        );
     }
 
     #[test]
@@ -842,7 +865,10 @@ mod tests {
         use phonecam_protocol::CameraFacing;
         assert_eq!(camera_facing_label(CameraFacing::Back), "Back camera");
         assert_eq!(camera_facing_label(CameraFacing::Front), "Front camera");
-        assert_eq!(camera_facing_label(CameraFacing::External), "External camera");
+        assert_eq!(
+            camera_facing_label(CameraFacing::External),
+            "External camera"
+        );
         assert_eq!(camera_facing_label(CameraFacing::Unknown), "Camera");
 
         assert_eq!(screen_mode_label(ScreenMode::KeepOn), "Keep on");
@@ -850,10 +876,3 @@ mod tests {
         assert_eq!(screen_mode_label(ScreenMode::Black), "Off");
     }
 }
-
-
-
-
-
-
-

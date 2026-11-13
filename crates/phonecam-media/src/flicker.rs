@@ -137,7 +137,10 @@ mod tests {
         assert!(detector.is_flicker_reported());
 
         // Recovery (190 -> 195 = 5 <= 24)
-        assert_eq!(detector.observe_mean(195), Some(FlickerEvent::FlickerStopped));
+        assert_eq!(
+            detector.observe_mean(195),
+            Some(FlickerEvent::FlickerStopped)
+        );
         assert!(!detector.is_flicker_reported());
     }
 }

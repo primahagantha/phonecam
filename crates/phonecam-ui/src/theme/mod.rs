@@ -1,4 +1,4 @@
-﻿//! The design system, as tokens.
+//! The design system, as tokens.
 //!
 //! These are locked, not preferences â€” they come from the shipped app's
 //! `tailwind.config.ts` and `styles.css`, and the reasoning behind each is
@@ -34,16 +34,45 @@ pub const fn hsla_from_hex(hex: u32) -> Hsla {
     let g = ((hex >> 8) & 0xFF) as f32 / 255.0;
     let b = (hex & 0xFF) as f32 / 255.0;
 
-    let max = if r > g { if r > b { r } else { b } } else if g > b { g } else { b };
-    let min = if r < g { if r < b { r } else { b } } else if g < b { g } else { b };
+    let max = if r > g {
+        if r > b {
+            r
+        } else {
+            b
+        }
+    } else if g > b {
+        g
+    } else {
+        b
+    };
+    let min = if r < g {
+        if r < b {
+            r
+        } else {
+            b
+        }
+    } else if g < b {
+        g
+    } else {
+        b
+    };
     let l = (max + min) / 2.0;
     let delta = max - min;
 
     if delta == 0.0 {
-        return Hsla { h: 0.0, s: 0.0, l, a: 1.0 };
+        return Hsla {
+            h: 0.0,
+            s: 0.0,
+            l,
+            a: 1.0,
+        };
     }
 
-    let s = if l > 0.5 { delta / (2.0 - max - min) } else { delta / (max + min) };
+    let s = if l > 0.5 {
+        delta / (2.0 - max - min)
+    } else {
+        delta / (max + min)
+    };
 
     let h = if max == r {
         ((g - b) / delta + if g < b { 6.0 } else { 0.0 }) / 6.0
@@ -324,9 +353,17 @@ mod tests {
         let (r, g, b) = if c.s == 0.0 {
             (c.l, c.l, c.l)
         } else {
-            let q = if c.l < 0.5 { c.l * (1.0 + c.s) } else { c.l + c.s - c.l * c.s };
+            let q = if c.l < 0.5 {
+                c.l * (1.0 + c.s)
+            } else {
+                c.l + c.s - c.l * c.s
+            };
             let p = 2.0 * c.l - q;
-            (hue(p, q, c.h + 1.0 / 3.0), hue(p, q, c.h), hue(p, q, c.h - 1.0 / 3.0))
+            (
+                hue(p, q, c.h + 1.0 / 3.0),
+                hue(p, q, c.h),
+                hue(p, q, c.h - 1.0 / 3.0),
+            )
         };
 
         let base = SHELL.base;
@@ -359,9 +396,17 @@ mod tests {
                 p
             }
         };
-        let q = if c.l < 0.5 { c.l * (1.0 + c.s) } else { c.l + c.s - c.l * c.s };
+        let q = if c.l < 0.5 {
+            c.l * (1.0 + c.s)
+        } else {
+            c.l + c.s - c.l * c.s
+        };
         let p = 2.0 * c.l - q;
-        (hue(p, q, c.h + 1.0 / 3.0), hue(p, q, c.h), hue(p, q, c.h - 1.0 / 3.0))
+        (
+            hue(p, q, c.h + 1.0 / 3.0),
+            hue(p, q, c.h),
+            hue(p, q, c.h - 1.0 / 3.0),
+        )
     }
 
     fn contrast(a: Hsla, b: Hsla) -> f32 {
@@ -472,15 +517,3 @@ mod tests {
         assert!(Type::STATUS < Type::DISPLAY);
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-

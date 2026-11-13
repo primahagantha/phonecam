@@ -145,6 +145,7 @@ pub struct DesktopBeacon {
 }
 
 impl DesktopBeacon {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         server_id: impl Into<String>,
         name: impl Into<String>,
@@ -200,7 +201,11 @@ pub struct DiscoveryProbe {
 
 impl DiscoveryProbe {
     pub fn phone() -> Self {
-        Self { t: "phonecam.probe".into(), v: 1, role: "phone".into() }
+        Self {
+            t: "phonecam.probe".into(),
+            v: 1,
+            role: "phone".into(),
+        }
     }
 }
 
@@ -238,7 +243,10 @@ impl QrPayload {
             && !self.host.is_empty()
             && self.port > 0
             && self.token.len() == 32
-            && self.token.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            && self
+                .token
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     }
 }
 
@@ -334,10 +342,11 @@ impl ScreenMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum QualityMode {
     /// The core may move the adaptive ladder.
+    #[default]
     Auto,
     /// The user's choice is pinned.
     Manual,
@@ -378,11 +387,7 @@ impl ThermalState {
     pub fn is_stressed(self) -> bool {
         matches!(
             self,
-            Self::Moderate
-                | Self::Severe
-                | Self::Critical
-                | Self::Emergency
-                | Self::Shutdown
+            Self::Moderate | Self::Severe | Self::Critical | Self::Emergency | Self::Shutdown
         )
     }
 }
@@ -498,7 +503,11 @@ pub enum DesktopToPhone {
         bitrate: u64,
     },
     #[serde(rename = "set_image")]
-    SetImage { mirror: bool, rotation: u32, zoom: f32 },
+    SetImage {
+        mirror: bool,
+        rotation: u32,
+        zoom: f32,
+    },
     #[serde(rename = "set_torch")]
     SetTorch { enabled: bool },
     #[serde(rename = "set_screen")]
@@ -572,11 +581,12 @@ impl<'de> Deserialize<'de> for FpsValue {
 /* Loopback: desktop UI → core (§9)                                    */
 /* ------------------------------------------------------------------ */
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Error,
     Warn,
+    #[default]
     Info,
     Debug,
     Trace,
@@ -650,7 +660,11 @@ pub enum DesktopToCore {
     #[serde(rename = "set_camera")]
     SetCamera { camera: String },
     #[serde(rename = "set_image")]
-    SetImage { mirror: bool, rotation: u32, zoom: f32 },
+    SetImage {
+        mirror: bool,
+        rotation: u32,
+        zoom: f32,
+    },
     #[serde(rename = "set_torch")]
     SetTorch { enabled: bool },
     #[serde(rename = "set_screen")]
@@ -870,21 +884,14 @@ pub struct CoreState {
     pub nearby_phones: Vec<NearbyPhone>,
 }
 
-impl Default for QualityMode {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        Self::Info
-    }
-}
-
 impl Default for OutputTransform {
     fn default() -> Self {
-        Self { mirror: false, rotation: 0, width: 1920, height: 1080 }
+        Self {
+            mirror: false,
+            rotation: 0,
+            width: 1920,
+            height: 1080,
+        }
     }
 }
 
@@ -895,6 +902,7 @@ pub struct CoreError {
     pub message: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "t")]
 pub enum CoreToDesktop {
@@ -947,7 +955,11 @@ pub enum CoreToDesktop {
         automatic: bool,
     },
     #[serde(rename = "log")]
-    Log { level: LogLevel, message: String, ts: i64 },
+    Log {
+        level: LogLevel,
+        message: String,
+        ts: i64,
+    },
     #[serde(rename = "error")]
     Error { code: String, message: String },
 }
@@ -961,10 +973,16 @@ pub struct CommandReply {
 
 impl CommandReply {
     pub fn ok() -> Self {
-        Self { ok: true, error: None }
+        Self {
+            ok: true,
+            error: None,
+        }
     }
     pub fn failed(message: impl Into<String>) -> Self {
-        Self { ok: false, error: Some(message.into()) }
+        Self {
+            ok: false,
+            error: Some(message.into()),
+        }
     }
 }
 
@@ -1089,7 +1107,9 @@ mod tests {
 
     #[test]
     fn screen_mode_serializes_as_camel_case() {
-        let m = DesktopToPhone::SetScreen { mode: ScreenMode::KeepOn };
+        let m = DesktopToPhone::SetScreen {
+            mode: ScreenMode::KeepOn,
+        };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["mode"], "keepOn");
     }

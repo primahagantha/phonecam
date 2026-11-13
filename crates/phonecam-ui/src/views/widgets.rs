@@ -1,4 +1,4 @@
-﻿//! The shared controls: panel, section, field, button, chip, toggle, slider,
+//! The shared controls: panel, section, field, button, chip, toggle, slider,
 //! key/value row, status dot.
 //!
 //! These exist so the design rules are applied once. Two of them are load-bearing
@@ -14,7 +14,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Hsla, IntoElement, SharedString};
 
-use crate::theme::{Accent, Fonts, Radius, SHELL, Space, Status, Text, Tone, Type};
+use crate::theme::{Accent, Fonts, Radius, Space, Status, Text, Tone, Type, SHELL};
 
 /// A panel: a rule, a label, and its content.
 ///
@@ -27,7 +27,11 @@ pub struct Panel {
 
 impl Panel {
     pub fn new(title: impl Into<SharedString>) -> Self {
-        Self { title: title.into(), actions: Vec::new(), children: Vec::new() }
+        Self {
+            title: title.into(),
+            actions: Vec::new(),
+            children: Vec::new(),
+        }
     }
 
     pub fn action(mut self, element: impl IntoElement) -> Self {
@@ -68,10 +72,14 @@ impl IntoElement for Panel {
                     .text_color(Text::HEADING)
                     .child(self.title),
             )
-            .children(
-                (!self.actions.is_empty())
-                    .then(|| div().flex().flex_row().items_center().gap(px(Space::MD)).children(self.actions)),
-            );
+            .children((!self.actions.is_empty()).then(|| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(Space::MD))
+                    .children(self.actions)
+            }));
 
         // No border and no shadow: a panel is a *grouping surface*, and giving it
         // a border, a fill and a shadow at once is the generic "card" look. The
@@ -172,7 +180,10 @@ pub fn field(
 }
 
 /// A field whose control cannot exist, replaced by a sentence saying why.
-pub fn unavailable_field(label: impl Into<SharedString>, reason: impl Into<SharedString>) -> AnyElement {
+pub fn unavailable_field(
+    label: impl Into<SharedString>,
+    reason: impl Into<SharedString>,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -246,15 +257,24 @@ impl Button {
     }
 
     pub fn primary(label: impl Into<SharedString>) -> Self {
-        Self { variant: ButtonVariant::Primary, ..Self::new(label) }
+        Self {
+            variant: ButtonVariant::Primary,
+            ..Self::new(label)
+        }
     }
 
     pub fn danger(label: impl Into<SharedString>) -> Self {
-        Self { variant: ButtonVariant::Danger, ..Self::new(label) }
+        Self {
+            variant: ButtonVariant::Danger,
+            ..Self::new(label)
+        }
     }
 
     pub fn ghost(label: impl Into<SharedString>) -> Self {
-        Self { variant: ButtonVariant::Ghost, ..Self::new(label) }
+        Self {
+            variant: ButtonVariant::Ghost,
+            ..Self::new(label)
+        }
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -290,7 +310,6 @@ impl Button {
         self.on_click = Some(Box::new(handler));
         self
     }
-
 }
 
 impl IntoElement for Button {
@@ -300,10 +319,26 @@ impl IntoElement for Button {
         let (border, background, text) = match (self.variant, self.disabled) {
             (ButtonVariant::Primary, true) => (Accent::DEFAULT, Accent::DEFAULT, SHELL.recessed),
             (ButtonVariant::Primary, false) => (Accent::DEFAULT, Accent::DEFAULT, SHELL.recessed),
-            (ButtonVariant::Danger, true) => (Status::DANGER.alpha(0.8), Status::DANGER.alpha(0.1), Status::DANGER_TEXT),
-            (ButtonVariant::Danger, false) => (Status::DANGER.alpha(0.8), Status::DANGER.alpha(0.1), Status::DANGER_TEXT),
-            (ButtonVariant::Ghost, true) => (gpui::transparent_black(), gpui::transparent_black(), Text::MUTED),
-            (ButtonVariant::Ghost, false) => (gpui::transparent_black(), gpui::transparent_black(), Text::MUTED),
+            (ButtonVariant::Danger, true) => (
+                Status::DANGER.alpha(0.8),
+                Status::DANGER.alpha(0.1),
+                Status::DANGER_TEXT,
+            ),
+            (ButtonVariant::Danger, false) => (
+                Status::DANGER.alpha(0.8),
+                Status::DANGER.alpha(0.1),
+                Status::DANGER_TEXT,
+            ),
+            (ButtonVariant::Ghost, true) => (
+                gpui::transparent_black(),
+                gpui::transparent_black(),
+                Text::MUTED,
+            ),
+            (ButtonVariant::Ghost, false) => (
+                gpui::transparent_black(),
+                gpui::transparent_black(),
+                Text::MUTED,
+            ),
             (ButtonVariant::Default, _) if self.selected => {
                 (Accent::DEFAULT, SHELL.control, Accent::DEFAULT)
             }
@@ -318,9 +353,7 @@ impl IntoElement for Button {
             (ButtonVariant::Primary, false) => (Accent::HOVER, Accent::HOVER),
             (ButtonVariant::Danger, false) => (Status::DANGER, Status::DANGER.alpha(0.2)),
             (ButtonVariant::Ghost, false) => (gpui::transparent_black(), SHELL.hover),
-            (ButtonVariant::Default, false) if self.selected => {
-                (Accent::DEFAULT, SHELL.control)
-            }
+            (ButtonVariant::Default, false) if self.selected => (Accent::DEFAULT, SHELL.control),
             (ButtonVariant::Default, false) => (Text::MUTED, SHELL.hover),
             (_, true) => (border, background),
         };
@@ -434,7 +467,11 @@ pub fn status_dot(tone: Tone) -> AnyElement {
 ///
 /// Label at 11px, value at 13px, so a hundred rows still scan as a table rather
 /// than a wall of same-sized text.
-pub fn key_value(label: impl Into<SharedString>, value: impl Into<SharedString>, mono: bool) -> AnyElement {
+pub fn key_value(
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    mono: bool,
+) -> AnyElement {
     let value: SharedString = value.into();
     div()
         .flex()
@@ -544,7 +581,6 @@ impl Toggle {
         self.on_change = Some(Box::new(handler));
         self
     }
-
 }
 
 impl IntoElement for Toggle {
@@ -552,8 +588,16 @@ impl IntoElement for Toggle {
 
     fn into_element(self) -> Self::Element {
         let checked = self.checked;
-        let track_bg = if checked { Accent::DEFAULT } else { SHELL.control };
-        let track_border = if checked { Accent::DEFAULT } else { SHELL.border };
+        let track_bg = if checked {
+            Accent::DEFAULT
+        } else {
+            SHELL.control
+        };
+        let track_border = if checked {
+            Accent::DEFAULT
+        } else {
+            SHELL.border
+        };
 
         let mut row = div()
             .id(gpui::ElementId::Name(self.label.clone()))
@@ -632,7 +676,11 @@ impl IntoElement for Toggle {
 }
 
 /// A single-line value with a label above it, for a large readout.
-pub fn readout(label: impl Into<SharedString>, value: impl Into<SharedString>, tone: Option<Tone>) -> AnyElement {
+pub fn readout(
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    tone: Option<Tone>,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -657,7 +705,11 @@ pub fn readout(label: impl Into<SharedString>, value: impl Into<SharedString>, t
 }
 
 /// A small metric: label above, value below.
-pub fn metric(label: impl Into<SharedString>, value: impl Into<SharedString>, tone: Option<Tone>) -> AnyElement {
+pub fn metric(
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    tone: Option<Tone>,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -693,7 +745,11 @@ pub fn prose(text: impl Into<SharedString>) -> AnyElement {
 
 /// A hairline rule.
 pub fn rule() -> AnyElement {
-    div().w_full().h(px(1.0)).bg(SHELL.border.alpha(0.6)).into_any_element()
+    div()
+        .w_full()
+        .h(px(1.0))
+        .bg(SHELL.border.alpha(0.6))
+        .into_any_element()
 }
 
 /// An empty state: a sentence, and optionally the action that resolves it.
@@ -723,16 +779,11 @@ pub fn empty_state(title: impl Into<SharedString>, body: impl Into<SharedString>
 
 /// A coloured value for a `key_value` row.
 pub fn toned_text(text: impl Into<SharedString>, colour: Hsla) -> AnyElement {
-    div().text_color(colour).child(text.into()).into_any_element()
+    div()
+        .text_color(colour)
+        .child(text.into())
+        .into_any_element()
 }
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 mod interaction_tests {
@@ -796,7 +847,9 @@ mod interaction_tests {
         let font = numeric_font(Fonts::MONO);
         let features = font.features.tag_value_list();
         assert!(
-            features.iter().any(|(tag, value)| tag == "tnum" && *value == 1),
+            features
+                .iter()
+                .any(|(tag, value)| tag == "tnum" && *value == 1),
             "readouts must use tabular figures, or every number shifts the row as it updates"
         );
     }

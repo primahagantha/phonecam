@@ -1,4 +1,4 @@
-﻿//! PhoneCam desktop UI in GPUI.
+//! PhoneCam desktop UI in GPUI.
 //!
 //! The window answers one question â€” "is the picture flowing?" â€” and offers one
 //! action at a time. Three rules carry most of that, and each replaced a
@@ -22,5 +22,3 @@ pub use views::{
     SelectTabCapture, SelectTabDiagnostics, SelectTabPublish, SelectTabSetup, SelectTabStream,
     SelectTabVideo, SideEffect, Tab, TabNext, TabPrev, ToggleFocusPreview, ToggleStream,
 };
-
-

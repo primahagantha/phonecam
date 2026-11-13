@@ -1,4 +1,4 @@
-﻿//! H.264 decoding.
+//! H.264 decoding.
 //!
 //! The C++ core muxed each group of pictures into a fragmented MP4 on disk and
 //! read it back through a Media Foundation Source Reader, because the bare
@@ -77,7 +77,11 @@ impl<'a> YuvPlanes<'a> {
                 row += 1;
             }
         }
-        if count == 0 { 0 } else { (sum / count) as u8 }
+        if count == 0 {
+            0
+        } else {
+            (sum / count) as u8
+        }
     }
 }
 
@@ -92,7 +96,12 @@ pub struct DecodedFrame {
 
 impl DecodedFrame {
     pub fn new(width: u32, height: u32, yuv: Vec<u8>, pts_us: u64) -> Self {
-        Self { width, height, yuv, pts_us }
+        Self {
+            width,
+            height,
+            yuv,
+            pts_us,
+        }
     }
 
     /// Borrows packed I420 planes if `self.yuv` is large enough for `width x height`.
@@ -349,10 +358,8 @@ unsafe fn write_planes_bgra_avx2(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_
             let v4 = _mm_sub_epi32(_mm_cvtepu8_epi32(_mm_cvtsi32_si128(v4_raw)), v_128_128);
 
             let b_term4 = _mm_add_epi32(_mm_mullo_epi32(u4, v_bu_128), v_bias_128);
-            let g_chroma4 = _mm_add_epi32(
-                _mm_mullo_epi32(v4, v_gv_128),
-                _mm_mullo_epi32(u4, v_gu_128),
-            );
+            let g_chroma4 =
+                _mm_add_epi32(_mm_mullo_epi32(v4, v_gv_128), _mm_mullo_epi32(u4, v_gu_128));
             let g_term4 = _mm_sub_epi32(v_bias_128, g_chroma4);
             let r_term4 = _mm_add_epi32(_mm_mullo_epi32(v4, v_rv_128), v_bias_128);
 
@@ -518,14 +525,21 @@ pub struct H264Decoder {
 
 impl std::fmt::Debug for H264Decoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("H264Decoder").field("dimensions", &self.dimensions).finish()
+        f.debug_struct("H264Decoder")
+            .field("dimensions", &self.dimensions)
+            .finish()
     }
 }
 
 impl H264Decoder {
     pub fn new() -> Result<Self, DecodeError> {
         let inner = Decoder::new().map_err(|e| DecodeError::Init(format!("{e}")))?;
-        Ok(Self { inner, parameter_sets: Vec::new(), dimensions: None, combined_buf: Vec::new() })
+        Ok(Self {
+            inner,
+            parameter_sets: Vec::new(),
+            dimensions: None,
+            combined_buf: Vec::new(),
+        })
     }
 
     pub fn dimensions(&self) -> Option<Dimensions> {
@@ -582,7 +596,8 @@ impl H264Decoder {
 
         let input = if parsed_dims.is_none() && !self.parameter_sets.is_empty() {
             self.combined_buf.clear();
-            self.combined_buf.reserve(self.parameter_sets.len() + access_unit.len());
+            self.combined_buf
+                .reserve(self.parameter_sets.len() + access_unit.len());
             self.combined_buf.extend_from_slice(&self.parameter_sets);
             self.combined_buf.extend_from_slice(access_unit);
             &self.combined_buf[..]
@@ -601,7 +616,10 @@ impl H264Decoder {
 
         let (width, height) = yuv.dimensions();
         let (w, h) = (width as u32, height as u32);
-        self.dimensions = Some(Dimensions { width: w, height: h });
+        self.dimensions = Some(Dimensions {
+            width: w,
+            height: h,
+        });
 
         let (y_stride, u_stride, v_stride) = yuv.strides();
         let planes = YuvPlanes {
@@ -673,7 +691,12 @@ impl H264Decoder {
         access_unit: &[u8],
         pts_us: u64,
     ) -> Result<DecodedFrame, DecodeError> {
-        let mut frame = DecodedFrame { width: 0, height: 0, yuv: Vec::new(), pts_us };
+        let mut frame = DecodedFrame {
+            width: 0,
+            height: 0,
+            yuv: Vec::new(),
+            pts_us,
+        };
         self.decode_with_pts_into(access_unit, pts_us, &mut frame)?;
         Ok(frame)
     }
@@ -713,7 +736,11 @@ pub fn transform_bgra(
         return (width, height);
     }
     let rot = normalize_rotation(rotation);
-    let (out_w, out_h) = if matches!(rot, 90 | 270) { (height, width) } else { (width, height) };
+    let (out_w, out_h) = if matches!(rot, 90 | 270) {
+        (height, width)
+    } else {
+        (width, height)
+    };
     dst.resize(count, 0);
     transform_pixels(&src[..count], &mut dst[..count], w, h, mirror, rot);
     (out_w, out_h)
@@ -741,7 +768,11 @@ pub fn transform_bgra_bytes(
         return (width, height);
     }
     let rot = normalize_rotation(rotation);
-    let (out_w, out_h) = if matches!(rot, 90 | 270) { (height, width) } else { (width, height) };
+    let (out_w, out_h) = if matches!(rot, 90 | 270) {
+        (height, width)
+    } else {
+        (width, height)
+    };
     dst.resize(byte_len, 0);
 
     // SAFETY: `align_to` / `align_to_mut` checks alignment dynamically; when
@@ -759,16 +790,10 @@ pub fn transform_bgra_bytes(
     (out_w, out_h)
 }
 
-fn transform_u32_fast(
-    src: &[u32],
-    dst: &mut [u32],
-    w: usize,
-    h: usize,
-    mirror: bool,
-    rot: u32,
-) {
+fn transform_u32_fast(src: &[u32], dst: &mut [u32], w: usize, h: usize, mirror: bool, rot: u32) {
     #[cfg(target_arch = "x86_64")]
-    if matches!((rot, mirror), (0, true) | (180, false)) && std::arch::is_x86_feature_detected!("avx2")
+    if matches!((rot, mirror), (0, true) | (180, false))
+        && std::arch::is_x86_feature_detected!("avx2")
     {
         // SAFETY: AVX2 checked and `src`/`dst` both have `w * h` u32 elements.
         unsafe {
@@ -781,13 +806,7 @@ fn transform_u32_fast(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn reverse_rows_u32_avx2(
-    src: &[u32],
-    dst: &mut [u32],
-    w: usize,
-    h: usize,
-    flip_y: bool,
-) {
+unsafe fn reverse_rows_u32_avx2(src: &[u32], dst: &mut [u32], w: usize, h: usize, flip_y: bool) {
     use std::arch::x86_64::*;
     let perm_rev = _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0);
     let src_ptr = src.as_ptr();
@@ -821,14 +840,7 @@ fn normalize_rotation(rotation: u32) -> u32 {
     }
 }
 
-fn transform_pixels<T: Copy>(
-    src: &[T],
-    dst: &mut [T],
-    w: usize,
-    h: usize,
-    mirror: bool,
-    rot: u32,
-) {
+fn transform_pixels<T: Copy>(src: &[T], dst: &mut [T], w: usize, h: usize, mirror: bool, rot: u32) {
     match (rot, mirror) {
         (0, false) => {
             dst.copy_from_slice(src);
@@ -941,7 +953,9 @@ mod tests {
     #[test]
     fn garbage_is_rejected_rather_than_panicking() {
         let mut decoder = H264Decoder::new().unwrap();
-        assert!(decoder.decode(&[0x00, 0x00, 0x01, 0x65, 0xff, 0xff]).is_err());
+        assert!(decoder
+            .decode(&[0x00, 0x00, 0x01, 0x65, 0xff, 0xff])
+            .is_err());
         assert!(decoder.decode(&[]).is_err());
     }
 
@@ -960,7 +974,13 @@ mod tests {
         let sps = sps::tests::make_sps(80, 45, 0); // 1280x720
         assert!(decoder.set_parameter_sets(&sps));
         assert_eq!(decoder.parameter_sets(), &sps[..]);
-        assert_eq!(decoder.dimensions(), Some(Dimensions { width: 1280, height: 720 }));
+        assert_eq!(
+            decoder.dimensions(),
+            Some(Dimensions {
+                width: 1280,
+                height: 720
+            })
+        );
 
         // reset preserves parameter sets and re-decodes them
         decoder.reset();
@@ -978,7 +998,12 @@ mod tests {
         let mut yuv = vec![126u8; w * h];
         yuv.extend(std::iter::repeat(128u8).take(w * h / 2));
         yuv.extend(std::iter::repeat(128u8).take(w * h / 2));
-        DecodedFrame { width: w as u32, height: h as u32, yuv, pts_us: 0 }
+        DecodedFrame {
+            width: w as u32,
+            height: h as u32,
+            yuv,
+            pts_us: 0,
+        }
     }
 
     #[test]
@@ -1008,7 +1033,12 @@ mod tests {
     #[test]
     fn bgra_emits_blue_then_green_then_red() {
         // Pure red in limited-range YUV601: Y=81, U=90, V=240.
-        let frame = DecodedFrame { width: 2, height: 2, yuv: vec![81, 81, 81, 81, 90, 240], pts_us: 0 };
+        let frame = DecodedFrame {
+            width: 2,
+            height: 2,
+            yuv: vec![81, 81, 81, 81, 90, 240],
+            pts_us: 0,
+        };
         let mut bgra = vec![0u8; 2 * 2 * 4];
         assert!(frame.write_bgra(&mut bgra, 2));
         let (b, g, r, a) = (bgra[0], bgra[1], bgra[2], bgra[3]);
@@ -1051,7 +1081,12 @@ mod tests {
         // V plane (w*h/4 = 6)
         yuv.extend_from_slice(&[240, 200, 128, 90, 50, 16]);
 
-        let frame = DecodedFrame { width: w as u32, height: h as u32, yuv: yuv.clone(), pts_us: 0 };
+        let frame = DecodedFrame {
+            width: w as u32,
+            height: h as u32,
+            yuv: yuv.clone(),
+            pts_us: 0,
+        };
         let mut bgra = vec![0u8; w * h * 4];
         assert!(frame.write_bgra(&mut bgra, w));
 
@@ -1067,7 +1102,13 @@ mod tests {
         const BU: i32 = 2066;
 
         let clamp_ref = |v: i32| -> u8 {
-            if v < 0 { 0 } else if v > 255 { 255 } else { v as u8 }
+            if v < 0 {
+                0
+            } else if v > 255 {
+                255
+            } else {
+                v as u8
+            }
         };
 
         for y in 0..h {
@@ -1100,7 +1141,12 @@ mod tests {
         yuv.extend(&u_data);
         yuv.extend(&v_data);
 
-        let frame = DecodedFrame { width: w as u32, height: h as u32, yuv, pts_us: 0 };
+        let frame = DecodedFrame {
+            width: w as u32,
+            height: h as u32,
+            yuv,
+            pts_us: 0,
+        };
         let mut nv12 = vec![0u8; w * h * 3 / 2];
         assert!(frame.write_nv12(&mut nv12));
 
@@ -1165,7 +1211,14 @@ mod tests {
 
     #[test]
     fn transform_bgra_bytes_matches_u32_and_reuses_buffer() {
-        let src_u32 = [0x11223344u32, 0x55667788, 0x99AABBCC, 0xDDEEFF00, 0x01020304, 0x05060708];
+        let src_u32 = [
+            0x11223344u32,
+            0x55667788,
+            0x99AABBCC,
+            0xDDEEFF00,
+            0x01020304,
+            0x05060708,
+        ];
         let mut src_bytes = Vec::with_capacity(src_u32.len() * 4);
         for px in src_u32 {
             src_bytes.extend_from_slice(&px.to_ne_bytes());
@@ -1175,7 +1228,11 @@ mod tests {
 
         let dims = transform_bgra_bytes(&src_bytes, &mut dst_bytes, 3, 2, false, 90);
         assert_eq!(dims, (2, 3));
-        assert_eq!(dst_bytes.as_ptr(), initial_ptr, "must reuse preallocated capacity");
+        assert_eq!(
+            dst_bytes.as_ptr(),
+            initial_ptr,
+            "must reuse preallocated capacity"
+        );
 
         let mut dst_u32 = Vec::new();
         transform_bgra(&src_u32, &mut dst_u32, 3, 2, false, 90);
@@ -1201,11 +1258,7 @@ mod tests {
             let frame = DecodedFrame::new(w, h, packed.clone(), 123);
 
             let mut expected_bgra = vec![0u8; (w * h * 4) as usize];
-            write_planes_bgra_scalar(
-                &frame.as_planes().unwrap(),
-                &mut expected_bgra,
-                w as usize,
-            );
+            write_planes_bgra_scalar(&frame.as_planes().unwrap(), &mut expected_bgra, w as usize);
 
             let mut got_bgra = vec![0u8; (w * h * 4) as usize];
             assert!(frame.write_bgra(&mut got_bgra, w as usize));
@@ -1243,13 +1296,19 @@ mod tests {
 
             let mut strided_bgra = vec![0u8; (w * h * 4) as usize];
             assert!(write_planes_bgra(&strided, &mut strided_bgra, w as usize));
-            assert_eq!(strided_bgra, expected_bgra, "strided bgra mismatch at {w}x{h}");
+            assert_eq!(
+                strided_bgra, expected_bgra,
+                "strided bgra mismatch at {w}x{h}"
+            );
 
             let mut expected_nv12 = vec![0u8; packed_luma * 3 / 2];
             assert!(frame.write_nv12(&mut expected_nv12));
             let mut strided_nv12 = vec![0u8; packed_luma * 3 / 2];
             assert!(write_planes_nv12(&strided, &mut strided_nv12));
-            assert_eq!(strided_nv12, expected_nv12, "strided nv12 mismatch at {w}x{h}");
+            assert_eq!(
+                strided_nv12, expected_nv12,
+                "strided nv12 mismatch at {w}x{h}"
+            );
             assert_eq!(strided.mean_luma(), frame.mean_luma());
         }
     }
@@ -1257,7 +1316,9 @@ mod tests {
     #[test]
     fn reverse_rows_u32_matches_scalar_mirror_and_180() {
         let (w, h) = (35u32, 6u32);
-        let src: Vec<u8> = (0..(w * h * 4) as usize).map(|i| (i & 0xFF) as u8).collect();
+        let src: Vec<u8> = (0..(w * h * 4) as usize)
+            .map(|i| (i & 0xFF) as u8)
+            .collect();
         let src_u32: Vec<u32> = src
             .chunks_exact(4)
             .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
@@ -1323,4 +1384,3 @@ mod tests {
         );
     }
 }
-

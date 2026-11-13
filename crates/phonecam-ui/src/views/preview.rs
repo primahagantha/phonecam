@@ -1,4 +1,4 @@
-﻿//! The preview stage: the picture, the pairing code, and the telemetry.
+//! The preview stage: the picture, the pairing code, and the telemetry.
 //!
 //! Three things in here are deliberate and look like omissions:
 //!
@@ -19,7 +19,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, IntoElement};
 
-use crate::theme::{Fonts, Radius, SHELL, Space, Status, Text, Tone, Type, EMPTY_VALUE};
+use crate::theme::{Fonts, Radius, Space, Status, Text, Tone, Type, EMPTY_VALUE, SHELL};
 use crate::views::state::AppState;
 use crate::views::widgets::chip;
 
@@ -54,8 +54,13 @@ pub enum StageContent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum EmptyAction {
     WaitingForService,
-    StartStreaming { enabled: bool, title: Option<String> },
-    ShowPairingCode { remembered: bool },
+    StartStreaming {
+        enabled: bool,
+        title: Option<String>,
+    },
+    ShowPairingCode {
+        remembered: bool,
+    },
 }
 
 /// Decides what the stage draws.
@@ -145,7 +150,10 @@ pub fn stage_content(state: &AppState, pairing_selected: usize) -> StageContent 
     };
 
     let output_note = has_device.then(|| {
-        let mut note = format!("{} x {}", state.settings.output_width, state.settings.output_height);
+        let mut note = format!(
+            "{} x {}",
+            state.settings.output_width, state.settings.output_height
+        );
         if state.settings.output_mirror {
             note.push_str(" · mirrored");
         }
@@ -155,7 +163,12 @@ pub fn stage_content(state: &AppState, pairing_selected: usize) -> StageContent 
         note
     });
 
-    StageContent::Empty { title: title.into(), body: body.into(), action, output_note }
+    StageContent::Empty {
+        title: title.into(),
+        body: body.into(),
+        action,
+        output_note,
+    }
 }
 
 /// Pulls `host` out of a QR payload without trusting its shape.
@@ -195,7 +208,10 @@ pub fn stage_frame(content: &StageContent) -> AnyElement {
 ///
 /// The image is passed in rather than drawn here so the view owns exactly one
 /// QR texture and regenerates it only when the payload changes.
-pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::RenderImage>>) -> AnyElement {
+pub fn pairing_stage(
+    content: &StageContent,
+    qr: Option<&std::sync::Arc<gpui::RenderImage>>,
+) -> AnyElement {
     let StageContent::Pairing {
         payload,
         expires_in_ms,
@@ -208,13 +224,20 @@ pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::Re
         return div().into_any_element();
     };
 
-    let title = if *expired { "That code expired" } else { "Scan this with PhoneCam on your phone" };
+    let title = if *expired {
+        "That code expired"
+    } else {
+        "Scan this with PhoneCam on your phone"
+    };
     let sub = if *expired {
         "Codes work once and last five minutes.".to_string()
     } else {
         match expires_in_ms {
             Some(ms) => {
-                format!("Works once · expires in {}", crate::views::state::format_duration(*ms))
+                format!(
+                    "Works once · expires in {}",
+                    crate::views::state::format_duration(*ms)
+                )
             }
             None => "Works once".to_string(),
         }
@@ -287,7 +310,11 @@ pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::Re
                             })
                             .child(chip(
                                 host.clone(),
-                                if index == *selected { Tone::Accent } else { Tone::Neutral },
+                                if index == *selected {
+                                    Tone::Accent
+                                } else {
+                                    Tone::Neutral
+                                },
                             ))
                             .into_any_element()
                     })),
@@ -338,11 +365,19 @@ pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::Re
             }))
             .child(if *expired {
                 crate::views::widgets::Button::primary("Show a new code")
-                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::ArmPairing))
+                    .on_click(|_window, _cx| {
+                        crate::views::effects::push_effect(
+                            crate::views::effects::SideEffect::ArmPairing,
+                        )
+                    })
                     .into_any_element()
             } else {
                 crate::views::widgets::Button::new("Cancel")
-                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::DisarmPairing))
+                    .on_click(|_window, _cx| {
+                        crate::views::effects::push_effect(
+                            crate::views::effects::SideEffect::DisarmPairing,
+                        )
+                    })
                     .into_any_element()
             }),
     );
@@ -364,7 +399,13 @@ pub fn pairing_stage(content: &StageContent, qr: Option<&std::sync::Arc<gpui::Re
 }
 
 fn empty_body(content: &StageContent) -> AnyElement {
-    let StageContent::Empty { title, body, action, output_note } = content else {
+    let StageContent::Empty {
+        title,
+        body,
+        action,
+        output_note,
+    } = content
+    else {
         return div().into_any_element();
     };
 
@@ -566,11 +607,7 @@ pub fn qr_pixels(payload: &str, size: usize) -> Option<(Vec<u8>, usize, usize)> 
         for x in 0..dimension {
             let module_x = x / scale;
             let module_y = y / scale;
-            let dark = if module_x == 0
-                || module_y == 0
-                || module_x > width
-                || module_y > width
-            {
+            let dark = if module_x == 0 || module_y == 0 || module_x > width || module_y > width {
                 false
             } else {
                 modules[(module_y - 1) * width + (module_x - 1)] == qrcode::Color::Dark
@@ -593,7 +630,11 @@ fn is_well_formed_payload(payload: &str) -> bool {
     match serde_json::from_str::<serde_json::Value>(payload) {
         Ok(value) => {
             value.get("protocol").and_then(|v| v.as_str()) == Some("phonecam")
-                && value.get("host").and_then(|v| v.as_str()).map(|h| !h.is_empty()).unwrap_or(false)
+                && value
+                    .get("host")
+                    .and_then(|v| v.as_str())
+                    .map(|h| !h.is_empty())
+                    .unwrap_or(false)
                 && value
                     .get("token")
                     .and_then(|v| v.as_str())
@@ -687,7 +728,12 @@ mod tests {
         let mut state = AppState::default();
         state.status.connected = true;
         match stage_content(&state, 0) {
-            StageContent::Empty { title, action, output_note, .. } => {
+            StageContent::Empty {
+                title,
+                action,
+                output_note,
+                ..
+            } => {
                 assert_eq!(title, "Pair a phone to begin");
                 assert_eq!(action, EmptyAction::ShowPairingCode { remembered: false });
                 // The output size is not stated with no phone: it would assert a
@@ -702,7 +748,11 @@ mod tests {
     fn a_present_phone_states_the_output_size() {
         let state = state_with_device();
         match stage_content(&state, 0) {
-            StageContent::Empty { output_note, action, .. } => {
+            StageContent::Empty {
+                output_note,
+                action,
+                ..
+            } => {
                 assert!(output_note.is_some());
                 assert!(matches!(action, EmptyAction::StartStreaming { .. }));
             }
@@ -800,7 +850,11 @@ mod tests {
         let payload = r#"{"protocol":"phonecam","version":1,"host":"10.0.0.2","port":48721,"token":"0123456789abcdef0123456789abcdef","name":"PC","serverId":"pc-2"}"#;
         let (buffer, _w, _h) = qr_pixels(payload, 264).unwrap();
         // The top-left corner is quiet zone, so it must be light (near-white).
-        assert!(buffer[0] > 200, "the quiet zone should be light, got {}", buffer[0]);
+        assert!(
+            buffer[0] > 200,
+            "the quiet zone should be light, got {}",
+            buffer[0]
+        );
     }
 
     #[test]
@@ -826,9 +880,3 @@ mod tests {
         let _pel = pairing_stage(&pairing, None);
     }
 }
-
-
-
-
-
-

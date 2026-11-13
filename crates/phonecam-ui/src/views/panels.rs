@@ -1,4 +1,4 @@
-﻿//! The four panels, the status strip, the notice bar and the approval prompt.
+//! The four panels, the status strip, the notice bar and the approval prompt.
 //!
 //! The layout follows the job, not the data model. An operator sits beside this
 //! window with a phone on a tripod, and at any moment they are doing exactly one
@@ -10,15 +10,14 @@ use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Hsla, SharedString};
 
 use crate::theme::rules;
-use crate::theme::{Accent, Fonts, Radius, SHELL, Space, Status, Text, Tone, Type};
+use crate::theme::{Accent, Fonts, Radius, Space, Status, Text, Tone, Type, SHELL};
 use crate::views::effects::{push_effect, SideEffect, Tab};
 use crate::views::state::{
     camera_facing_label, format_battery, format_log_time, resolution_label_of, screen_mode_label,
     thermal_label, AppState, LogSource, NoticeAction,
 };
 use crate::views::widgets::{
-    chip, key_value, numeric_font, prose, section, status_dot, tinted_box, Button, Panel,
-    Toggle,
+    chip, key_value, numeric_font, prose, section, status_dot, tinted_box, Button, Panel, Toggle,
 };
 
 /// Maps a status tone onto a widget tone.
@@ -50,7 +49,11 @@ pub fn status_strip(state: &AppState) -> AnyElement {
     let vcam_label = rules::vcam_chip_label(
         state.vcam_state(),
         state.vcam_registered(),
-        state.core.as_ref().and_then(|c| c.vcam.as_ref()).map(|v| v.name.as_str()),
+        state
+            .core
+            .as_ref()
+            .and_then(|c| c.vcam.as_ref())
+            .map(|v| v.name.as_str()),
     );
     let vcam_tone = if state.vcam_state() == Some("error") {
         Tone::Danger
@@ -101,7 +104,13 @@ pub fn status_strip(state: &AppState) -> AnyElement {
                         })),
                 ),
         )
-        .child(div().flex_shrink_0().w(px(1.0)).h(px(32.0)).bg(SHELL.border.alpha(0.7)))
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(1.0))
+                .h(px(32.0))
+                .bg(SHELL.border.alpha(0.7)),
+        )
         .child(
             div()
                 .flex()
@@ -143,7 +152,10 @@ pub fn status_strip(state: &AppState) -> AnyElement {
         .and_then(|c| c.phone.as_ref())
         .and_then(|p| thermal_label(p.thermal))
     {
-        row = row.child(chip(label, if critical { Tone::Danger } else { Tone::Warn }));
+        row = row.child(chip(
+            label,
+            if critical { Tone::Danger } else { Tone::Warn },
+        ));
     }
 
     if let Some(phone) = state.core.as_ref().and_then(|c| c.phone.as_ref()) {
@@ -165,9 +177,10 @@ pub fn status_strip(state: &AppState) -> AnyElement {
                 .flex_row()
                 .flex_shrink_0()
                 .items_center()
-                .child(Button::new("Stop").on_click(|_window, _cx| {
-                    push_effect(SideEffect::StopStream)
-                })),
+                .child(
+                    Button::new("Stop")
+                        .on_click(|_window, _cx| push_effect(SideEffect::StopStream)),
+                ),
         );
     }
 
@@ -253,9 +266,10 @@ pub fn notice_bar(state: &AppState) -> AnyElement {
             if let Some(action) = action {
                 actions = actions.child(action_button(action, primary, id));
             }
-            actions = actions.child(Button::ghost("x").on_click(move |_window, _cx| {
-                push_effect(SideEffect::DismissNotice(id))
-            }));
+            actions = actions.child(
+                Button::ghost("x")
+                    .on_click(move |_window, _cx| push_effect(SideEffect::DismissNotice(id))),
+            );
             banner = banner.child(actions);
 
             banner.into_any_element()
@@ -274,7 +288,11 @@ fn action_button(action: NoticeAction, primary: bool, notice_id: u64) -> AnyElem
         NoticeAction::Dismiss => "Dismiss",
         NoticeAction::InstallPhoneApp => "Install app on phone",
     };
-    let button = if primary { Button::primary(label) } else { Button::new(label) };
+    let button = if primary {
+        Button::primary(label)
+    } else {
+        Button::new(label)
+    };
     button
         .on_click(move |_window, _cx| {
             let effect = match action {
@@ -334,7 +352,11 @@ pub fn pair_request_prompt(state: &AppState) -> AnyElement {
     let elapsed = crate::views::state::now_ms() - prompt.raised_at_ms;
     let expired = elapsed >= crate::theme::Timing::APPROVAL_WAIT_MS as i64;
 
-    let title = if expired { "This request has expired" } else { "Allow this phone to connect?" };
+    let title = if expired {
+        "This request has expired"
+    } else {
+        "Allow this phone to connect?"
+    };
     let body = if expired {
         "The phone stopped waiting for an answer. Ask it to try again to get a new request."
     } else {
@@ -492,7 +514,11 @@ pub fn rail(state: &AppState, tab: Tab, narrow: bool) -> AnyElement {
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(if selected { Text::PRIMARY } else { Text::MUTED })
                 .border_b_2()
-                .border_color(if selected { Accent::DEFAULT } else { gpui::transparent_black() })
+                .border_color(if selected {
+                    Accent::DEFAULT
+                } else {
+                    gpui::transparent_black()
+                })
                 .cursor_pointer()
                 .hover(move |style| {
                     if selected {
@@ -556,9 +582,9 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
 
     let mut panel = Panel::new("Pairing");
     if pairing_open {
-        panel = panel.action(Button::new("Cancel").on_click(|_window, _cx| {
-            push_effect(SideEffect::DisarmPairing)
-        }));
+        panel = panel.action(
+            Button::new("Cancel").on_click(|_window, _cx| push_effect(SideEffect::DisarmPairing)),
+        );
     }
 
     let mut children: Vec<AnyElement> = Vec::new();
@@ -599,7 +625,9 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
                         .font_family(Fonts::SANS)
                         .text_size(px(Type::XS))
                         .text_color(Text::BODY)
-                        .child("The code is in the preview area, on the left. Point your phone at it."),
+                        .child(
+                            "The code is in the preview area, on the left. Point your phone at it.",
+                        ),
                 )
                 .into_any_element(),
         );
@@ -732,7 +760,10 @@ pub fn usb_device_action(state: &str) -> UsbDeviceAction {
 }
 
 /// Summary sentence above the USB device list.
-pub fn usb_list_summary(devices: &[phonecam_protocol::AdbDevice], forwarding: bool) -> &'static str {
+pub fn usb_list_summary(
+    devices: &[phonecam_protocol::AdbDevice],
+    forwarding: bool,
+) -> &'static str {
     if forwarding {
         return "The cable tunnel is open. Open PhoneCam on the phone to connect.";
     }
@@ -774,7 +805,11 @@ fn usb_list(state: &AppState) -> AnyElement {
             .child(usb_list_summary(&devices, forwarding));
 
         for device in devices {
-            let label = if device.model.is_empty() { device.serial.clone() } else { device.model.clone() };
+            let label = if device.model.is_empty() {
+                device.serial.clone()
+            } else {
+                device.model.clone()
+            };
             let serial_for_connect = device.serial.clone();
             let id_for_btn = device.serial.clone();
             let action = usb_device_action(&device.state);
@@ -817,7 +852,7 @@ fn usb_list(state: &AppState) -> AnyElement {
                                 format!("usb-use-{id_for_btn}"),
                                 "Use this phone",
                                 false,
-                               false,
+                                false,
                                 move |_window, _cx| {
                                     push_effect(SideEffect::ConnectUsb(Some(
                                         serial_for_connect.clone(),
@@ -828,9 +863,7 @@ fn usb_list(state: &AppState) -> AnyElement {
                         (false, UsbDeviceAction::AuthorizeHint) => {
                             chip("Approve on phone", Tone::Warn)
                         }
-                        (false, UsbDeviceAction::OfflineHint) => {
-                            chip("Offline", Tone::Neutral)
-                        }
+                        (false, UsbDeviceAction::OfflineHint) => chip("Offline", Tone::Neutral),
                     }),
             );
         }
@@ -842,12 +875,14 @@ fn usb_list(state: &AppState) -> AnyElement {
                 .flex_row()
                 .flex_wrap()
                 .gap(px(Space::MD))
-                .child(Button::new("Check again").on_click(|_window, _cx| {
-                    push_effect(SideEffect::RefreshUsb)
-                }))
-                .child(Button::new("Restart ADB").on_click(|_window, _cx| {
-                    push_effect(SideEffect::RestartAdb)
-                })),
+                .child(
+                    Button::new("Check again")
+                        .on_click(|_window, _cx| push_effect(SideEffect::RefreshUsb)),
+                )
+                .child(
+                    Button::new("Restart ADB")
+                        .on_click(|_window, _cx| push_effect(SideEffect::RestartAdb)),
+                ),
         );
 
         return column.into_any_element();
@@ -888,19 +923,20 @@ fn usb_list(state: &AppState) -> AnyElement {
         .gap(px(Space::MD));
 
     if matches!(readiness, rules::UsbReadiness::ToolsMissing) {
-        actions = actions.child(Button::new("Download platform-tools").on_click(|_window, _cx| {
-            push_effect(SideEffect::OpenPlatformToolsUrl)
-        }));
+        actions = actions.child(
+            Button::new("Download platform-tools")
+                .on_click(|_window, _cx| push_effect(SideEffect::OpenPlatformToolsUrl)),
+        );
     }
 
-    actions = actions.child(Button::new("Check again").on_click(|_window, _cx| {
-        push_effect(SideEffect::RefreshUsb)
-    }));
+    actions = actions.child(
+        Button::new("Check again").on_click(|_window, _cx| push_effect(SideEffect::RefreshUsb)),
+    );
 
     if !matches!(readiness, rules::UsbReadiness::ToolsMissing) {
-        actions = actions.child(Button::new("Restart ADB").on_click(|_window, _cx| {
-            push_effect(SideEffect::RestartAdb)
-        }));
+        actions = actions.child(
+            Button::new("Restart ADB").on_click(|_window, _cx| push_effect(SideEffect::RestartAdb)),
+        );
     }
 
     div()
@@ -964,11 +1000,7 @@ pub fn usb_debugging_guide() -> AnyElement {
                         .text_color(Text::BODY)
                         .child(format!("{}.", i + 1)),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .child(*step),
-                )
+                .child(div().flex_1().child(*step))
         }))
         .into_any_element()
 }
@@ -986,12 +1018,18 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
         return div().into_any_element();
     }
 
-    let name = device.map(|d| d.name.clone()).unwrap_or_else(|| "this phone".to_string());
+    let name = device
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "this phone".to_string());
     let facts = state.device_facts();
     let connected = device.is_some();
 
     let panel = Panel::new(name.clone()).action(chip(
-        if connected { "Connected" } else { "Not connected" },
+        if connected {
+            "Connected"
+        } else {
+            "Not connected"
+        },
         if connected { Tone::Ok } else { Tone::Neutral },
     ));
 
@@ -1060,7 +1098,11 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
     ));
 
     let not_connected = !state.status.connected || !state.has_device();
-    let probed_cameras = state.capabilities.as_ref().map(|c| c.cameras.clone()).unwrap_or_default();
+    let probed_cameras = state
+        .capabilities
+        .as_ref()
+        .map(|c| c.cameras.clone())
+        .unwrap_or_default();
     let cameras = if probed_cameras.is_empty() {
         vec![
             phonecam_protocol::CameraCapability {
@@ -1130,24 +1172,17 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
     if not_connected {
         children.push(tinted_box(
             Tone::Neutral,
-            vec![
-                div()
-                    .font_family(Fonts::SANS)
-                    .text_size(px(Type::XS))
-                    .text_color(Text::MUTED)
-                    .child("No phone connected. Settings below will apply automatically once connected.")
-                    .into_any_element(),
-            ],
+            vec![div()
+                .font_family(Fonts::SANS)
+                .text_size(px(Type::XS))
+                .text_color(Text::MUTED)
+                .child(
+                    "No phone connected. Settings below will apply automatically once connected.",
+                )
+                .into_any_element()],
         ));
     }
 
-    // Quick camera ID cycle list: known camera IDs plus fallback 0..=4.
-    let mut cycle_ids: Vec<String> = cameras.iter().map(|c| c.id.clone()).collect();
-    for fallback in ["0", "1", "2", "3", "4"] {
-        if !cycle_ids.iter().any(|id| id == fallback) {
-            cycle_ids.push(fallback.to_string());
-        }
-    }
     let resolved_id = cameras
         .iter()
         .find(|c| c.id == selected)
@@ -1155,60 +1190,16 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         .map(|c| c.id.as_str())
         .unwrap_or(selected.as_str())
         .to_string();
-    let current_idx = cycle_ids.iter().position(|id| id == &resolved_id).unwrap_or(0);
-    let prev_id = cycle_ids[(current_idx + cycle_ids.len() - 1) % cycle_ids.len()].clone();
-    let next_id = cycle_ids[(current_idx + 1) % cycle_ids.len()].clone();
 
     children.push(section(
         "Which camera",
-        vec![
-            camera_tiles(&cameras, &resolved_id),
-            div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .items_center()
-                .gap(px(Space::XS))
-                .child(
-                    div()
-                        .font_family(Fonts::SANS)
-                        .text_size(px(Type::TWO_XS))
-                        .text_color(Text::MUTED)
-                        .mr(px(Space::XS))
-                        .child("Manual ID:"),
-                )
-                .child(pill_button(
-                    "cam-id-prev",
-                    "<",
-                    false,
-                    false,
-                    move |_window, _cx| push_effect(SideEffect::SetCamera(prev_id.clone())),
-                ))
-                .children(["0", "1", "2", "3"].into_iter().map(|id| {
-                    let active = resolved_id == id;
-                    pill_button(
-                        format!("cam-id-{id}"),
-                        id,
-                        active,
-                        false,
-                        move |_window, _cx| {
-                            push_effect(SideEffect::SetCamera(id.to_string()))
-                        },
-                    )
-                }))
-                .child(pill_button(
-                    "cam-id-next",
-                    ">",
-                    false,
-                    false,
-                    move |_window, _cx| push_effect(SideEffect::SetCamera(next_id.clone())),
-                ))
-                .into_any_element(),
-        ],
+        vec![camera_tiles(&cameras, &resolved_id)],
     ));
 
     let res_options = resolution_presets(
-        selected_cam.map(|c| c.resolutions.as_slice()).unwrap_or(&[]),
+        selected_cam
+            .map(|c| c.resolutions.as_slice())
+            .unwrap_or(&[]),
         &state.settings.resolution,
     );
     let res_hint: SharedString = phone
@@ -1233,15 +1224,103 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
 
     let bitrate_dec = current_bitrate.saturating_sub(500_000).max(1_000_000);
     let bitrate_inc = (current_bitrate + 500_000).min(20_000_000);
-    let bitrate_presets: [(u64, &str); 7] = [
-        (1_500_000, "1.5M"),
-        (2_000_000, "2M"),
-        (4_000_000, "4M"),
-        (8_000_000, "8M"),
-        (12_000_000, "12M"),
-        (16_000_000, "16M"),
-        (20_000_000, "20M"),
-    ];
+    let bitrate_mbps = current_bitrate as f64 / 1e6;
+
+    let bitrate_control = div()
+        .flex()
+        .flex_col()
+        .gap(px(Space::SM))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .p(px(Space::MD))
+                .rounded(px(Radius::MD))
+                .border_1()
+                .border_color(SHELL.border)
+                .bg(SHELL.control)
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_baseline()
+                        .gap(px(Space::SM))
+                        .child(
+                            div()
+                                .font(numeric_font(Fonts::MONO))
+                                .text_size(px(Type::TITLE))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(Accent::DEFAULT)
+                                .child(format!("{bitrate_mbps:.1}")),
+                        )
+                        .child(
+                            div()
+                                .font_family(Fonts::SANS)
+                                .text_size(px(Type::TWO_XS))
+                                .text_color(Text::MUTED)
+                                .child("Mbps Target"),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(Space::XS))
+                        .child(pill_button(
+                            "bitrate-dec",
+                            "- 0.5M",
+                            false,
+                            current_bitrate <= 1_000_000,
+                            move |_window, _cx| {
+                                push_effect(SideEffect::SetVideo {
+                                    fps: current_fps_opt,
+                                    bitrate: bitrate_dec,
+                                })
+                            },
+                        ))
+                        .child(pill_button(
+                            "bitrate-inc",
+                            "+ 0.5M",
+                            false,
+                            current_bitrate >= 20_000_000,
+                            move |_window, _cx| {
+                                push_effect(SideEffect::SetVideo {
+                                    fps: current_fps_opt,
+                                    bitrate: bitrate_inc,
+                                })
+                            },
+                        )),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap(px(Space::SM))
+                .children(
+                    [
+                        (2_000_000, "2M Eco", "bitrate-2M"),
+                        (4_000_000, "4M Normal", "bitrate-4M"),
+                        (8_000_000, "8M HD", "bitrate-8M"),
+                        (16_000_000, "16M Ultra", "bitrate-16M"),
+                    ]
+                    .into_iter()
+                    .map(|(bps, label, id)| {
+                        let active = current_bitrate == bps;
+                        pill_button(id, label, active, false, move |_window, _cx| {
+                            push_effect(SideEffect::SetVideo {
+                                fps: current_fps_opt,
+                                bitrate: bps,
+                            })
+                        })
+                    }),
+                ),
+        )
+        .into_any_element();
 
     children.push(section(
         "What it captures",
@@ -1299,54 +1378,9 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             ),
             crate::views::widgets::field(
                 "Bitrate",
-                Some(format!("{:.1} Mbps", current_bitrate as f64 / 1e6).into()),
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(Space::SM))
-                    .child(pill_button(
-                        "bitrate-dec",
-                        "-",
-                        false,
-                        current_bitrate <= 1_000_000,
-                        move |_window, _cx| {
-                            push_effect(SideEffect::SetVideo {
-                                fps: current_fps_opt,
-                                bitrate: bitrate_dec,
-                            })
-                        },
-                    ))
-                    .children(bitrate_presets.into_iter().map(|(bps, label)| {
-                        let active = current_bitrate == bps;
-                        pill_button(
-                            format!("bitrate-{label}"),
-                            label,
-                            active,
-                            false,
-                            move |_window, _cx| {
-                                push_effect(SideEffect::SetVideo {
-                                    fps: current_fps_opt,
-                                    bitrate: bps,
-                                })
-                            },
-                        )
-                    }))
-                    .child(pill_button(
-                        "bitrate-inc",
-                        "+",
-                        false,
-                        current_bitrate >= 20_000_000,
-                        move |_window, _cx| {
-                            push_effect(SideEffect::SetVideo {
-                                fps: current_fps_opt,
-                                bitrate: bitrate_inc,
-                            })
-                        },
-                    ))
-                    .into_any_element(),
-                Some("Higher is sharper and needs more Wi-Fi. 8 Mbps is a good 1080p default.".into()),
+                None,
+                bitrate_control,
+                Some("Higher bitrate increases picture sharpness and requires higher Wi-Fi bandwidth. 8 Mbps is optimal for 1080p.".into()),
             ),
         ],
     ));
@@ -1356,7 +1390,13 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             .map(|c| if c.min_zoom > 0.0 { c.min_zoom } else { 1.0 })
             .unwrap_or(1.0);
         let max_zoom = selected_cam
-            .map(|c| if c.max_zoom > min_zoom { c.max_zoom } else { min_zoom + 1.0 })
+            .map(|c| {
+                if c.max_zoom > min_zoom {
+                    c.max_zoom
+                } else {
+                    min_zoom + 1.0
+                }
+            })
             .unwrap_or(8.0);
         let live_zoom = phone
             .map(|p| p.zoom)
@@ -1367,63 +1407,146 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         let zoom_inc = ((live_zoom + 0.1).min(max_zoom) * 10.0).round() / 10.0;
         let zoom_presets = zoom_presets_for(min_zoom, max_zoom);
 
+        let zoom_control = div()
+            .flex()
+            .flex_col()
+            .gap(px(Space::SM))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .p(px(Space::MD))
+                    .rounded(px(Radius::MD))
+                    .border_1()
+                    .border_color(SHELL.border)
+                    .bg(SHELL.control)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_baseline()
+                            .gap(px(Space::SM))
+                            .child(
+                                div()
+                                    .font(numeric_font(Fonts::MONO))
+                                    .text_size(px(Type::TITLE))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(Accent::DEFAULT)
+                                    .child(format!("{live_zoom:.1}x")),
+                            )
+                            .child(
+                                div()
+                                    .font_family(Fonts::SANS)
+                                    .text_size(px(Type::TWO_XS))
+                                    .text_color(Text::MUTED)
+                                    .child(format!("Range: {min_zoom:.1}x – {max_zoom:.1}x")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(Space::XS))
+                            .child(pill_button(
+                                "zoom-dec",
+                                "- 0.1x",
+                                false,
+                                live_zoom <= min_zoom + 0.01,
+                                move |_window, _cx| push_effect(SideEffect::SetZoom(zoom_dec)),
+                            ))
+                            .child(pill_button(
+                                "zoom-inc",
+                                "+ 0.1x",
+                                false,
+                                live_zoom >= max_zoom - 0.01,
+                                move |_window, _cx| push_effect(SideEffect::SetZoom(zoom_inc)),
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(Space::SM))
+                    .children(zoom_presets.into_iter().map(|z| {
+                        let active = (live_zoom - z).abs() < 0.05;
+                        let label = format!("{z:.1}x");
+                        pill_button(
+                            format!("zoom-{z:.1}"),
+                            label,
+                            active,
+                            false,
+                            move |_window, _cx| push_effect(SideEffect::SetZoom(z)),
+                        )
+                    })),
+            )
+            .into_any_element();
+
         crate::views::widgets::field(
             "Zoom",
-            Some(format!("{live_zoom:.1}x of {max_zoom:.1}x").into()),
-            div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .items_center()
-                .gap(px(Space::SM))
-                .child(pill_button(
-                    "zoom-dec",
-                    "-",
-                    false,
-                    live_zoom <= min_zoom + 0.01,
-                    move |_window, _cx| push_effect(SideEffect::SetZoom(zoom_dec)),
-                ))
-                .children(zoom_presets.into_iter().map(|z| {
-                    let active = (live_zoom - z).abs() < 0.05;
-                    let label = format!("{z:.1}x");
-                    pill_button(
-                        format!("zoom-{z:.1}"),
-                        label,
-                        active,
-                        false,
-                        move |_window, _cx| push_effect(SideEffect::SetZoom(z)),
-                    )
-                }))
-                .child(pill_button(
-                    "zoom-inc",
-                    "+",
-                    false,
-                    live_zoom >= max_zoom - 0.01,
-                    move |_window, _cx| push_effect(SideEffect::SetZoom(zoom_inc)),
-                ))
-                .into_any_element(),
             None,
+            zoom_control,
+            Some("Smooth optical or digital crop depending on device camera capabilities.".into()),
         )
     } else {
         crate::views::widgets::unavailable_field("Zoom", "This camera does not support zoom.")
     };
 
-    children.push(section(
-        "How it behaves",
-        vec![
-            zoom_element,
-            if torch_supported {
-                Toggle::new("Torch", torch_on)
-                    .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetTorch(enabled)))
-                    .into_element()
-            } else {
-                crate::views::widgets::unavailable_field(
-                    "Torch",
-                    "This camera has no torch. Front cameras and many external cameras do not.",
-                )
-            },
-        ],
-    ));
+    let torch_element = if torch_supported {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .p(px(Space::MD))
+            .rounded(px(Radius::MD))
+            .border_1()
+            .border_color(SHELL.border)
+            .bg(SHELL.control)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_SM))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(Text::PRIMARY)
+                            .child("Flashlight / Torch"),
+                    )
+                    .child(
+                        div()
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .text_color(Text::MUTED)
+                            .child(if torch_on {
+                                "Flashlight is currently ON"
+                            } else {
+                                "Illuminate dark environments with rear LED"
+                            }),
+                    ),
+            )
+            .child(pill_button(
+                "torch-toggle",
+                if torch_on { "Turn Off" } else { "Turn On" },
+                torch_on,
+                false,
+                move |_window, _cx| push_effect(SideEffect::SetTorch(!torch_on)),
+            ))
+            .into_any_element()
+    } else {
+        crate::views::widgets::unavailable_field(
+            "Torch",
+            "This camera has no torch. Front cameras and many external cameras do not.",
+        )
+    };
+
+    children.push(section("How it behaves", vec![zoom_element, torch_element]));
 
     let auto = state.settings.quality_mode == phonecam_protocol::QualityMode::Auto;
     children.push(section(
@@ -1451,7 +1574,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                         [
                             (phonecam_protocol::ScreenMode::KeepOn, "Keep on", "screen-keep-on"),
                             (phonecam_protocol::ScreenMode::Dim, "Dim", "screen-dim"),
-                            (phonecam_protocol::ScreenMode::Black, "Off", "screen-black"),
+                            (phonecam_protocol::ScreenMode::Black, "Off (Save Battery)", "screen-black"),
                         ]
                         .into_iter()
                         .map(|(mode, label, id)| {
@@ -1470,22 +1593,65 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
     panel.children(children).into_element()
 }
 
-fn camera_tiles(
-    cameras: &[phonecam_protocol::CameraCapability],
-    selected_id: &str,
-) -> AnyElement {
+fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &str) -> AnyElement {
+    let fallback_cams = [
+        phonecam_protocol::CameraCapability {
+            id: "0".to_string(),
+            facing: phonecam_protocol::CameraFacing::Back,
+            resolutions: vec!["1920x1080".into(), "1280x720".into()],
+            fps: vec![30, 24],
+            torch: true,
+            focus: true,
+            zoom: true,
+            exposure: true,
+            white_balance: true,
+            min_zoom: 1.0,
+            max_zoom: 8.0,
+            orientation_degrees: 90,
+        },
+        phonecam_protocol::CameraCapability {
+            id: "1".to_string(),
+            facing: phonecam_protocol::CameraFacing::Front,
+            resolutions: vec!["1920x1080".into(), "1280x720".into()],
+            fps: vec![30],
+            torch: false,
+            focus: true,
+            zoom: true,
+            exposure: true,
+            white_balance: true,
+            min_zoom: 1.0,
+            max_zoom: 4.0,
+            orientation_degrees: 270,
+        },
+    ];
+    let list: &[phonecam_protocol::CameraCapability] = if cameras.is_empty() {
+        &fallback_cams
+    } else {
+        cameras
+    };
+
     div()
         .flex()
         .flex_row()
         .flex_wrap()
         .gap(px(Space::MD))
-        .children(cameras.iter().map(|camera| {
+        .children(list.iter().map(|camera| {
             let is_selected = camera.id == selected_id;
             let id = camera.id.clone();
+            let label = match camera.facing {
+                phonecam_protocol::CameraFacing::Back => "Back camera",
+                phonecam_protocol::CameraFacing::Front => "Front camera",
+                phonecam_protocol::CameraFacing::External => "External camera",
+                phonecam_protocol::CameraFacing::Unknown => camera_facing_label(camera.facing),
+            };
+            let sub = format!("Lens ID {}", camera.id);
+
             div()
-                .id(gpui::ElementId::Name(SharedString::from(format!("camera-{id}"))))
+                .id(gpui::ElementId::Name(SharedString::from(format!(
+                    "camera-{id}"
+                ))))
                 .flex_1()
-                .min_w(px(130.0))
+                .min_w(px(140.0))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -1493,11 +1659,20 @@ fn camera_tiles(
                 .gap(px(Space::SM))
                 .rounded(px(Radius::MD))
                 .border_1()
-                .border_color(if is_selected { Accent::DEFAULT } else { SHELL.control })
-                .bg(if is_selected { Accent::DEFAULT.alpha(0.12) } else { SHELL.base })
+                .border_color(if is_selected {
+                    Accent::DEFAULT
+                } else {
+                    SHELL.border
+                })
+                .bg(if is_selected {
+                    Accent::DEFAULT.alpha(0.12)
+                } else {
+                    SHELL.control
+                })
                 .px(px(Space::PAD))
                 .py(px(Space::MD))
                 .cursor_pointer()
+                .hover(|s| s.border_color(Accent::HOVER).bg(SHELL.hover))
                 .child(
                     div()
                         .flex()
@@ -1506,38 +1681,50 @@ fn camera_tiles(
                             div()
                                 .font_family(Fonts::SANS)
                                 .text_size(px(Type::TWO_SM))
-                                .font_weight(if is_selected { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::MEDIUM })
-                                .text_color(if is_selected { Text::PRIMARY } else { Text::BODY })
-                                .child(camera_facing_label(camera.facing)),
+                                .font_weight(if is_selected {
+                                    gpui::FontWeight::SEMIBOLD
+                                } else {
+                                    gpui::FontWeight::MEDIUM
+                                })
+                                .text_color(if is_selected {
+                                    Text::PRIMARY
+                                } else {
+                                    Text::BODY
+                                })
+                                .child(label),
                         )
                         .child(
                             div()
                                 .font_family(Fonts::MONO)
                                 .text_size(px(Type::TWO_XS))
                                 .text_color(Text::MUTED)
-                                .child(format!("Lens ID {}", camera.id)),
+                                .child(sub),
                         ),
                 )
-                .child(
-                    if is_selected {
-                        div()
-                            .rounded(px(Radius::FULL))
-                            .bg(Accent::DEFAULT)
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .font_family(Fonts::SANS)
-                            .text_size(px(Type::TWO_XS))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(SHELL.base)
-                            .child("Active")
-                    } else {
-                        div()
-                            .font_family(Fonts::SANS)
-                            .text_size(px(Type::TWO_XS))
-                            .text_color(Text::MUTED)
-                            .child("Select")
-                    }
-                )
+                .child(if is_selected {
+                    div()
+                        .rounded(px(Radius::FULL))
+                        .bg(Accent::DEFAULT)
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .font_family(Fonts::SANS)
+                        .text_size(px(Type::TWO_XS))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(SHELL.base)
+                        .child("Active")
+                } else {
+                    div()
+                        .rounded(px(Radius::FULL))
+                        .border_1()
+                        .border_color(SHELL.border)
+                        .bg(SHELL.base)
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .font_family(Fonts::SANS)
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(Text::MUTED)
+                        .child("Select")
+                })
                 .on_click(move |_event, _window, _cx| {
                     push_effect(SideEffect::SetCamera(id.clone()))
                 })
@@ -1552,7 +1739,11 @@ fn camera_tiles(
 
 /// The camera other apps open.
 pub fn publish_panel(state: &AppState) -> AnyElement {
-    let vcam_error = state.core.as_ref().and_then(|c| c.vcam.as_ref()).and_then(|v| v.error.clone());
+    let vcam_error = state
+        .core
+        .as_ref()
+        .and_then(|c| c.vcam.as_ref())
+        .and_then(|v| v.error.clone());
     let state_label = state.vcam_state().unwrap_or("stopped");
     let running = state_label == "running";
     let starting = state_label == "starting";
@@ -1615,7 +1806,11 @@ pub fn publish_panel(state: &AppState) -> AnyElement {
             None => "Follows phone".into(),
         }
     } else {
-        format!("{} × {}", state.settings.output_width, state.settings.output_height).into()
+        format!(
+            "{} × {}",
+            state.settings.output_width, state.settings.output_height
+        )
+        .into()
     };
 
     children.push(section(
@@ -1756,8 +1951,16 @@ fn rotation_label(rotation: u32) -> &'static str {
 
 /// The connection's own numbers. Informational, never a control.
 pub fn connection_panel(state: &AppState) -> AnyElement {
-    let transport = state.core.as_ref().map(|c| c.transport.as_str()).unwrap_or("none");
-    let forwarding = state.core.as_ref().map(|c| c.usb.forwarding).unwrap_or(false);
+    let transport = state
+        .core
+        .as_ref()
+        .map(|c| c.transport.as_str())
+        .unwrap_or("none");
+    let forwarding = state
+        .core
+        .as_ref()
+        .map(|c| c.usb.forwarding)
+        .unwrap_or(false);
 
     let link_label = match transport {
         "usb" => "USB cable",
@@ -1790,24 +1993,37 @@ pub fn connection_panel(state: &AppState) -> AnyElement {
         .child(usb_chip);
 
     if forwarding {
-        usb_row = usb_row.child(Button::danger("Stop forwarding").on_click(|_window, _cx| {
-            push_effect(SideEffect::DisconnectUsb)
-        }));
+        usb_row = usb_row.child(
+            Button::danger("Stop forwarding")
+                .on_click(|_window, _cx| push_effect(SideEffect::DisconnectUsb)),
+        );
     }
 
     Panel::new("Connection")
         .child(key_value_toned("Phone link", link_label, link_tone))
         .child(key_value_toned(
             "Service socket",
-            if state.status.connected { "Connected" } else { "Retrying" },
-            Some(if state.status.connected { Tone::Ok } else { Tone::Warn }),
+            if state.status.connected {
+                "Connected"
+            } else {
+                "Retrying"
+            },
+            Some(if state.status.connected {
+                Tone::Ok
+            } else {
+                Tone::Warn
+            }),
         ))
         .child(key_value(
             "Received",
             crate::views::state::format_bytes(state.status.bytes_in),
             false,
         ))
-        .child(key_value("Handshakes", state.status.connects.to_string(), false))
+        .child(key_value(
+            "Handshakes",
+            state.status.connects.to_string(),
+            false,
+        ))
         .child(section("USB", vec![usb_row.into_any_element()]))
         .into_element()
 }
@@ -1826,8 +2042,7 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         ("IDLE", Tone::Neutral)
     };
 
-    let panel = Panel::new("Diagnostics")
-        .action(chip(status_chip_label, status_tone));
+    let panel = Panel::new("Diagnostics").action(chip(status_chip_label, status_tone));
 
     let mut children: Vec<AnyElement> = Vec::new();
 
@@ -1890,27 +2105,31 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
             if let Some(model) = facts.model {
                 rows.push(("Model".into(), chip(model, Tone::Neutral)));
             }
-            rows.push(("Device ID".into(), card_text_val(device.device_id.clone(), true)));
+            rows.push((
+                "Device ID".into(),
+                card_text_val(device.device_id.clone(), true),
+            ));
             if let Some(version) = facts.android_version {
                 rows.push(("Android".into(), card_text_val(version.to_string(), false)));
             }
 
             let phone_info = state.core.as_ref().and_then(|c| c.phone.as_ref());
-            let (batt_label, batt_tone) = match phone_info.and_then(|p| format_battery(p.battery, p.charging)) {
-                Some(label) => {
-                    let b = phone_info.map(|p| p.battery).unwrap_or(0);
-                    let is_charging = phone_info.map(|p| p.charging).unwrap_or(false);
-                    let tone = if is_charging {
-                        Tone::Ok
-                    } else if b <= 20 {
-                        Tone::Danger
-                    } else {
-                        Tone::Neutral
-                    };
-                    (label, tone)
-                }
-                None => (crate::theme::EMPTY_VALUE.to_string(), Tone::Neutral),
-            };
+            let (batt_label, batt_tone) =
+                match phone_info.and_then(|p| format_battery(p.battery, p.charging)) {
+                    Some(label) => {
+                        let b = phone_info.map(|p| p.battery).unwrap_or(0);
+                        let is_charging = phone_info.map(|p| p.charging).unwrap_or(false);
+                        let tone = if is_charging {
+                            Tone::Ok
+                        } else if b <= 20 {
+                            Tone::Danger
+                        } else {
+                            Tone::Neutral
+                        };
+                        (label, tone)
+                    }
+                    None => (crate::theme::EMPTY_VALUE.to_string(), Tone::Neutral),
+                };
             rows.push(("Battery".into(), chip(batt_label, batt_tone)));
 
             let cam_count = state.capabilities.as_ref().map(|c| c.cameras.len());
@@ -1928,14 +2147,12 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
 
             info_card_from_rows(rows)
         }
-        None => info_card(vec![
-            div()
-                .py(px(Space::SM))
-                .child(prose(
-                    "Nothing connected. Pair a phone from Setup and its details appear here.",
-                ))
-                .into_any_element(),
-        ]),
+        None => info_card(vec![div()
+            .py(px(Space::SM))
+            .child(prose(
+                "Nothing connected. Pair a phone from Setup and its details appear here.",
+            ))
+            .into_any_element()]),
     };
     children.push(section("Connected phone", vec![phone_card]));
 
@@ -1943,10 +2160,16 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
     let published_output = if state.settings.output_follows_stream {
         match state.frame_size {
             Some((w, h)) => format!("{w}×{h}"),
-            None => format!("{}×{}", state.settings.output_width, state.settings.output_height),
+            None => format!(
+                "{}×{}",
+                state.settings.output_width, state.settings.output_height
+            ),
         }
     } else {
-        format!("{}×{}", state.settings.output_width, state.settings.output_height)
+        format!(
+            "{}×{}",
+            state.settings.output_width, state.settings.output_height
+        )
     };
     let decoded_str = state
         .frame_size
@@ -1961,13 +2184,35 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string());
 
     let output_rows = vec![
-        ("Mirror".into(), card_text_val(if state.settings.output_mirror { "On" } else { "Off" }, false)),
-        ("Rotation".into(), card_text_val(format!("{}°", state.settings.output_rotation), false)),
-        ("Output resolution".into(), card_text_val(published_output, false)),
+        (
+            "Mirror".into(),
+            card_text_val(
+                if state.settings.output_mirror {
+                    "On"
+                } else {
+                    "Off"
+                },
+                false,
+            ),
+        ),
+        (
+            "Rotation".into(),
+            card_text_val(format!("{}°", state.settings.output_rotation), false),
+        ),
+        (
+            "Output resolution".into(),
+            card_text_val(published_output, false),
+        ),
         ("Decoded stream".into(), card_text_val(decoded_str, false)),
-        ("Phone stream resolution".into(), card_text_val(phone_out_str, false)),
+        (
+            "Phone stream resolution".into(),
+            card_text_val(phone_out_str, false),
+        ),
     ];
-    children.push(section("Output stream", vec![info_card_from_rows(output_rows)]));
+    children.push(section(
+        "Output stream",
+        vec![info_card_from_rows(output_rows)],
+    ));
 
     // Card C: "Network & Endpoints"
     let service_endpoint = format!("127.0.0.1:{}", phonecam_protocol::SERVICE_PORT);
@@ -1982,25 +2227,56 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         .flex_row()
         .items_center()
         .gap(px(Space::SM))
-        .child(status_dot(if state.status.connected { Tone::Ok } else { Tone::Danger }))
+        .child(status_dot(if state.status.connected {
+            Tone::Ok
+        } else {
+            Tone::Danger
+        }))
         .child(
             div()
                 .font_family(Fonts::SANS)
                 .text_size(px(Type::TWO_SM))
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(if state.status.connected { Status::OK } else { Status::DANGER_TEXT })
-                .child(if state.status.connected { "Connected" } else { "Disconnected" }),
+                .text_color(if state.status.connected {
+                    Status::OK
+                } else {
+                    Status::DANGER_TEXT
+                })
+                .child(if state.status.connected {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                }),
         )
         .into_any_element();
 
     let network_rows = vec![
-        ("Service endpoint".into(), card_text_val(service_endpoint, true)),
+        (
+            "Service endpoint".into(),
+            card_text_val(service_endpoint, true),
+        ),
         ("Wi-Fi endpoint".into(), card_text_val(wifi_endpoint, true)),
         ("Socket status".into(), socket_dot_el),
-        ("Log file".into(), card_text_val("%APPDATA%\\PhoneCam\\desktop.log", true)),
-        ("Platform".into(), card_text_val(if cfg!(windows) { "win32 x64" } else { "linux x64" }, false)),
+        (
+            "Log file".into(),
+            card_text_val("%APPDATA%\\PhoneCam\\desktop.log", true),
+        ),
+        (
+            "Platform".into(),
+            card_text_val(
+                if cfg!(windows) {
+                    "win32 x64"
+                } else {
+                    "linux x64"
+                },
+                false,
+            ),
+        ),
     ];
-    children.push(section("Network & endpoints", vec![info_card_from_rows(network_rows)]));
+    children.push(section(
+        "Network & endpoints",
+        vec![info_card_from_rows(network_rows)],
+    ));
 
     // 4. Redesigned Log Viewer
     let matching_logs = filtered_logs(state);
@@ -2141,7 +2417,9 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                 .child(select_dropdown(
                     "log-filter-source-select",
                     filter_src_label,
-                    move |_window, _cx| push_effect(SideEffect::SetLogFilterSource(next_filter_src)),
+                    move |_window, _cx| {
+                        push_effect(SideEffect::SetLogFilterSource(next_filter_src))
+                    },
                 )),
         )
         .child(
@@ -2269,11 +2547,7 @@ fn info_card(rows: Vec<AnyElement>) -> AnyElement {
 }
 
 /// A key-value row inside a structured card, with subtle row divider if not last.
-fn card_kv_row(
-    label: impl Into<SharedString>,
-    value_el: AnyElement,
-    is_last: bool,
-) -> AnyElement {
+fn card_kv_row(label: impl Into<SharedString>, value_el: AnyElement, is_last: bool) -> AnyElement {
     let mut row = div()
         .flex()
         .flex_row()
@@ -2325,26 +2599,15 @@ fn info_card_from_rows(rows: Vec<(SharedString, AnyElement)>) -> AnyElement {
 /// A fixed-width level badge with distinct background, border, and text styling.
 fn log_level_badge(level: phonecam_protocol::LogLevel) -> AnyElement {
     let (bg, border) = match level {
-        phonecam_protocol::LogLevel::Error => (
-            Status::DANGER.alpha(0.15),
-            Status::DANGER.alpha(0.4),
-        ),
-        phonecam_protocol::LogLevel::Warn => (
-            Status::WARN.alpha(0.15),
-            Status::WARN.alpha(0.4),
-        ),
-        phonecam_protocol::LogLevel::Info => (
-            Accent::DEFAULT.alpha(0.12),
-            Accent::DEFAULT.alpha(0.3),
-        ),
-        phonecam_protocol::LogLevel::Debug => (
-            SHELL.border.alpha(0.2),
-            SHELL.border.alpha(0.4),
-        ),
-        phonecam_protocol::LogLevel::Trace => (
-            SHELL.border.alpha(0.1),
-            SHELL.border.alpha(0.3),
-        ),
+        phonecam_protocol::LogLevel::Error => {
+            (Status::DANGER.alpha(0.15), Status::DANGER.alpha(0.4))
+        }
+        phonecam_protocol::LogLevel::Warn => (Status::WARN.alpha(0.15), Status::WARN.alpha(0.4)),
+        phonecam_protocol::LogLevel::Info => {
+            (Accent::DEFAULT.alpha(0.12), Accent::DEFAULT.alpha(0.3))
+        }
+        phonecam_protocol::LogLevel::Debug => (SHELL.border.alpha(0.2), SHELL.border.alpha(0.4)),
+        phonecam_protocol::LogLevel::Trace => (SHELL.border.alpha(0.1), SHELL.border.alpha(0.3)),
     };
     let text = log_level_colour(level);
 
@@ -2426,12 +2689,13 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
                 .into_element(),
         )
         .child(
-            Toggle::new("Show preview in this window", state.settings.preview_enabled)
-                .detail(Some("Off keeps virtual camera running"))
-                .on_change(|enabled, _window, _cx| {
-                    push_effect(SideEffect::SetPreviewEnabled(enabled))
-                })
-                .into_element(),
+            Toggle::new(
+                "Show preview in this window",
+                state.settings.preview_enabled,
+            )
+            .detail(Some("Off keeps virtual camera running"))
+            .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetPreviewEnabled(enabled)))
+            .into_element(),
         )
         .child(
             div()
@@ -2448,8 +2712,16 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
                         .child("Service"),
                 )
                 .child(chip(
-                    if state.status.connected { "Connected" } else { "Offline" },
-                    if state.status.connected { Tone::Ok } else { Tone::Warn },
+                    if state.status.connected {
+                        "Connected"
+                    } else {
+                        "Offline"
+                    },
+                    if state.status.connected {
+                        Tone::Ok
+                    } else {
+                        Tone::Warn
+                    },
                 ))
                 .into_any_element(),
         )
@@ -2574,7 +2846,11 @@ fn pill_button(
     if disabled {
         el = el.opacity(0.4).cursor_default();
     } else {
-        let hover_border = if selected { Accent::DEFAULT } else { Text::MUTED };
+        let hover_border = if selected {
+            Accent::DEFAULT
+        } else {
+            Text::MUTED
+        };
         let hover_bg = if selected { SHELL.control } else { SHELL.hover };
         el = el
             .cursor_pointer()
@@ -2615,7 +2891,10 @@ fn zoom_presets_for(min_zoom: f32, max_zoom: f32) -> Vec<f32> {
     let mut presets = Vec::new();
     let mut push_unique = |val: f32| {
         let v = round1(val.clamp(min_z, max_z));
-        if !presets.iter().any(|existing: &f32| (*existing - v).abs() < 0.05) {
+        if !presets
+            .iter()
+            .any(|existing: &f32| (*existing - v).abs() < 0.05)
+        {
             presets.push(v);
         }
     };
@@ -2758,7 +3037,10 @@ mod tests {
     #[test]
     fn usb_device_action_gates_unauthorized_and_offline_devices() {
         assert_eq!(usb_device_action("device"), UsbDeviceAction::UsePhone);
-        assert_eq!(usb_device_action("unauthorized"), UsbDeviceAction::AuthorizeHint);
+        assert_eq!(
+            usb_device_action("unauthorized"),
+            UsbDeviceAction::AuthorizeHint
+        );
         assert_eq!(usb_device_action("offline"), UsbDeviceAction::OfflineHint);
     }
 
@@ -2897,10 +3179,3 @@ mod tests {
         }
     }
 }
-
-
-
-
-
-
-

@@ -7,14 +7,10 @@ use std::fmt::Write as _;
 use std::ptr;
 
 use jni::objects::{JByteArray, JClass, JString};
-use jni::sys::{
-    jboolean, jbyteArray, jdouble, jint, jintArray, jlong, jlongArray, jstring,
-};
+use jni::sys::{jboolean, jbyteArray, jdouble, jint, jintArray, jlong, jlongArray, jstring};
 use jni::JNIEnv;
 use parking_lot::Mutex;
-use phonecam_core::adaptive_quality::{
-    AdaptiveQuality, QualityAction, QualityRung, QualitySample,
-};
+use phonecam_core::adaptive_quality::{AdaptiveQuality, QualityAction, QualityRung, QualitySample};
 use phonecam_core::pairing::random_hex as core_random_hex;
 use phonecam_core::session::MAX_HANDSHAKE_AUTH;
 use phonecam_protocol::{
@@ -117,12 +113,10 @@ pub fn encode_client_handshake(
             MAX_HANDSHAKE_AUTH
         )));
     }
-    let role_byte = u8::try_from(role).map_err(|_| {
-        NativeError::IllegalArgument(format!("role out of range: {role}"))
-    })?;
-    let auth_mode_byte = u8::try_from(auth_mode).map_err(|_| {
-        NativeError::IllegalArgument(format!("authMode out of range: {auth_mode}"))
-    })?;
+    let role_byte = u8::try_from(role)
+        .map_err(|_| NativeError::IllegalArgument(format!("role out of range: {role}")))?;
+    let auth_mode_byte = u8::try_from(auth_mode)
+        .map_err(|_| NativeError::IllegalArgument(format!("authMode out of range: {auth_mode}")))?;
 
     let mut out = Vec::with_capacity(CLIENT_HANDSHAKE_SIZE + auth_bytes.len());
     out.extend_from_slice(&MAGIC_BYTES);
@@ -218,9 +212,9 @@ pub fn encode_video_packet_header_into(
         )));
     }
     let start = offset as usize;
-    let end = start.checked_add(PREFIX_LEN).ok_or_else(|| {
-        NativeError::IndexOutOfBounds("destination offset overflow".into())
-    })?;
+    let end = start
+        .checked_add(PREFIX_LEN)
+        .ok_or_else(|| NativeError::IndexOutOfBounds("destination offset overflow".into()))?;
     if end > dst.len() {
         return Err(NativeError::IndexOutOfBounds(format!(
             "destination slice {start}..{end} exceeds length {}",
@@ -248,9 +242,9 @@ pub fn encode_video_packet(
     }
     let start = offset as usize;
     let len = length as usize;
-    let end = start.checked_add(len).ok_or_else(|| {
-        NativeError::IndexOutOfBounds("offset + length overflow".into())
-    })?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| NativeError::IndexOutOfBounds("offset + length overflow".into()))?;
     if end > payload.len() {
         return Err(NativeError::IndexOutOfBounds(format!(
             "slice {start}..{end} exceeds payload length {}",
@@ -294,7 +288,10 @@ struct NormalizedQrPayload {
     server_id: Option<String>,
 }
 
-fn optional_non_blank_string(obj: &serde_json::Map<String, Value>, key: &str) -> Option<Option<String>> {
+fn optional_non_blank_string(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Option<Option<String>> {
     match obj.get(key) {
         None | Some(Value::Null) => Some(None),
         Some(Value::String(s)) => {
@@ -488,9 +485,11 @@ impl AdaptiveQualityHandle {
 
         match decision.action {
             QualityAction::Hold => Cow::Borrowed(hold_json_for(current)),
-            QualityAction::StepDown(target) => {
-                Cow::Owned(format_quality_decision("step_down", target, decision.reason))
-            }
+            QualityAction::StepDown(target) => Cow::Owned(format_quality_decision(
+                "step_down",
+                target,
+                decision.reason,
+            )),
             QualityAction::StepUp(target) => {
                 Cow::Owned(format_quality_decision("step_up", target, decision.reason))
             }
@@ -525,14 +524,10 @@ impl AdaptiveQualityHandle {
     }
 }
 
-const HOLD_JSON_480P: &str =
-    r#"{"action":"hold","resolution":"640x480","fps":30,"bitrate":1500000,"label":"480p","reason":""}"#;
-const HOLD_JSON_720P: &str =
-    r#"{"action":"hold","resolution":"1280x720","fps":30,"bitrate":4000000,"label":"720p","reason":""}"#;
-const HOLD_JSON_1080P30: &str =
-    r#"{"action":"hold","resolution":"1920x1080","fps":30,"bitrate":8000000,"label":"1080p30","reason":""}"#;
-const HOLD_JSON_1080P60: &str =
-    r#"{"action":"hold","resolution":"1920x1080","fps":60,"bitrate":12000000,"label":"1080p60","reason":""}"#;
+const HOLD_JSON_480P: &str = r#"{"action":"hold","resolution":"640x480","fps":30,"bitrate":1500000,"label":"480p","reason":""}"#;
+const HOLD_JSON_720P: &str = r#"{"action":"hold","resolution":"1280x720","fps":30,"bitrate":4000000,"label":"720p","reason":""}"#;
+const HOLD_JSON_1080P30: &str = r#"{"action":"hold","resolution":"1920x1080","fps":30,"bitrate":8000000,"label":"1080p30","reason":""}"#;
+const HOLD_JSON_1080P60: &str = r#"{"action":"hold","resolution":"1920x1080","fps":60,"bitrate":12000000,"label":"1080p60","reason":""}"#;
 
 fn hold_json_for(rung: QualityRung) -> &'static str {
     match rung {
@@ -618,7 +613,9 @@ fn parse_thermal(thermal: &str) -> ThermalState {
 
 fn read_jstring(env: &mut JNIEnv<'_>, s: &JString<'_>, name: &str) -> Result<String, NativeError> {
     if s.is_null() {
-        return Err(NativeError::IllegalArgument(format!("{name} must not be null")));
+        return Err(NativeError::IllegalArgument(format!(
+            "{name} must not be null"
+        )));
     }
     env.get_string(s)
         .map(String::from)
@@ -642,7 +639,9 @@ fn read_jbyte_array(
     name: &str,
 ) -> Result<Vec<u8>, NativeError> {
     if arr.is_null() {
-        return Err(NativeError::IllegalArgument(format!("{name} must not be null")));
+        return Err(NativeError::IllegalArgument(format!(
+            "{name} must not be null"
+        )));
     }
     env.convert_byte_array(arr)
         .map_err(|e| NativeError::Io(format!("failed to read {name}: {e}")))
@@ -811,7 +810,9 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_pairReques
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_decodeServerGreeting<'local>(
+pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_decodeServerGreeting<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _cls: JClass<'local>,
     bytes: JByteArray<'local>,
@@ -839,7 +840,9 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_decodeServ
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_encodeClientHandshake<'local>(
+pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_encodeClientHandshake<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _cls: JClass<'local>,
     role: jint,
@@ -1044,7 +1047,9 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_validateQr
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_parseDiscoveryBeacon<'local>(
+pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_parseDiscoveryBeacon<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _cls: JClass<'local>,
     json_bytes: JByteArray<'local>,
@@ -1176,9 +1181,7 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_adaptiveQu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phonecam_core::adaptive_quality::{
-        SLOW_RTT_US, STEP_DOWN_DWELL_MS, STEP_UP_DWELL_MS,
-    };
+    use phonecam_core::adaptive_quality::{SLOW_RTT_US, STEP_DOWN_DWELL_MS, STEP_UP_DWELL_MS};
     use phonecam_protocol::{
         verify_device_secret, verify_pair_request, write_server_greeting, write_server_response,
         AuthMode, ChannelRole, ClientHandshake, VideoCodec, VideoFlags, VideoPacketHeader,
@@ -1252,12 +1255,7 @@ mod tests {
         ));
     }
 
-    fn pair_auth_check(
-        dev: &str,
-        sec: Option<&str>,
-        nonce: &[u8],
-        client_nonce: i64,
-    ) -> String {
+    fn pair_auth_check(dev: &str, sec: Option<&str>, nonce: &[u8], client_nonce: i64) -> String {
         compute_pair_request_auth(dev, sec, nonce, client_nonce).unwrap()
     }
 
@@ -1312,8 +1310,7 @@ mod tests {
     #[test]
     fn server_response_header_decode_validates_fields() {
         let body = serde_json::json!({"deviceId": "android-1a2b3c4d"});
-        let full =
-            write_server_response(HandshakeStatus::Ok, ChannelRole::Control, &body).unwrap();
+        let full = write_server_response(HandshakeStatus::Ok, ChannelRole::Control, &body).unwrap();
         let hdr = decode_server_response_header(&full[..SERVER_RESPONSE_SIZE]).unwrap();
         assert_eq!(hdr[0], PROTOCOL_VERSION as i32);
         assert_eq!(hdr[1], HandshakeStatus::Ok as i32);
@@ -1450,7 +1447,9 @@ mod tests {
         assert_eq!(v["pairedDeviceIds"][0], "android-1");
 
         // Probe and phone beacons must return None.
-        assert!(parse_discovery_beacon(br#"{"t":"phonecam.probe","v":1,"role":"phone"}"#).is_none());
+        assert!(
+            parse_discovery_beacon(br#"{"t":"phonecam.probe","v":1,"role":"phone"}"#).is_none()
+        );
         assert!(parse_discovery_beacon(
             br#"{"t":"phonecam.beacon","v":1,"role":"phone","deviceId":"android-1"}"#
         )
@@ -1651,7 +1650,17 @@ mod tests {
     #[test]
     fn observe_str_borrows_static_hold_json_and_escapes_decisions() {
         let aq = AdaptiveQualityHandle::new(true, "1920x1080", 30);
-        let hold = aq.observe_str(0, "1920x1080", 30, "1920x1080", 60, 0.0, 10_000, "NONE", false);
+        let hold = aq.observe_str(
+            0,
+            "1920x1080",
+            30,
+            "1920x1080",
+            60,
+            0.0,
+            10_000,
+            "NONE",
+            false,
+        );
         assert!(matches!(hold, Cow::Borrowed(_)));
         assert_eq!(hold.as_ref(), HOLD_JSON_1080P30);
 
@@ -1697,7 +1706,17 @@ mod tests {
         let aq = AdaptiveQualityHandle::new(true, "1920x1080", 30);
         let aq_start = std::time::Instant::now();
         for i in 0..1_000i64 {
-            let out = aq.observe_str(i * 100, "1920x1080", 30, "1920x1080", 60, 0.1, 15_000, "none", false);
+            let out = aq.observe_str(
+                i * 100,
+                "1920x1080",
+                30,
+                "1920x1080",
+                60,
+                0.1,
+                15_000,
+                "none",
+                false,
+            );
             std::hint::black_box(out);
         }
         let aq_elapsed = aq_start.elapsed();
@@ -1706,8 +1725,17 @@ mod tests {
             "perf(phonecam-android-core): 10k headers={:?}, 1k auth={:?}, 1k aq_observe={:?}",
             header_elapsed, auth_elapsed, aq_elapsed
         );
-        assert!(header_elapsed.as_millis() < 500, "header encode too slow: {header_elapsed:?}");
-        assert!(auth_elapsed.as_millis() < 1000, "auth too slow: {auth_elapsed:?}");
-        assert!(aq_elapsed.as_millis() < 500, "aq observe too slow: {aq_elapsed:?}");
+        assert!(
+            header_elapsed.as_millis() < 500,
+            "header encode too slow: {header_elapsed:?}"
+        );
+        assert!(
+            auth_elapsed.as_millis() < 1000,
+            "auth too slow: {auth_elapsed:?}"
+        );
+        assert!(
+            aq_elapsed.as_millis() < 500,
+            "aq observe too slow: {aq_elapsed:?}"
+        );
     }
 }

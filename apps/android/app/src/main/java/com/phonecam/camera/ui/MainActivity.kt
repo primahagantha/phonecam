@@ -1,6 +1,9 @@
 package com.phonecam.camera.ui
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.Surface
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -30,6 +34,7 @@ import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Output
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Troubleshoot
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -42,6 +47,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -307,6 +313,61 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
         )
     }
 
+    var pendingCrashReport by remember { mutableStateOf(com.phonecam.camera.protocol.CrashReporter.readPendingCrashReport(context)) }
+    if (pendingCrashReport != null) {
+        val report = pendingCrashReport!!
+        AlertDialog(
+            onDismissRequest = {
+                com.phonecam.camera.protocol.CrashReporter.clearPendingCrashReport(context)
+                pendingCrashReport = null
+            },
+            title = { Text("Session Crash Detected") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "PhoneCam stopped unexpectedly in a previous session. You can report this to GitHub to help us fix it quickly.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        report.take(300) + if (report.length > 300) "..." else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Crash Report", report))
+                        val intent = com.phonecam.camera.protocol.CrashReporter.buildGitHubIssueIntent(
+                            context = context,
+                            title = "[Crash] Android App Crash Report",
+                            bodyMarkdown = "### Crash Report\n```\n$report\n```",
+                        )
+                        runCatching { context.startActivity(intent) }
+                        com.phonecam.camera.protocol.CrashReporter.clearPendingCrashReport(context)
+                        pendingCrashReport = null
+                    }
+                ) {
+                    Text("Report to GitHub")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Crash Report", report))
+                        com.phonecam.camera.protocol.CrashReporter.clearPendingCrashReport(context)
+                        pendingCrashReport = null
+                    }
+                ) {
+                    Text("Copy & Dismiss")
+                }
+            }
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             snackbarHost = { SnackbarHost(snackbarHost) },
@@ -356,6 +417,7 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         noticeKind = noticeKind,
                         pairedServerName = identity.pairedServerName,
                         pairedAddress = identity.pairedAddress,
+                        buildReport = buildReport,
                         onRequestCamera = requestCamera,
                         onDismissNotificationNote = { viewModel.dismissNotificationNote() },
                         onRetry = { viewModel.retry() },
@@ -490,17 +552,23 @@ private fun StatusStrip(
 /** The scrolling body every screen shares, so the gaps and margins cannot drift. */
 @Composable
 private fun ScreenScroll(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(PaddingValues(horizontal = 16.dp, vertical = 16.dp)),
-        // The gaps carry the grouping. A card, a banner and a section are three
-        // different weights of thing, so they get three different gaps instead of
-        // one uniform stack of boxes.
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        content = content,
-    )
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 720.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(PaddingValues(horizontal = 16.dp, vertical = 16.dp)),
+            // The gaps carry the grouping. A card, a banner and a section are three
+            // different weights of thing, so they get three different gaps instead of
+            // one uniform stack of boxes.
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            content = content,
+        )
+    }
 }
 
 /**
@@ -523,6 +591,7 @@ private fun StatusScreen(
     noticeKind: NoticeKind,
     pairedServerName: String?,
     pairedAddress: String?,
+    buildReport: () -> String,
     onRequestCamera: () -> Unit,
     onDismissNotificationNote: () -> Unit,
     onRetry: () -> Unit,
@@ -558,6 +627,17 @@ private fun StatusScreen(
                 onRetry = onRetry,
                 secondaryLabel = stringResource(R.string.action_scan_qr),
                 onSecondary = onScanQr,
+                onReportIssue = {
+                    val reportText = buildReport()
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Diagnostics Report", reportText))
+                    val intent = com.phonecam.camera.protocol.CrashReporter.buildGitHubIssueIntent(
+                        context = context,
+                        title = "[Error] Stream error: ${state.error}",
+                        bodyMarkdown = "### Error Message\n${state.error}\n\n### System Diagnostics\n```\n$reportText\n```",
+                    )
+                    runCatching { context.startActivity(intent) }
+                },
             )
         } else if (state.phase == SessionState.Phase.CONNECTING || state.phase == SessionState.Phase.RECONNECTING) {
             ConnectingCard()

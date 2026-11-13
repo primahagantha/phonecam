@@ -1,4 +1,4 @@
-﻿//! PhoneCam core: transport, authentication, decode, the frame bus, the
+//! PhoneCam core: transport, authentication, decode, the frame bus, the
 //! adaptive ladder and adb â€” everything except the UI and the virtual camera
 //! DLL.
 //!
@@ -14,9 +14,8 @@ pub mod session;
 pub mod transport;
 
 pub use adaptive_quality::{
-    AdaptiveQuality, QualityAction, QualityDecision, QualityRung, QualitySample,
-    BAD_DROP_PERCENT, CLEAN_DROP_PERCENT, CLEAN_RTT_US, SLOW_RTT_US, STEP_DOWN_DWELL_MS,
-    STEP_UP_DWELL_MS,
+    AdaptiveQuality, QualityAction, QualityDecision, QualityRung, QualitySample, BAD_DROP_PERCENT,
+    CLEAN_DROP_PERCENT, CLEAN_RTT_US, SLOW_RTT_US, STEP_DOWN_DWELL_MS, STEP_UP_DWELL_MS,
 };
 pub use pairing::{DeviceRecord, PairingManager, PendingRequest};
 pub use session::{
@@ -24,4 +23,3 @@ pub use session::{
     APPROVAL_TOKEN_TTL_MS, APPROVAL_WAIT_MS, CAMERA_RETRY_DELAYS_MS, MAX_CAMERA_START_FAILURES,
 };
 pub use transport::{Connection, DiscoverySocket, Listener, ReadResult, TransportError};
-

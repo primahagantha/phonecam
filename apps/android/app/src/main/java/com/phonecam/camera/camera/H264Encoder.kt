@@ -271,9 +271,10 @@ class H264Encoder(
 
     fun stop() {
         running = false
-        runCatching { codec?.stop() }
+        runCatching { drainThread?.interrupt() }
         runCatching { drainThread?.join(DRAIN_JOIN_TIMEOUT_MS) }
         drainThread = null
+        runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { inputSurface?.release() }
         codec = null

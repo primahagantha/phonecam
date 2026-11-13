@@ -1,4 +1,4 @@
-﻿//! The virtual camera registrar.
+//! The virtual camera registrar.
 //!
 //! `PhoneCamVirtualCamera.dll` is a Media Foundation COM server loaded by the
 //! Windows Camera Frame Server, so it cannot be registered from inside this
@@ -65,7 +65,11 @@ impl Registrar {
             candidates.push(dir.join("phonecam-vcam-register.exe"));
             candidates.push(dir.join("resources").join("phonecam-vcam-register.exe"));
             if let Some(parent) = dir.parent() {
-                candidates.push(parent.join("virtual-camera").join("phonecam-vcam-register.exe"));
+                candidates.push(
+                    parent
+                        .join("virtual-camera")
+                        .join("phonecam-vcam-register.exe"),
+                );
                 candidates.push(
                     parent
                         .join("dist")
@@ -74,7 +78,9 @@ impl Registrar {
                 );
                 if let Some(grandparent) = parent.parent() {
                     candidates.push(
-                        grandparent.join("virtual-camera").join("phonecam-vcam-register.exe"),
+                        grandparent
+                            .join("virtual-camera")
+                            .join("phonecam-vcam-register.exe"),
                     );
                     candidates.push(
                         grandparent
@@ -93,7 +99,10 @@ impl Registrar {
             );
         }
         candidates.extend_from_slice(extra_candidates);
-        candidates.into_iter().find(|c| c.is_file()).map(|path| Self { path })
+        candidates
+            .into_iter()
+            .find(|c| c.is_file())
+            .map(|path| Self { path })
     }
 
     pub fn path(&self) -> &Path {
@@ -107,7 +116,9 @@ impl Registrar {
                 if success {
                     RegistrationState::Registered
                 } else {
-                    RegistrationState::NotRegistered { detail: output.trim().to_string() }
+                    RegistrationState::NotRegistered {
+                        detail: output.trim().to_string(),
+                    }
                 }
             }
             Err(detail) => RegistrationState::Unavailable { detail },
@@ -168,7 +179,9 @@ impl Registrar {
                 Ok((output.status.success(), text))
             }
             Ok(Err(e)) => Err(format!("could not read the registrar's output: {e}")),
-            Err(_) => Err("the registrar did not answer in 15 s; it may be waiting for elevation".into()),
+            Err(_) => {
+                Err("the registrar did not answer in 15 s; it may be waiting for elevation".into())
+            }
         }
     }
 }
@@ -188,10 +201,8 @@ mod tests {
     fn locate_finds_dist_unpacked_and_program_files_with_exe_dir_first() {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "phonecam_vcam_test_{}_{n}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("phonecam_vcam_test_{}_{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
         let dist_reg = root
@@ -248,7 +259,9 @@ mod tests {
     #[test]
     fn a_status_failure_names_its_reason() {
         // The detail is what the UI shows, so it must not be dropped.
-        let state = RegistrationState::NotRegistered { detail: "COM registration: ABSENT".into() };
+        let state = RegistrationState::NotRegistered {
+            detail: "COM registration: ABSENT".into(),
+        };
         match state {
             RegistrationState::NotRegistered { detail } => assert!(detail.contains("ABSENT")),
             other => panic!("expected NotRegistered, got {other:?}"),

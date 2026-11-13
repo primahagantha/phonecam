@@ -37,6 +37,7 @@ class PhoneCamApplication : Application() {
                 "uncaught ${error.javaClass.simpleName} on ${thread.name}: ${error.message}",
                 error,
             )
+            com.phonecam.camera.protocol.CrashReporter.recordCrash(this, thread, error)
             previous?.uncaughtException(thread, error)
         }
     }

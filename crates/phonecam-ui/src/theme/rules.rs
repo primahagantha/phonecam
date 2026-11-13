@@ -1,4 +1,4 @@
-﻿//! The rules that decide what the UI is allowed to claim.
+//! The rules that decide what the UI is allowed to claim.
 //!
 //! These are ports of the pure functions in `apps/desktop/shared/`. Each one
 //! exists because the shipped app had a specific defect where a surface asserted
@@ -91,7 +91,10 @@ pub fn summarise_status(input: &StatusInput) -> StatusSummary {
         return StatusSummary {
             tone: StatusTone::Ok,
             headline: "Live".into(),
-            detail: input.resolution.clone().or_else(|| input.device_name.clone()),
+            detail: input
+                .resolution
+                .clone()
+                .or_else(|| input.device_name.clone()),
             attention: false,
         };
     }
@@ -187,11 +190,7 @@ pub fn usb_readiness(adb_available: Option<bool>, device_count: usize) -> UsbRea
 /// a registered-but-off camera as "Off" — **not** "Not installed", because a
 /// registered camera that is switched off is installed, and the old label said
 /// otherwise on every fresh startup.
-pub fn vcam_chip_label(
-    state: Option<&str>,
-    registered: bool,
-    name: Option<&str>,
-) -> String {
+pub fn vcam_chip_label(state: Option<&str>, registered: bool, name: Option<&str>) -> String {
     if state == Some("error") {
         return "Failed to register".into();
     }
@@ -209,7 +208,11 @@ pub fn vcam_chip_label(
 /// Only while the camera is running and carrying a stream, and only when at
 /// least one app has it open: "0 apps open" beside a live picture is a
 /// non-sequitur that reads as a complaint.
-pub fn vcam_consumer_summary(state: Option<&str>, streaming: bool, consumers: u32) -> Option<String> {
+pub fn vcam_consumer_summary(
+    state: Option<&str>,
+    streaming: bool,
+    consumers: u32,
+) -> Option<String> {
     if state != Some("running") || !streaming || consumers == 0 {
         return None;
     }
@@ -307,7 +310,11 @@ pub fn compare_resolution(actual: &str, requested: &str) -> Option<ResolutionCom
     }
     let requested_label = resolution_label(requested);
     let actual_label = resolution_label(actual);
-    Some(ResolutionComparison { downgraded: actual_label != requested_label, requested_label, actual_label })
+    Some(ResolutionComparison {
+        downgraded: actual_label != requested_label,
+        requested_label,
+        actual_label,
+    })
 }
 
 /* ------------------------------------------------------------------ */
@@ -324,11 +331,12 @@ pub struct DeviceFacts {
 }
 
 pub fn reported_device_facts(model: Option<&str>, android_version: Option<i32>) -> DeviceFacts {
-    let model = model
-        .filter(|m| !m.is_empty())
-        .map(|m| m.to_string());
+    let model = model.filter(|m| !m.is_empty()).map(|m| m.to_string());
     let android_version = android_version.filter(|&v| v > 0);
-    DeviceFacts { model, android_version }
+    DeviceFacts {
+        model,
+        android_version,
+    }
 }
 
 /// True only when a phone is genuinely connected.
@@ -474,7 +482,10 @@ mod tests {
         );
 
         i.has_remembered_phone = false;
-        assert_eq!(summarise_status(&i).detail.as_deref(), Some("Pair one to get started."));
+        assert_eq!(
+            summarise_status(&i).detail.as_deref(),
+            Some("Pair one to get started.")
+        );
     }
 
     #[test]
@@ -513,10 +524,19 @@ mod tests {
 
     #[test]
     fn a_registered_but_off_camera_is_off_not_absent() {
-        assert_eq!(vcam_chip_label(Some("error"), true, None), "Failed to register");
-        assert_eq!(vcam_chip_label(Some("running"), true, Some("PhoneCam Camera")), "PhoneCam Camera");
+        assert_eq!(
+            vcam_chip_label(Some("error"), true, None),
+            "Failed to register"
+        );
+        assert_eq!(
+            vcam_chip_label(Some("running"), true, Some("PhoneCam Camera")),
+            "PhoneCam Camera"
+        );
         assert_eq!(vcam_chip_label(Some("stopped"), true, None), "Off");
-        assert_eq!(vcam_chip_label(Some("stopped"), false, None), "Not installed");
+        assert_eq!(
+            vcam_chip_label(Some("stopped"), false, None),
+            "Not installed"
+        );
         assert_eq!(vcam_chip_label(None, false, None), "Not installed");
     }
 
@@ -524,12 +544,24 @@ mod tests {
     fn consumer_counts_stay_quiet_when_they_are_not_measurements() {
         assert_eq!(vcam_consumer_summary(Some("running"), true, 0), None);
         assert_eq!(vcam_consumer_summary(Some("running"), false, 2), None);
-        assert_eq!(vcam_consumer_summary(Some("running"), true, 1), Some("1 app open".into()));
-        assert_eq!(vcam_consumer_summary(Some("running"), true, 3), Some("3 apps open".into()));
+        assert_eq!(
+            vcam_consumer_summary(Some("running"), true, 1),
+            Some("1 app open".into())
+        );
+        assert_eq!(
+            vcam_consumer_summary(Some("running"), true, 3),
+            Some("3 apps open".into())
+        );
 
         assert_eq!(vcam_usage_detail(Some("running"), false, 0), None);
-        assert_eq!(vcam_usage_detail(Some("running"), true, 0), Some("no one using it".into()));
-        assert_eq!(vcam_usage_detail(Some("running"), true, 2), Some("2 using it".into()));
+        assert_eq!(
+            vcam_usage_detail(Some("running"), true, 0),
+            Some("no one using it".into())
+        );
+        assert_eq!(
+            vcam_usage_detail(Some("running"), true, 2),
+            Some("2 using it".into())
+        );
         assert_eq!(vcam_usage_detail(Some("stopped"), true, 0), None);
     }
 
@@ -548,7 +580,10 @@ mod tests {
         stats.fps = 0.0;
         stats.bitrate = 0;
         let r = throughput_readout(Some(&stats), "streaming", EMPTY_VALUE);
-        assert_eq!(r.fps, "0.0", "a running stream at zero fps is a measurement, not unknown");
+        assert_eq!(
+            r.fps, "0.0",
+            "a running stream at zero fps is a measurement, not unknown"
+        );
         assert_eq!(r.bitrate, "0.0 Mbps");
     }
 
@@ -563,7 +598,10 @@ mod tests {
     #[test]
     fn a_sideways_sensor_is_not_a_downgrade() {
         let c = compare_resolution("1080x1920", "1920x1080").unwrap();
-        assert!(!c.downgraded, "the same 1080p frame in the other orientation");
+        assert!(
+            !c.downgraded,
+            "the same 1080p frame in the other orientation"
+        );
         assert_eq!(c.requested_label, "1080p");
         assert_eq!(c.actual_label, "1080p");
     }
@@ -618,15 +656,20 @@ mod tests {
     #[test]
     fn the_start_cooldown_covers_the_phase_lag() {
         assert_eq!(can_start_stream("connected", 0, 0), StartRefusal::Allowed);
-        assert_eq!(can_start_stream("streaming", 0, 0), StartRefusal::AlreadyStreaming);
-        assert_eq!(can_start_stream("connected", 1000, 2000), StartRefusal::StartInFlight);
+        assert_eq!(
+            can_start_stream("streaming", 0, 0),
+            StartRefusal::AlreadyStreaming
+        );
+        assert_eq!(
+            can_start_stream("connected", 1000, 2000),
+            StartRefusal::StartInFlight
+        );
         // At exactly 2500ms the boundary is `<`, so a start is allowed.
-        assert_eq!(can_start_stream("connected", 1000, 3500), StartRefusal::Allowed);
+        assert_eq!(
+            can_start_stream("connected", 1000, 3500),
+            StartRefusal::Allowed
+        );
         // An error is always retryable, so the Retry button is never inert.
         assert_eq!(can_start_stream("error", 5000, 5001), StartRefusal::Allowed);
     }
 }
-
-
-
-

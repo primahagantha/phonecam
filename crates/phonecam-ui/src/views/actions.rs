@@ -2,19 +2,22 @@
 
 use gpui::KeyBinding;
 
-gpui::actions!(phonecam, [
-    ToggleStream,
-    ToggleFocusPreview,
-    ExitFocusPreview,
-    SelectTabSetup,
-    SelectTabCapture,
-    SelectTabPublish,
-    SelectTabDiagnostics,
-    SelectTabStream,
-    SelectTabVideo,
-    TabNext,
-    TabPrev,
-]);
+gpui::actions!(
+    phonecam,
+    [
+        ToggleStream,
+        ToggleFocusPreview,
+        ExitFocusPreview,
+        SelectTabSetup,
+        SelectTabCapture,
+        SelectTabPublish,
+        SelectTabDiagnostics,
+        SelectTabStream,
+        SelectTabVideo,
+        TabNext,
+        TabPrev,
+    ]
+);
 
 /// The standard keybindings for PhoneCam.
 ///

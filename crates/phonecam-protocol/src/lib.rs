@@ -1,4 +1,4 @@
-﻿//! PhoneCam wire protocol v1 â€” the frozen contract.
+//! PhoneCam wire protocol v1 â€” the frozen contract.
 //!
 //! This is the Rust half of `docs/protocol.md`. It is byte-identical to the
 //! TypeScript (`packages/shared-types/src/protocol.ts`), Kotlin
@@ -25,8 +25,8 @@ pub use framing::{
 pub use messages::{
     AdbDevice, AuthMode, CameraCapability, CameraFacing, CapabilitiesPayload, ChannelRole,
     CommandReply, ConnectionStats, CoreError, CoreState, CoreToDesktop, DesktopBeacon,
-    DesktopToCore, DesktopToPhone, DeviceCapabilities, DeviceIdentity, DiscoveryProbe,
-    DiscoveryMessage, FpsValue, HandshakeStatus, LogLevel, NearbyPhone, OutputTransform,
+    DesktopToCore, DesktopToPhone, DeviceCapabilities, DeviceIdentity, DiscoveryMessage,
+    DiscoveryProbe, FpsValue, HandshakeStatus, LogLevel, NearbyPhone, OutputTransform,
     PairingStatus, PhoneBeacon, PhoneState, PhoneStats, PhoneToDesktop, QrPayload, QualityMode,
     ScreenMode, StreamPhase, ThermalState, TransportKind, UsbStatus, VcamState, VcamStatus,
     VideoCodec, VideoFlags,
@@ -159,11 +159,13 @@ pub fn verify_pair_request(
     let expected_with = device_secret_hex
         .and_then(|s| pair_request_auth(device_id, Some(s), server_nonce, client_nonce).ok());
 
-    compare_constant_time(expected_without.as_deref().unwrap_or("").as_bytes(), presented.as_bytes())
-        || expected_with
-            .as_deref()
-            .map(|e| compare_constant_time(e.as_bytes(), presented.as_bytes()))
-            .unwrap_or(false)
+    compare_constant_time(
+        expected_without.as_deref().unwrap_or("").as_bytes(),
+        presented.as_bytes(),
+    ) || expected_with
+        .as_deref()
+        .map(|e| compare_constant_time(e.as_bytes(), presented.as_bytes()))
+        .unwrap_or(false)
 }
 
 /// Verifies an auth-mode-2 device-secret signature. Constant-time.
@@ -179,8 +181,10 @@ pub fn verify_device_secret(
             // `presented` is the mac alone, which is what follows the colon on
             // the wire. Comparing it against the whole `deviceId:mac` string
             // fails for every phone, because the id is never in the digest.
-            let expected_mac =
-                expected.rsplit_once(':').map(|(_, mac)| mac).unwrap_or(&expected);
+            let expected_mac = expected
+                .rsplit_once(':')
+                .map(|(_, mac)| mac)
+                .unwrap_or(&expected);
             compare_constant_time(expected_mac.as_bytes(), presented_mac.as_bytes())
         }
         Err(_) => false,
@@ -238,11 +242,15 @@ fn redact_runs(message: &str) -> String {
         // tail of a secret rather than hiding it. Over-redacting prose costs a
         // word; under-redacting a secret costs the secret.
         if run >= 32 {
-            out.push_str(&"[redacted]");
+            out.push_str("[redacted]");
             i += run;
         } else {
             // Copy one UTF-8 character, not one byte, so non-ASCII survives.
-            let ch_len = message[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            let ch_len = message[i..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
             out.push_str(&message[i..i + ch_len]);
             i += ch_len;
         }
@@ -413,7 +421,10 @@ mod tests {
         };
         let bytes = write_video_packet(&header, &payload).unwrap();
         // totalLen counts the header + payload, not itself.
-        assert_eq!(&bytes[0..4], &((VIDEO_HEADER_SIZE + payload.len()) as u32).to_be_bytes());
+        assert_eq!(
+            &bytes[0..4],
+            &((VIDEO_HEADER_SIZE + payload.len()) as u32).to_be_bytes()
+        );
         let (parsed, body) = VideoPacketHeader::parse(&bytes).unwrap();
         assert_eq!(parsed.frame_id, 7);
         assert_eq!(parsed.pts_us, 1_234_567);
@@ -428,13 +439,15 @@ mod tests {
     fn device_secret_auth_is_compatible() {
         let server_nonce = [0x11u8; 32];
         let secret = "0f".repeat(32);
-        let auth = device_secret_auth("android-a31f92", &secret, &server_nonce, 1700000000000)
-            .unwrap();
+        let auth =
+            device_secret_auth("android-a31f92", &secret, &server_nonce, 1700000000000).unwrap();
         assert!(auth.starts_with("android-a31f92:"));
         let (id, mac) = auth.split_once(':').unwrap();
         assert_eq!(id, "android-a31f92");
         assert_eq!(mac.len(), 64, "hmac is 32 bytes hex-encoded");
-        assert!(mac.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(mac
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]
@@ -452,7 +465,13 @@ mod tests {
         let server_nonce = [0x44u8; 32];
         let secret = "ab".repeat(32);
         let a = pair_request_auth("d2", Some(&secret), &server_nonce, 9).unwrap();
-        assert!(verify_pair_request("d2", Some(&secret), &server_nonce, 9, &a));
+        assert!(verify_pair_request(
+            "d2",
+            Some(&secret),
+            &server_nonce,
+            9,
+            &a
+        ));
         // The secret-less form must NOT verify when the phone signed with a secret.
         assert!(!verify_pair_request("d2", None, &server_nonce, 9, &a));
     }
@@ -475,7 +494,10 @@ mod tests {
         let m = hmac_message(&[0xAAu8; 32], 0x0102_0304_0506_0708);
         assert_eq!(m.len(), 40);
         assert_eq!(&m[0..32], &[0xAAu8; 32][..]);
-        assert_eq!(&m[32..40], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        assert_eq!(
+            &m[32..40],
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
     }
 
     #[test]
@@ -520,7 +542,10 @@ mod tests {
 
     #[test]
     fn redaction_is_utf8_safe() {
-        assert_eq!(redact("kamera âœ“ 0123456789abcdef0123456789abcdef"), "kamera âœ“ [redacted]");
+        assert_eq!(
+            redact("kamera âœ“ 0123456789abcdef0123456789abcdef"),
+            "kamera âœ“ [redacted]"
+        );
     }
 
     #[test]
@@ -569,6 +594,3 @@ mod tests {
         ));
     }
 }
-
-
-

@@ -55,6 +55,7 @@ fun CameraPreview(
         AndroidView(
             modifier = Modifier.matchParentSize(),
             factory = { viewContext ->
+                var currentSurface: Surface? = null
                 TextureView(viewContext).apply {
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(
@@ -63,7 +64,10 @@ fun CameraPreview(
                             height: Int,
                         ) {
                             setTransform(previewTransform(orientationDegrees, mirror, width, height))
-                            onSurfaceAvailable(Surface(texture))
+                            runCatching { currentSurface?.release() }
+                            val surf = Surface(texture)
+                            currentSurface = surf
+                            onSurfaceAvailable(surf)
                         }
 
                         override fun onSurfaceTextureSizeChanged(
@@ -76,6 +80,8 @@ fun CameraPreview(
 
                         override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
                             onSurfaceAvailable(null)
+                            runCatching { currentSurface?.release() }
+                            currentSurface = null
                             return true
                         }
 

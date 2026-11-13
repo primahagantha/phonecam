@@ -151,6 +151,18 @@ fun DiagnosticsCard(
                 TextButton(onClick = { shareReport(context, buildReport()) }) {
                     Text(stringResource(R.string.action_send_report))
                 }
+                TextButton(onClick = {
+                    val reportText = buildReport()
+                    copyToClipboard(context, listOf(reportText))
+                    val intent = com.phonecam.camera.protocol.CrashReporter.buildGitHubIssueIntent(
+                        context = context,
+                        title = "[Bug] Issue report from ${android.os.Build.MODEL}",
+                        bodyMarkdown = "### Description\n(Describe what happened)\n\n### System Diagnostics\n```\n$reportText\n```",
+                    )
+                    runCatching { context.startActivity(intent) }
+                }) {
+                    Text("Report to GitHub")
+                }
             }
             if (reportCopied) {
                 Text(

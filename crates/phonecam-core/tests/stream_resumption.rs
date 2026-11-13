@@ -1,9 +1,9 @@
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 use phonecam_core::session::{
     CameraRetryTracker, SessionState, CAMERA_RETRY_DELAYS_MS, MAX_CAMERA_START_FAILURES,
 };
 use phonecam_protocol::StreamPhase;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 #[test]
 fn test_stream_wanted_lifecycle() {

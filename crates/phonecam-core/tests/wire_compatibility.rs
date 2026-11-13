@@ -1,4 +1,4 @@
-﻿//! End-to-end wire compatibility.
+//! End-to-end wire compatibility.
 //!
 //! These tests speak the **phone's** side of the protocol over a real loopback
 //! socket: they frame a greeting read, a handshake, and control/video traffic
@@ -29,7 +29,9 @@ struct PhoneClient {
 impl PhoneClient {
     fn connect(port: u16) -> Self {
         let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         Self { stream }
     }
 
@@ -128,7 +130,12 @@ impl Server {
             });
         }
 
-        Self { port, session, pairing, registry }
+        Self {
+            port,
+            session,
+            pairing,
+            registry,
+        }
     }
 }
 
@@ -152,13 +159,22 @@ fn a_qr_pairing_completes_and_returns_a_device_secret() {
 
     // The body is exactly what the phone persists (docs Â§4.2 step 4).
     let device_id = response.json["deviceId"].as_str().expect("deviceId");
-    let secret = response.json["deviceSecret"].as_str().expect("deviceSecret");
-    assert!(device_id.starts_with("android-"), "device id was {device_id}");
+    let secret = response.json["deviceSecret"]
+        .as_str()
+        .expect("deviceSecret");
+    assert!(
+        device_id.starts_with("android-"),
+        "device id was {device_id}"
+    );
     assert_eq!(secret.len(), 64, "the secret is 32 bytes hex-encoded");
     assert_eq!(response.json["serverId"], "pc-7f3c1a9e");
 
     // The server recorded it, and the token is spent.
-    assert!(server.registry.lock().iter().any(|r| r.device_id == device_id));
+    assert!(server
+        .registry
+        .lock()
+        .iter()
+        .any(|r| r.device_id == device_id));
     assert!(
         !server.pairing.lock().is_open(1_000_000),
         "the QR token must be single use"
@@ -200,7 +216,11 @@ fn a_reconnect_with_the_device_secret_works_and_a_replay_does_not() {
     // refused, and a session that has not recorded the id would make the same
     // phone look like a different one.
     for _ in 0..200 {
-        let stored = server.registry.lock().iter().any(|r| r.device_id == device_id);
+        let stored = server
+            .registry
+            .lock()
+            .iter()
+            .any(|r| r.device_id == device_id);
         let on_session = *server.session.device_id.lock() == device_id;
         if stored && on_session {
             break;
@@ -208,17 +228,26 @@ fn a_reconnect_with_the_device_secret_works_and_a_replay_does_not() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        server.registry.lock().iter().any(|r| r.device_id == device_id),
+        server
+            .registry
+            .lock()
+            .iter()
+            .any(|r| r.device_id == device_id),
         "the paired device must be stored before it can reconnect"
     );
 
     let mut second = PhoneClient::connect(server.port);
     let greeting = second.read_greeting();
-    let auth = phonecam_protocol::device_secret_auth(&device_id, &secret, &greeting.server_nonce, 200)
-        .unwrap();
+    let auth =
+        phonecam_protocol::device_secret_auth(&device_id, &secret, &greeting.server_nonce, 200)
+            .unwrap();
     second.send_handshake(ChannelRole::Control, AuthMode::DeviceSecret, 200, &auth);
     let response = second.read_response();
-    assert_eq!(response.status, HandshakeStatus::Ok, "a paired phone must reconnect");
+    assert_eq!(
+        response.status,
+        HandshakeStatus::Ok,
+        "a paired phone must reconnect"
+    );
     drop(second);
 
     // The same nonce again is a replay, and must be refused even though the HMAC
@@ -226,8 +255,9 @@ fn a_reconnect_with_the_device_secret_works_and_a_replay_does_not() {
     std::thread::sleep(Duration::from_millis(100));
     let mut third = PhoneClient::connect(server.port);
     let greeting = third.read_greeting();
-    let auth = phonecam_protocol::device_secret_auth(&device_id, &secret, &greeting.server_nonce, 200)
-        .unwrap();
+    let auth =
+        phonecam_protocol::device_secret_auth(&device_id, &secret, &greeting.server_nonce, 200)
+            .unwrap();
     third.send_handshake(ChannelRole::Control, AuthMode::DeviceSecret, 200, &auth);
     assert_eq!(third.read_response().status, HandshakeStatus::Denied);
 }
@@ -247,8 +277,9 @@ fn a_wrong_device_secret_is_refused() {
     let mut second = PhoneClient::connect(server.port);
     let greeting = second.read_greeting();
     let wrong = "00".repeat(32);
-    let auth = phonecam_protocol::device_secret_auth(&device_id, &wrong, &greeting.server_nonce, 50)
-        .unwrap();
+    let auth =
+        phonecam_protocol::device_secret_auth(&device_id, &wrong, &greeting.server_nonce, 50)
+            .unwrap();
     second.send_handshake(ChannelRole::Control, AuthMode::DeviceSecret, 50, &auth);
     assert_eq!(second.read_response().status, HandshakeStatus::Denied);
 }
@@ -325,7 +356,10 @@ fn a_version_mismatch_is_named() {
         client_nonce: 1,
         auth: "x".into(),
     };
-    phone.stream.write_all(&handshake.to_bytes().unwrap()).unwrap();
+    phone
+        .stream
+        .write_all(&handshake.to_bytes().unwrap())
+        .unwrap();
     let response = phone.read_response();
     assert_eq!(response.status, HandshakeStatus::VersionMismatch);
     assert!(
@@ -527,11 +561,6 @@ fn write_server_response_is_readable_by_the_phone() {
     assert_eq!(parsed.json["deviceId"], "android-a31f92");
 }
 
-
-
-
-
-
 #[test]
 fn hmac_round_trip_self_check() {
     let nonce = vec![0x11u8; 32];
@@ -542,4 +571,3 @@ fn hmac_round_trip_self_check() {
     let ok = phonecam_protocol::verify_device_secret("android-a", &secret, &nonce, 200, parts[1]);
     assert!(ok, "auth={auth}");
 }
-

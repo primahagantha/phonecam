@@ -1,4 +1,4 @@
-﻿//! PhoneCam: one process.
+//! PhoneCam: one process.
 //!
 //! The Electron build was three processes and two decodes: a renderer decoding
 //! H.264 with WebCodecs for the preview, a C++ service decoding the same stream
@@ -270,18 +270,18 @@ fn start_effect_pump(
     runtime: std::sync::Arc<Runtime>,
     hwnd: Option<isize>,
 ) {
-    cx.spawn(async move |cx| {
-        loop {
-            cx.background_executor().timer(Duration::from_millis(30)).await;
+    cx.spawn(async move |cx| loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(30))
+            .await;
 
-            let effects = phonecam_ui::drain_effects();
-            if effects.is_empty() {
-                continue;
-            }
+        let effects = phonecam_ui::drain_effects();
+        if effects.is_empty() {
+            continue;
+        }
 
-            for effect in effects {
-                apply_effect(&runtime, effect, &window, &view, hwnd, cx);
-            }
+        for effect in effects {
+            apply_effect(&runtime, effect, &window, &view, hwnd, cx);
         }
     })
     .detach();
@@ -521,7 +521,8 @@ fn apply_effect(
                 Ok(path) => {
                     runtime.log_info(&format!("diagnostics exported to {}", path.display()));
                     let path_str = path.to_string_lossy().to_string();
-                    let _ = cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(path_str)));
+                    let _ =
+                        cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(path_str)));
                     runtime.state.lock().set_toast(
                         format!("Diagnostics exported to {}", path.display()),
                         Timing::TOAST_MS as i64,
@@ -549,10 +550,7 @@ fn apply_effect(
                         Timing::TOAST_MS as i64,
                     );
                 } else {
-                    state.set_toast(
-                        "Could not copy diagnostics report",
-                        Timing::TOAST_MS as i64,
-                    );
+                    state.set_toast("Could not copy diagnostics report", Timing::TOAST_MS as i64);
                 }
             }
             runtime.bump_state_version();
@@ -722,24 +720,24 @@ fn start_tray_pump(
     view: gpui::Entity<AppView>,
     runtime: std::sync::Arc<Runtime>,
 ) {
-    cx.spawn(async move |cx| {
-        loop {
-            cx.background_executor().timer(Duration::from_millis(100)).await;
+    cx.spawn(async move |cx| loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
 
-            let commands: Vec<tray::TrayCommand> = {
-                let tray = runtime.tray.lock();
-                match tray.as_ref() {
-                    Some(tray) => tray.drain(),
-                    None => Vec::new(),
-                }
-            };
-            if commands.is_empty() {
-                continue;
+        let commands: Vec<tray::TrayCommand> = {
+            let tray = runtime.tray.lock();
+            match tray.as_ref() {
+                Some(tray) => tray.drain(),
+                None => Vec::new(),
             }
+        };
+        if commands.is_empty() {
+            continue;
+        }
 
-            for command in commands {
-                handle_tray_command(command, &window, &view, &runtime, cx);
-            }
+        for command in commands {
+            handle_tray_command(command, &window, &view, &runtime, cx);
         }
     })
     .detach();
@@ -840,15 +838,3 @@ mod tests {
         assert!(!bindings.is_empty());
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-

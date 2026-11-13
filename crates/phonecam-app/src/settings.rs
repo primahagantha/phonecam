@@ -1,4 +1,4 @@
-﻿//! Settings persistence.
+//! Settings persistence.
 //!
 //! The settings file is treated as **untrusted input**. It is user-writable JSON
 //! that a previous version, a partial write or a hand edit can leave malformed,
@@ -117,7 +117,10 @@ fn coerce(file: SettingsFile) -> Settings {
             .resolution
             .filter(|r| r == "auto" || phonecam_protocol::parse_resolution(r).is_some())
             .unwrap_or(defaults.resolution),
-        fps: file.fps.filter(|&f| f == 0 || (1..=120).contains(&f)).unwrap_or(defaults.fps),
+        fps: file
+            .fps
+            .filter(|&f| f == 0 || (1..=120).contains(&f))
+            .unwrap_or(defaults.fps),
         bitrate: file
             .bitrate
             .filter(|&b| (100_000..=50_000_000).contains(&b))
@@ -249,7 +252,10 @@ mod tests {
     #[test]
     fn an_odd_output_width_is_refused() {
         let settings = parse(r#"{"output_width": 1921}"#);
-        assert_eq!(settings.output_width, 1920, "NV12 has no layout for an odd width");
+        assert_eq!(
+            settings.output_width, 1920,
+            "NV12 has no layout for an odd width"
+        );
     }
 
     #[test]
@@ -287,17 +293,31 @@ mod tests {
 
     #[test]
     fn enums_parse_from_their_wire_strings() {
-        assert_eq!(parse(r#"{"quality_mode": "manual"}"#).quality_mode, QualityMode::Manual);
-        assert_eq!(parse(r#"{"screen_mode": "black"}"#).screen_mode, ScreenMode::Black);
-        assert_eq!(parse(r#"{"log_level": "debug"}"#).log_level, LogLevel::Debug);
+        assert_eq!(
+            parse(r#"{"quality_mode": "manual"}"#).quality_mode,
+            QualityMode::Manual
+        );
+        assert_eq!(
+            parse(r#"{"screen_mode": "black"}"#).screen_mode,
+            ScreenMode::Black
+        );
+        assert_eq!(
+            parse(r#"{"log_level": "debug"}"#).log_level,
+            LogLevel::Debug
+        );
         // An unknown string is not an error.
-        assert_eq!(parse(r#"{"quality_mode": "sideways"}"#).quality_mode, QualityMode::Auto);
+        assert_eq!(
+            parse(r#"{"quality_mode": "sideways"}"#).quality_mode,
+            QualityMode::Auto
+        );
     }
 
     #[test]
     fn the_last_device_id_survives_and_empty_is_none() {
         assert_eq!(
-            parse(r#"{"last_device_id": "android-a31f92"}"#).last_device_id.as_deref(),
+            parse(r#"{"last_device_id": "android-a31f92"}"#)
+                .last_device_id
+                .as_deref(),
             Some("android-a31f92")
         );
         assert_eq!(parse(r#"{"last_device_id": ""}"#).last_device_id, None);
@@ -343,7 +363,10 @@ impl DesktopLog {
     /// A log beside the settings file.
     pub fn new() -> Self {
         let path = settings_path().with_file_name("desktop.log");
-        Self { path, written: std::sync::atomic::AtomicU64::new(0) }
+        Self {
+            path,
+            written: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     pub fn path(&self) -> &std::path::Path {
@@ -362,7 +385,8 @@ impl DesktopLog {
         let count = self.written.load(std::sync::atomic::Ordering::Relaxed);
         if count == 0 {
             if let Ok(meta) = std::fs::metadata(&self.path) {
-                self.written.store(meta.len(), std::sync::atomic::Ordering::Relaxed);
+                self.written
+                    .store(meta.len(), std::sync::atomic::Ordering::Relaxed);
             }
         }
         if self.written.load(std::sync::atomic::Ordering::Relaxed) > LIMIT {
@@ -513,11 +537,11 @@ pub fn save_devices(devices: &[StoredDevice]) -> std::io::Result<()> {
     if let Some(parent) = devices_path().parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text = serde_json::to_string_pretty(&DevicesFile { devices: devices.to_vec() })?;
+    let text = serde_json::to_string_pretty(&DevicesFile {
+        devices: devices.to_vec(),
+    })?;
     let temp = devices_path().with_extension("json.tmp");
     std::fs::write(&temp, text)?;
     std::fs::rename(&temp, devices_path())?;
     Ok(())
 }
-
-

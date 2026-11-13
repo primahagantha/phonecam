@@ -29,7 +29,10 @@ pub struct ServerGreeting {
 /// Writes the 40-byte greeting: `magic, version, status, u16 reserved, nonce`.
 pub fn write_server_greeting(status: HandshakeStatus, server_nonce: &[u8]) -> Result<Vec<u8>> {
     if server_nonce.len() != 32 {
-        return Err(ProtocolError::TooShort { need: 32, have: server_nonce.len() });
+        return Err(ProtocolError::TooShort {
+            need: 32,
+            have: server_nonce.len(),
+        });
     }
     let mut buf = Vec::with_capacity(SERVER_GREETING_SIZE);
     buf.extend_from_slice(&MAGIC_BYTES);
@@ -77,7 +80,10 @@ impl ClientHandshake {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let auth = self.auth.as_bytes();
         if auth.len() > u16::MAX as usize {
-            return Err(ProtocolError::Oversized { len: auth.len(), limit: u16::MAX as usize });
+            return Err(ProtocolError::Oversized {
+                len: auth.len(),
+                limit: u16::MAX as usize,
+            });
         }
         let mut buf = Vec::with_capacity(CLIENT_HANDSHAKE_SIZE + auth.len());
         buf.extend_from_slice(&MAGIC_BYTES);
@@ -108,8 +114,9 @@ impl ClientHandshake {
                 have: bytes.len(),
             });
         }
-        let auth = std::str::from_utf8(&bytes[CLIENT_HANDSHAKE_SIZE..CLIENT_HANDSHAKE_SIZE + auth_len])
-            .map_err(|_| ProtocolError::InvalidUtf8)?;
+        let auth =
+            std::str::from_utf8(&bytes[CLIENT_HANDSHAKE_SIZE..CLIENT_HANDSHAKE_SIZE + auth_len])
+                .map_err(|_| ProtocolError::InvalidUtf8)?;
         Ok(Self {
             proto_version: bytes[4],
             role: ChannelRole::from_wire(bytes[5]),
@@ -142,7 +149,10 @@ pub fn write_server_response(
 ) -> Result<Vec<u8>> {
     let json = serde_json::to_vec(body)?;
     if json.len() > MAX_CONTROL_JSON {
-        return Err(ProtocolError::Oversized { len: json.len(), limit: MAX_CONTROL_JSON });
+        return Err(ProtocolError::Oversized {
+            len: json.len(),
+            limit: MAX_CONTROL_JSON,
+        });
     }
     let mut buf = Vec::with_capacity(SERVER_RESPONSE_SIZE + json.len());
     buf.extend_from_slice(&MAGIC_BYTES);
@@ -169,7 +179,10 @@ impl ServerHandshakeResponse {
         require_magic(bytes)?;
         let json_len = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as usize;
         if json_len > MAX_CONTROL_JSON {
-            return Err(ProtocolError::Oversized { len: json_len, limit: MAX_CONTROL_JSON });
+            return Err(ProtocolError::Oversized {
+                len: json_len,
+                limit: MAX_CONTROL_JSON,
+            });
         }
         if bytes.len() < SERVER_RESPONSE_SIZE + json_len {
             return Err(ProtocolError::TooShort {
@@ -199,7 +212,10 @@ impl ServerHandshakeResponse {
 pub fn write_control_frame(message: &impl Serialize) -> Result<Vec<u8>> {
     let json = serde_json::to_vec(message)?;
     if json.len() > MAX_CONTROL_JSON {
-        return Err(ProtocolError::Oversized { len: json.len(), limit: MAX_CONTROL_JSON });
+        return Err(ProtocolError::Oversized {
+            len: json.len(),
+            limit: MAX_CONTROL_JSON,
+        });
     }
     let mut buf = Vec::with_capacity(4 + json.len());
     buf.extend_from_slice(&(json.len() as u32).to_be_bytes());
@@ -231,7 +247,10 @@ impl VideoPacketHeader {
     /// header plus the payload slice, without copying the payload.
     pub fn parse(frame: &[u8]) -> Result<(Self, &[u8])> {
         if frame.len() < 4 {
-            return Err(ProtocolError::TooShort { need: 4, have: frame.len() });
+            return Err(ProtocolError::TooShort {
+                need: 4,
+                have: frame.len(),
+            });
         }
         let total_len = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
         if total_len > MAX_VIDEO_PAYLOAD + VIDEO_HEADER_SIZE {
@@ -241,11 +260,17 @@ impl VideoPacketHeader {
             });
         }
         if frame.len() < 4 + total_len {
-            return Err(ProtocolError::TooShort { need: 4 + total_len, have: frame.len() });
+            return Err(ProtocolError::TooShort {
+                need: 4 + total_len,
+                have: frame.len(),
+            });
         }
         let h = &frame[4..];
         if h.len() < VIDEO_HEADER_SIZE {
-            return Err(ProtocolError::TooShort { need: VIDEO_HEADER_SIZE, have: h.len() });
+            return Err(ProtocolError::TooShort {
+                need: VIDEO_HEADER_SIZE,
+                have: h.len(),
+            });
         }
         let payload_len = u32::from_be_bytes([h[16], h[17], h[18], h[19]]);
         if payload_len as usize + VIDEO_HEADER_SIZE != total_len {
@@ -270,7 +295,10 @@ pub fn write_video_packet(header: &VideoPacketHeader, payload: &[u8]) -> Result<
         return Err(ProtocolError::MalformedAuth);
     }
     if payload.len() > MAX_VIDEO_PAYLOAD {
-        return Err(ProtocolError::Oversized { len: payload.len(), limit: MAX_VIDEO_PAYLOAD });
+        return Err(ProtocolError::Oversized {
+            len: payload.len(),
+            limit: MAX_VIDEO_PAYLOAD,
+        });
     }
     let total = VIDEO_HEADER_SIZE + payload.len();
     let mut buf = Vec::with_capacity(4 + total);
@@ -404,7 +432,10 @@ mod tests {
         )
         .unwrap();
         b[20] = 99;
-        assert!(matches!(VideoPacketHeader::parse(&b), Err(ProtocolError::MalformedAuth)));
+        assert!(matches!(
+            VideoPacketHeader::parse(&b),
+            Err(ProtocolError::MalformedAuth)
+        ));
     }
 
     #[test]

@@ -129,7 +129,8 @@ impl FramePacer {
         // Re-anchor rather than burst-flush.
         let backward_threshold = Duration::from_micros(250_000);
 
-        if target > now + forward_threshold || (now > target && (now - target) > backward_threshold) {
+        if target > now + forward_threshold || (now > target && (now - target) > backward_threshold)
+        {
             self.anchor_at = Some(now);
             self.anchor_pts_us = pts_us;
             self.last_publish_at = Some(now);

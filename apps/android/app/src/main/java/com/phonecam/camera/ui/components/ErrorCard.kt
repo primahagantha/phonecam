@@ -45,40 +45,43 @@ fun ErrorCard(
     modifier: Modifier = Modifier,
     secondaryLabel: String? = null,
     onSecondary: (() -> Unit)? = null,
+    onReportIssue: (() -> Unit)? = null,
 ) {
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(PhoneCamShapes.Panel)
-            .background(MaterialTheme.colorScheme.errorContainer)
-            .border(1.dp, MaterialTheme.colorScheme.error, PhoneCamShapes.Panel)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.7f), PhoneCamShapes.Panel)
             .padding(16.dp)
             .semantics { liveRegion = LiveRegionMode.Polite },
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            text = stringResource(R.string.banner_error_title),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onErrorContainer,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = stringResource(R.string.banner_error_title),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         Text(
             text = message,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onErrorContainer,
+            color = MaterialTheme.colorScheme.onSurface,
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // The actions take the container's own on-colour rather than the
-            // app accent. A TextButton defaults to `primary`, which would put the
-            // green "Try again" on the red failure banner: a second colour on a
-            // surface that is already saying something with colour.
             TextButton(
                 onClick = onRetry,
                 colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    contentColor = MaterialTheme.colorScheme.primary,
                 ),
             ) {
                 Text(stringResource(R.string.action_retry))
@@ -87,10 +90,20 @@ fun ErrorCard(
                 TextButton(
                     onClick = onSecondary,
                     colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     ),
                 ) {
                     Text(secondaryLabel)
+                }
+            }
+            if (onReportIssue != null) {
+                TextButton(
+                    onClick = onReportIssue,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Text("Report to GitHub")
                 }
             }
         }

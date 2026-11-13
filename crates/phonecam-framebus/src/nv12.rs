@@ -140,10 +140,18 @@ fn scale_lut(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], tw: usize, th: us
                 let mut d = dst_ptr.add(dst_row);
                 let mut p = 0usize;
                 while p + 4 <= pairs {
-                    let v0 = std::ptr::read_unaligned(s.add(*uv_lut.get_unchecked(p) as usize) as *const u16);
-                    let v1 = std::ptr::read_unaligned(s.add(*uv_lut.get_unchecked(p + 1) as usize) as *const u16);
-                    let v2 = std::ptr::read_unaligned(s.add(*uv_lut.get_unchecked(p + 2) as usize) as *const u16);
-                    let v3 = std::ptr::read_unaligned(s.add(*uv_lut.get_unchecked(p + 3) as usize) as *const u16);
+                    let v0 = std::ptr::read_unaligned(
+                        s.add(*uv_lut.get_unchecked(p) as usize) as *const u16
+                    );
+                    let v1 = std::ptr::read_unaligned(
+                        s.add(*uv_lut.get_unchecked(p + 1) as usize) as *const u16
+                    );
+                    let v2 = std::ptr::read_unaligned(
+                        s.add(*uv_lut.get_unchecked(p + 2) as usize) as *const u16
+                    );
+                    let v3 = std::ptr::read_unaligned(
+                        s.add(*uv_lut.get_unchecked(p + 3) as usize) as *const u16
+                    );
                     std::ptr::write_unaligned(d as *mut u16, v0);
                     std::ptr::write_unaligned(d.add(2) as *mut u16, v1);
                     std::ptr::write_unaligned(d.add(4) as *mut u16, v2);
@@ -152,7 +160,9 @@ fn scale_lut(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], tw: usize, th: us
                     p += 4;
                 }
                 while p < pairs {
-                    let v = std::ptr::read_unaligned(s.add(*uv_lut.get_unchecked(p) as usize) as *const u16);
+                    let v = std::ptr::read_unaligned(
+                        s.add(*uv_lut.get_unchecked(p) as usize) as *const u16
+                    );
                     std::ptr::write_unaligned(d as *mut u16, v);
                     d = d.add(2);
                     p += 1;
@@ -261,7 +271,14 @@ mod tests {
         let (w, h) = (4usize, 4usize);
         let src = pattern(w, h);
         let mut dst = vec![0u8; (w * 2) * (h * 2) * 3 / 2];
-        scale(&src, w as u32, h as u32, &mut dst, (w * 2) as u32, (h * 2) as u32);
+        scale(
+            &src,
+            w as u32,
+            h as u32,
+            &mut dst,
+            (w * 2) as u32,
+            (h * 2) as u32,
+        );
 
         // Nearest-neighbour: destination (x,y) samples source (x/2, y/2).
         for y in 0..h * 2 {
@@ -276,11 +293,21 @@ mod tests {
         let (w, h) = (64usize, 32usize);
         let src = pattern(w, h);
         let mut dst = vec![0u8; (w / 2) * (h / 2) * 3 / 2];
-        scale(&src, w as u32, h as u32, &mut dst, (w / 2) as u32, (h / 2) as u32);
+        scale(
+            &src,
+            w as u32,
+            h as u32,
+            &mut dst,
+            (w / 2) as u32,
+            (h / 2) as u32,
+        );
         // Every sampled index must come from inside the source luma plane.
         for y in 0..h / 2 {
             for x in 0..w / 2 {
-                assert_eq!(dst[y * (w / 2) + x], src[((y * h) / (h / 2)) * w + (x * w) / (w / 2)]);
+                assert_eq!(
+                    dst[y * (w / 2) + x],
+                    src[((y * h) / (h / 2)) * w + (x * w) / (w / 2)]
+                );
             }
         }
     }
@@ -360,7 +387,14 @@ mod tests {
             let mut got = vec![0u8; expected_len];
             let mut want = vec![0u8; expected_len];
             scale(&src, sw, sh, &mut got, tw, th);
-            scale_scalar(&src, sw as usize, sh as usize, &mut want, tw as usize, th as usize);
+            scale_scalar(
+                &src,
+                sw as usize,
+                sh as usize,
+                &mut want,
+                tw as usize,
+                th as usize,
+            );
             assert_eq!(got, want, "mismatch for {sw}x{sh} -> {tw}x{th}");
         }
     }
@@ -378,9 +412,7 @@ mod tests {
         let elapsed = start.elapsed();
         let ms_per_frame = elapsed.as_secs_f64() * 1000.0 / f64::from(iters);
         let fps = 1000.0 / ms_per_frame.max(1e-6);
-        eprintln!(
-            "nv12::scale 1280x720->1920x1080: {ms_per_frame:.3} ms/frame ({fps:.1} FPS)"
-        );
+        eprintln!("nv12::scale 1280x720->1920x1080: {ms_per_frame:.3} ms/frame ({fps:.1} FPS)");
 
         let src_1080 = pattern(1920, 1080);
         let start_id = std::time::Instant::now();
@@ -391,8 +423,6 @@ mod tests {
         let elapsed_id = start_id.elapsed();
         let ms_id = elapsed_id.as_secs_f64() * 1000.0 / f64::from(iters);
         let fps_id = 1000.0 / ms_id.max(1e-6);
-        eprintln!(
-            "nv12::scale 1920x1080 identity: {ms_id:.3} ms/frame ({fps_id:.1} FPS)"
-        );
+        eprintln!("nv12::scale 1920x1080 identity: {ms_id:.3} ms/frame ({fps_id:.1} FPS)");
     }
 }

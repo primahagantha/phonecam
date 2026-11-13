@@ -42,7 +42,8 @@ fn early_logs() -> &'static Mutex<Vec<LogLine>> {
 }
 
 fn file_writer() -> &'static Mutex<RotatingLogWriter> {
-    FILE_WRITER.get_or_init(|| Mutex::new(RotatingLogWriter::new(default_log_path(), MAX_LOG_BYTES)))
+    FILE_WRITER
+        .get_or_init(|| Mutex::new(RotatingLogWriter::new(default_log_path(), MAX_LOG_BYTES)))
 }
 
 /// Returns `%APPDATA%\PhoneCam\desktop.log` (beside `desktop-settings.json`).
@@ -178,7 +179,10 @@ struct MessageVisitor {
 
 impl MessageVisitor {
     fn new() -> Self {
-        Self { message: String::new(), fields: String::new() }
+        Self {
+            message: String::new(),
+            fields: String::new(),
+        }
     }
 
     fn finish(self) -> String {
@@ -238,7 +242,12 @@ impl<S: Subscriber> Layer<S> for DesktopTracingLayer {
             writer.write_line(&line);
         }
 
-        let entry = LogLine { ts_ms, level, source, message };
+        let entry = LogLine {
+            ts_ms,
+            level,
+            source,
+            message,
+        };
         let runtime = runtime_sink()
             .lock()
             .ok()
@@ -273,7 +282,11 @@ pub struct RotatingLogWriter {
 
 impl RotatingLogWriter {
     pub fn new(path: PathBuf, max_bytes: u64) -> Self {
-        Self { path, max_bytes, written: None }
+        Self {
+            path,
+            max_bytes,
+            written: None,
+        }
     }
 
     pub fn backup_path(&self) -> PathBuf {
@@ -302,7 +315,11 @@ impl RotatingLogWriter {
             let _ = fs::create_dir_all(parent);
         }
 
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&self.path) {
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
             if file.write_all(bytes).is_ok() {
                 let next = self.written.unwrap_or(0).saturating_add(bytes.len() as u64);
                 self.written = Some(next);
@@ -324,9 +341,18 @@ mod tests {
     #[test]
     fn target_maps_to_expected_log_source() {
         assert_eq!(source_for_target("phonecam_core::session"), LogSource::Core);
-        assert_eq!(source_for_target("phonecam_media::flicker"), LogSource::Media);
-        assert_eq!(source_for_target("phonecam_framebus::writer"), LogSource::Media);
-        assert_eq!(source_for_target("phonecam_ui::views::panels"), LogSource::Renderer);
+        assert_eq!(
+            source_for_target("phonecam_media::flicker"),
+            LogSource::Media
+        );
+        assert_eq!(
+            source_for_target("phonecam_framebus::writer"),
+            LogSource::Media
+        );
+        assert_eq!(
+            source_for_target("phonecam_ui::views::panels"),
+            LogSource::Renderer
+        );
         assert_eq!(source_for_target("phone"), LogSource::Phone);
         assert_eq!(source_for_target("phonecam_app::runtime"), LogSource::App);
     }

@@ -1,4 +1,4 @@
-﻿//! The window: shell, panels, and the pure rules they read.
+//! The window: shell, panels, and the pure rules they read.
 
 pub mod actions;
 pub mod effects;
@@ -18,7 +18,7 @@ pub use state::{
 use gpui::prelude::*;
 use gpui::{div, px, Context, IntoElement, Render, Window};
 
-use crate::theme::{Fonts, Radius, SHELL, Space, Text, Type};
+use crate::theme::{Fonts, Radius, Space, Text, Type, SHELL};
 use preview::StageContent;
 
 /// The root view.
@@ -88,7 +88,12 @@ impl AppView {
         // A fresh notice that needs action brings Setup forward, so the way out
         // is on screen rather than described. Only ever moves to Setup, which is
         // the one tab that resolves an empty state, and never back.
-        if state.notices.iter().any(|n| n.code == FailureCode::NoDevice) && !state.has_device() {
+        if state
+            .notices
+            .iter()
+            .any(|n| n.code == FailureCode::NoDevice)
+            && !state.has_device()
+        {
             self.tab = Tab::Setup;
         }
         self.state = state;
@@ -119,8 +124,9 @@ impl AppView {
         let cap = pixels.capacity();
         if let Some(buffer) = image::RgbaImage::from_raw(width, height, pixels) {
             self.preview_capacity = cap;
-            self.preview_image =
-                Some(std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buffer)])));
+            self.preview_image = Some(std::sync::Arc::new(gpui::RenderImage::new(vec![
+                image::Frame::new(buffer),
+            ])));
         }
 
         recycled
@@ -145,16 +151,14 @@ impl AppView {
                 let _ = w.drop_image(old_qr);
             }
         }
-        self.qr_image = preview::qr_pixels(payload, crate::theme::QR_SIZE).and_then(
-            |(buffer, w, h)| {
+        self.qr_image =
+            preview::qr_pixels(payload, crate::theme::QR_SIZE).and_then(|(buffer, w, h)| {
                 image::RgbaImage::from_raw(w as u32, h as u32, buffer).map(|image| {
                     std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(image)]))
                 })
-            },
-        );
+            });
         self.qr_payload_cached = Some(payload.to_string());
     }
-
 }
 
 impl Default for AppView {
@@ -167,7 +171,10 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // GPUI re-rendering is driven on demand via cx.notify() when new frames or state updates arrive,
         // avoiding continuous spinning at 144Hz.
-        let focus_handle = self.focus_handle.get_or_insert_with(|| cx.focus_handle()).clone();
+        let focus_handle = self
+            .focus_handle
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
 
         let content = preview::stage_content(&self.state, self.pairing_network);
         if let StageContent::Pairing { payload, .. } = &content {
@@ -325,16 +332,18 @@ fn recycle_preview_image(
     if let Some(w) = window {
         let _ = w.drop_image(arc_img.clone());
     }
-    std::sync::Arc::try_unwrap(arc_img).ok().and_then(|render_img| {
-        let (ptr, len) = if let Some(bytes) = render_img.as_bytes(0) {
-            (bytes.as_ptr() as *mut u8, bytes.len())
-        } else {
-            return None;
-        };
-        std::mem::forget(render_img);
-        let cap = old_cap.max(len);
-        Some(unsafe { Vec::from_raw_parts(ptr, len, cap) })
-    })
+    std::sync::Arc::try_unwrap(arc_img)
+        .ok()
+        .and_then(|render_img| {
+            let (ptr, len) = if let Some(bytes) = render_img.as_bytes(0) {
+                (bytes.as_ptr() as *mut u8, bytes.len())
+            } else {
+                return None;
+            };
+            std::mem::forget(render_img);
+            let cap = old_cap.max(len);
+            Some(unsafe { Vec::from_raw_parts(ptr, len, cap) })
+        })
 }
 
 /// The window title, which names the phone so a screenshot is self-describing.
@@ -411,7 +420,10 @@ mod tests {
 
         // No device connected -> shows toast
         view.toggle_stream();
-        assert_eq!(view.state.toast.as_deref(), Some("Connect a phone before starting the camera"));
+        assert_eq!(
+            view.state.toast.as_deref(),
+            Some("Connect a phone before starting the camera")
+        );
         assert!(drain_effects().is_empty());
 
         // Device present but not streaming -> pushes StartStream effect
@@ -470,11 +482,10 @@ mod tests {
         let buf2 = vec![1u8; 100];
         let recycled = view.set_preview(buf2, 5, 5).expect("buffer should recycle");
         assert_eq!(recycled.len(), 100);
-        assert!(recycled.capacity() >= 256, "capacity should be preserved, got {}", recycled.capacity());
+        assert!(
+            recycled.capacity() >= 256,
+            "capacity should be preserved, got {}",
+            recycled.capacity()
+        );
     }
 }
-
-
-
-
-

@@ -1,4 +1,4 @@
-﻿//! Pairing tokens, device records and nonce replay defence (docs Â§4, Â§5).
+//! Pairing tokens, device records and nonce replay defence (docs Â§4, Â§5).
 //!
 //! The rule from PRD Â§36 is that `IP + fixed password` is not acceptable. What
 //! satisfies it:
@@ -126,12 +126,7 @@ impl PairingManager {
     }
 
     /// Arms a token bound to one device after the user approves (docs Â§4.3).
-    pub fn arm_for_device(
-        &mut self,
-        device_id: &str,
-        ttl_ms: i64,
-        now_ms: i64,
-    ) -> Option<String> {
+    pub fn arm_for_device(&mut self, device_id: &str, ttl_ms: i64, now_ms: i64) -> Option<String> {
         let token = random_hex(PAIRING_TOKEN_BYTES)?;
         self.device_tokens.insert(
             device_id.to_string(),
@@ -166,7 +161,9 @@ impl PairingManager {
     pub fn peek(&self, token: &str, now_ms: i64) -> Option<PeekedToken> {
         for (device_id, armed) in &self.device_tokens {
             if armed.token == token && armed.expires_at_ms > now_ms {
-                return Some(PeekedToken { device_id: Some(device_id.clone()) });
+                return Some(PeekedToken {
+                    device_id: Some(device_id.clone()),
+                });
             }
         }
         match &self.qr_token {
@@ -201,7 +198,9 @@ impl PairingManager {
             if expired {
                 return None;
             }
-            return Some(PeekedToken { device_id: Some(device_id) });
+            return Some(PeekedToken {
+                device_id: Some(device_id),
+            });
         }
 
         match self.qr_token.take() {
@@ -300,7 +299,9 @@ mod tests {
     fn a_token_is_32_lowercase_hex_chars() {
         let token = random_hex(PAIRING_TOKEN_BYTES).unwrap();
         assert_eq!(token.len(), 32);
-        assert!(token.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(token
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]
@@ -352,7 +353,10 @@ mod tests {
         for _ in 0..5 {
             assert!(pairing.peek(&token, 100).is_some());
         }
-        assert!(pairing.consume(&token, 100).is_some(), "the token must survive peeking");
+        assert!(
+            pairing.consume(&token, 100).is_some(),
+            "the token must survive peeking"
+        );
     }
 
     #[test]
@@ -364,7 +368,9 @@ mod tests {
             model: "Android".into(),
             requested_at_ms: 0,
         });
-        let token = pairing.arm_for_device("android-a31f92", 120_000, 0).unwrap();
+        let token = pairing
+            .arm_for_device("android-a31f92", 120_000, 0)
+            .unwrap();
 
         // Arming clears the pending request: the decision has been made.
         assert!(!pairing.has_pending_request("android-a31f92"));
@@ -401,7 +407,9 @@ mod tests {
     fn an_unknown_token_is_refused() {
         let mut pairing = PairingManager::new();
         pairing.arm(TTL, 0).unwrap();
-        assert!(pairing.consume("00000000000000000000000000000000", 0).is_none());
+        assert!(pairing
+            .consume("00000000000000000000000000000000", 0)
+            .is_none());
         assert!(pairing.peek("not-a-token", 0).is_none());
     }
 
@@ -447,4 +455,3 @@ mod tests {
         assert_eq!(new_server_nonce().unwrap().len(), 32);
     }
 }
-

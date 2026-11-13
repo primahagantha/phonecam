@@ -1,4 +1,4 @@
-﻿//! Sockets, and the two rules the shipped C++ learned the hard way.
+//! Sockets, and the two rules the shipped C++ learned the hard way.
 //!
 //! **A read has three outcomes, not two.** `Ok`, `Timeout`, `Closed`. Collapsing
 //! a timeout into "closed" caused the worst failure in the old core: the control
@@ -53,7 +53,10 @@ pub struct Connection {
 impl Connection {
     pub fn new(stream: TcpStream) -> std::io::Result<Self> {
         stream.set_nodelay(true)?;
-        Ok(Self { stream, closed: AtomicBool::new(false) })
+        Ok(Self {
+            stream,
+            closed: AtomicBool::new(false),
+        })
     }
 
     pub fn peer_addr(&self) -> Option<SocketAddr> {
@@ -94,7 +97,9 @@ impl Connection {
             }
             Ok(n) => ReadResult::Ok(n),
             Err(e) => match e.kind() {
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => ReadResult::Timeout,
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                    ReadResult::Timeout
+                }
                 std::io::ErrorKind::Interrupted => ReadResult::Timeout,
                 _ => {
                     self.closed.store(true, Ordering::Relaxed);
@@ -170,14 +175,16 @@ impl Connection {
             return ReadResult::Timeout;
         }
         let mut one = [0u8; 1];
-        match (&self.stream).peek(&mut one) {
+        match self.stream.peek(&mut one) {
             Ok(0) => {
                 self.closed.store(true, Ordering::Relaxed);
                 ReadResult::Closed
             }
             Ok(n) => ReadResult::Ok(n),
             Err(e) => match e.kind() {
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => ReadResult::Timeout,
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                    ReadResult::Timeout
+                }
                 std::io::ErrorKind::Interrupted => ReadResult::Timeout,
                 _ => {
                     self.closed.store(true, Ordering::Relaxed);
@@ -215,7 +222,10 @@ impl Listener {
             if e.kind() == std::io::ErrorKind::AddrInUse {
                 TransportError::PortInUse { port }
             } else {
-                TransportError::Bind { address: format!("0.0.0.0:{port}"), source: e }
+                TransportError::Bind {
+                    address: format!("0.0.0.0:{port}"),
+                    source: e,
+                }
             }
         })?;
         inner.set_nonblocking(false)?;
@@ -223,7 +233,11 @@ impl Listener {
         // and reporting 0 back would leave the caller advertising a port nothing
         // is listening on.
         let port = inner.local_addr().map(|addr| addr.port()).unwrap_or(port);
-        Ok(Self { inner, running: Arc::new(AtomicBool::new(true)), port })
+        Ok(Self {
+            inner,
+            running: Arc::new(AtomicBool::new(true)),
+            port,
+        })
     }
 
     pub fn port(&self) -> u16 {
@@ -266,7 +280,10 @@ impl DiscoverySocket {
             if e.kind() == std::io::ErrorKind::AddrInUse {
                 TransportError::PortInUse { port }
             } else {
-                TransportError::Bind { address: format!("0.0.0.0:{port}"), source: e }
+                TransportError::Bind {
+                    address: format!("0.0.0.0:{port}"),
+                    source: e,
+                }
             }
         })?;
         socket.set_read_timeout(Some(Duration::from_millis(500)))?;
@@ -322,7 +339,8 @@ mod tests {
         let (server_stream, _) = listener.accept().unwrap();
 
         let conn = Connection::new(server_stream).unwrap();
-        conn.set_read_timeout(Some(Duration::from_millis(60))).unwrap();
+        conn.set_read_timeout(Some(Duration::from_millis(60)))
+            .unwrap();
 
         // Nothing was written: this must be Timeout, and the connection must
         // still be usable. Treating it as Closed is the documented bug.
@@ -347,7 +365,8 @@ mod tests {
         let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let (server_stream, _) = listener.accept().unwrap();
         let conn = Connection::new(server_stream).unwrap();
-        conn.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        conn.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
 
         drop(client);
         std::thread::sleep(Duration::from_millis(50));
@@ -363,7 +382,8 @@ mod tests {
         let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let (server_stream, _) = listener.accept().unwrap();
         let conn = Connection::new(server_stream).unwrap();
-        conn.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        conn.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
 
         client.write_all(b"0123456789").unwrap();
         let mut buf = [0u8; 10];
@@ -378,7 +398,8 @@ mod tests {
         let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let (server_stream, _) = listener.accept().unwrap();
         let conn = Connection::new(server_stream).unwrap();
-        conn.set_read_timeout(Some(Duration::from_millis(80))).unwrap();
+        conn.set_read_timeout(Some(Duration::from_millis(80)))
+            .unwrap();
 
         // Half a frame arrives, then the peer goes quiet.
         client.write_all(b"01234").unwrap();
@@ -398,11 +419,14 @@ mod tests {
         let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let (server_stream, _) = listener.accept().unwrap();
         let conn = Connection::new(server_stream).unwrap();
-        conn.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        conn.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
 
         assert!(conn.write_all(b"ping"));
         let mut reader = client;
-        reader.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
         let mut buf = [0u8; 4];
         reader.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"ping");
@@ -442,6 +466,3 @@ mod tests {
         assert_eq!(data, b"beacon");
     }
 }
-
-
-

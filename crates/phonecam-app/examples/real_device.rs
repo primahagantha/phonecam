@@ -1,4 +1,4 @@
-﻿//! Drives the runtime against a real phone and prints what happened.
+//! Drives the runtime against a real phone and prints what happened.
 //!
 //! The GUI owns the same code paths, but a window cannot be read from a script.
 //! This runs the runtime headlessly so a real device session can be inspected
@@ -118,7 +118,10 @@ fn main() {
     };
     // At 30 fps a frame every 33 ms; anything past 2x that is a visible hitch.
     let hitch_threshold_us = 66_000;
-    let hitches = sorted_us.iter().filter(|d| **d > hitch_threshold_us).count();
+    let hitches = sorted_us
+        .iter()
+        .filter(|d| **d > hitch_threshold_us)
+        .count();
     let mean_us = if sorted_us.is_empty() {
         0
     } else {
@@ -130,7 +133,10 @@ fn main() {
     let state = runtime.state.lock().clone();
     println!("\n=== result ===");
     println!("phase        : {}", state.phase());
-    println!("transport    : {:?}", state.core.as_ref().map(|c| c.transport));
+    println!(
+        "transport    : {:?}",
+        state.core.as_ref().map(|c| c.transport)
+    );
     println!("frames drawn : {frames_seen}");
     println!("frame size   : {last_size:?}");
     println!("wall time    : {elapsed:.1} s");
@@ -150,15 +156,31 @@ fn main() {
     println!("\n--- frame pacing, measured at the producer ---");
     println!("intervals    : {}", sorted_us.len());
     println!("mean         : {:.1} ms", mean_us as f64 / 1000.0);
-    println!("p50          : {:.1} ms", percentile_us(0.50) as f64 / 1000.0);
-    println!("p95          : {:.1} ms", percentile_us(0.95) as f64 / 1000.0);
-    println!("p99          : {:.1} ms", percentile_us(0.99) as f64 / 1000.0);
-    println!("max          : {:.1} ms", percentile_us(1.0) as f64 / 1000.0);
+    println!(
+        "p50          : {:.1} ms",
+        percentile_us(0.50) as f64 / 1000.0
+    );
+    println!(
+        "p95          : {:.1} ms",
+        percentile_us(0.95) as f64 / 1000.0
+    );
+    println!(
+        "p99          : {:.1} ms",
+        percentile_us(0.99) as f64 / 1000.0
+    );
+    println!(
+        "max          : {:.1} ms",
+        percentile_us(1.0) as f64 / 1000.0
+    );
     println!(
         "hitches >{}ms: {hitches} of {} ({:.1}%)",
         hitch_threshold_us / 1000,
         sorted_us.len(),
-        if sorted_us.is_empty() { 0.0 } else { hitches as f64 * 100.0 / sorted_us.len() as f64 }
+        if sorted_us.is_empty() {
+            0.0
+        } else {
+            hitches as f64 * 100.0 / sorted_us.len() as f64
+        }
     );
     if let Some(core) = &state.core {
         println!("stats.fps    : {:.1}", core.stats.fps);
@@ -167,7 +189,10 @@ fn main() {
         println!("stats.quality: {}", core.stats.quality);
     }
     if let Some(phone) = state.core.as_ref().and_then(|c| c.phone.as_ref()) {
-        println!("phone actual : {} @ {} fps", phone.actual_resolution, phone.actual_fps);
+        println!(
+            "phone actual : {} @ {} fps",
+            phone.actual_resolution, phone.actual_fps
+        );
         println!("phone stream : {}", phone.streaming);
     }
 
@@ -182,11 +207,11 @@ fn main() {
     runtime.running.store(false, Ordering::Relaxed);
     println!(
         "\n{}",
-        if ok { "PASS: a picture reached the desktop, with pacing under 5% hitches" }
-        else { "FAIL: no frames, or pacing worse than 5% hitches" }
+        if ok {
+            "PASS: a picture reached the desktop, with pacing under 5% hitches"
+        } else {
+            "FAIL: no frames, or pacing worse than 5% hitches"
+        }
     );
     std::process::exit(if ok { 0 } else { 3 });
 }
-
-
-

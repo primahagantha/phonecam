@@ -1,4 +1,4 @@
-﻿//! How long the per-frame conversion actually takes.
+//! How long the per-frame conversion actually takes.
 //!
 //! The end-to-end harness cannot answer this: on a contended machine the same
 //! binary measured 15.7, 30.0 and 29.8 fps across three consecutive runs, so
@@ -25,7 +25,12 @@ fn frame(width: u32, height: u32) -> DecodedFrame {
     for i in 0..(w * h / 2) {
         yuv[chroma + i] = if i % 2 == 0 { 90 } else { 160 };
     }
-    DecodedFrame { width, height, yuv, pts_us: 0 }
+    DecodedFrame {
+        width,
+        height,
+        yuv,
+        pts_us: 0,
+    }
 }
 
 fn bench(name: &str, iterations: usize, mut body: impl FnMut()) {

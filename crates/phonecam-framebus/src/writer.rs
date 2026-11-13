@@ -113,9 +113,13 @@ impl FrameWriter {
     ) -> Result<(), PublishRejection> {
         let capacity = self.capacity() as usize;
         if frame.len() != capacity {
-            return Err(PublishRejection::SizeMismatch { expected: capacity, actual: frame.len() });
+            return Err(PublishRejection::SizeMismatch {
+                expected: capacity,
+                actual: frame.len(),
+            });
         }
-        self.inner.publish(frame, pts_us, state, &mut self.frame_index)?;
+        self.inner
+            .publish(frame, pts_us, state, &mut self.frame_index)?;
 
         // Brightness watchdog for flicker (upstream commit 5e6b22d).
         if state == FrameState::Live {
@@ -176,18 +180,14 @@ impl FrameWriter {
             sum += frame[i] as u64;
             count += 1;
         }
-        if count == 0 {
-            0
-        } else {
-            (sum / count) as u8
-        }
+        sum.checked_div(count).map(|v| v as u8).unwrap_or(0)
     }
 
     /// Evaluates brightness change between consecutive frames and logs warnings/info
     /// on transition into/out of flicker, avoiding per-frame log spam.
     fn observe_mean_luma(&mut self, mean: u8) {
         if let Some(previous) = self.last_mean_luma {
-            let jump = (mean as i16 - previous as i16).abs() as u8;
+            let jump = (mean as i16 - previous as i16).unsigned_abs() as u8;
             let flickering = jump > LUMA_JUMP_THRESHOLD;
             if flickering && !self.flicker_reported {
                 self.flicker_reported = true;
@@ -253,7 +253,9 @@ mod imp {
     use windows::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
-    use windows::Win32::Security::{SetFileSecurityW, PSECURITY_DESCRIPTOR, DACL_SECURITY_INFORMATION};
+    use windows::Win32::Security::{
+        SetFileSecurityW, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    };
     use windows::Win32::Storage::FileSystem::{
         CreateDirectoryW, CreateFileW, GetFileSizeEx, SetEndOfFile, SetFilePointerEx,
         FILE_ATTRIBUTE_NORMAL, FILE_BEGIN, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
@@ -333,7 +335,9 @@ mod imp {
 
             let file_size_now = file_size(file)?;
             if file_size_now < needed {
-                unsafe { let _ = CloseHandle(file); }
+                unsafe {
+                    let _ = CloseHandle(file);
+                }
                 return Err(WriterError::Resize(format!(
                     "file is {file_size_now} bytes, need {needed}"
                 )));
@@ -341,13 +345,13 @@ mod imp {
 
             // Created at the file's size, not at `needed`: a view can never
             // exceed its mapping object.
-            let mapping = unsafe {
-                CreateFileMappingW(file, None, PAGE_READWRITE, 0, 0, PCWSTR::null())
-            }
-            .map_err(|e| WriterError::Map(e.message().to_string()))?;
+            let mapping =
+                unsafe { CreateFileMappingW(file, None, PAGE_READWRITE, 0, 0, PCWSTR::null()) }
+                    .map_err(|e| WriterError::Map(e.message().to_string()))?;
 
-            let view: MEMORY_MAPPED_VIEW_ADDRESS =
-                unsafe { MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, file_size_now as usize) };
+            let view: MEMORY_MAPPED_VIEW_ADDRESS = unsafe {
+                MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, file_size_now as usize)
+            };
             if view.Value.is_null() {
                 unsafe {
                     let _ = CloseHandle(mapping);
@@ -434,11 +438,7 @@ mod imp {
             seq.fetch_add(1, Ordering::SeqCst);
 
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    frame.as_ptr(),
-                    self.base.add(HEADER_SIZE),
-                    capacity,
-                );
+                std::ptr::copy_nonoverlapping(frame.as_ptr(), self.base.add(HEADER_SIZE), capacity);
                 self.write_u64(OFF_PTS, pts_us);
                 *frame_index += 1;
                 self.write_u64(OFF_FRAME_INDEX, *frame_index);
@@ -480,9 +480,8 @@ mod imp {
             seq.fetch_add(1, Ordering::SeqCst);
 
             let wrote = {
-                let dst = unsafe {
-                    std::slice::from_raw_parts_mut(self.base.add(HEADER_SIZE), capacity)
-                };
+                let dst =
+                    unsafe { std::slice::from_raw_parts_mut(self.base.add(HEADER_SIZE), capacity) };
                 write_fn(dst)
             };
             if !wrote {
@@ -506,7 +505,8 @@ mod imp {
             fence(Ordering::SeqCst);
 
             let mean = sample_luma_dims.map(|(w, h)| {
-                let buf = unsafe { std::slice::from_raw_parts(self.base.add(HEADER_SIZE), capacity) };
+                let buf =
+                    unsafe { std::slice::from_raw_parts(self.base.add(HEADER_SIZE), capacity) };
                 FrameWriter::compute_mean_luma(buf, w, h)
             });
             Ok(mean)
@@ -558,18 +558,29 @@ mod imp {
             .map_err(|e| WriterError::Acl(format!("bad SDDL: {}", e.message())))?;
 
             let path_w = wide(path);
-            SetFileSecurityW(PCWSTR(path_w.as_ptr()), DACL_SECURITY_INFORMATION, descriptor)
-                .ok()
-                .map_err(|e| {
-                    WriterError::Acl(format!("{} ({})", e.message(), std::io::Error::last_os_error()))
-                })?;
+            SetFileSecurityW(
+                PCWSTR(path_w.as_ptr()),
+                DACL_SECURITY_INFORMATION,
+                descriptor,
+            )
+            .ok()
+            .map_err(|e| {
+                WriterError::Acl(format!(
+                    "{} ({})",
+                    e.message(),
+                    std::io::Error::last_os_error()
+                ))
+            })?;
         }
         Ok(())
     }
 
     fn wide(text: &str) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
-        std::ffi::OsStr::new(text).encode_wide().chain(std::iter::once(0)).collect()
+        std::ffi::OsStr::new(text)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 }
 
@@ -636,9 +647,9 @@ mod tests {
         assert_eq!(FrameWriter::compute_mean_luma(&frame, w, h), 200);
 
         // Modify non-sampled pixels to 0 (sampling every 16th should ignore them)
-        for i in 0..(w as usize * h as usize) {
+        for (i, pixel) in frame.iter_mut().enumerate().take(w as usize * h as usize) {
             if i % 16 != 0 {
-                frame[i] = 0;
+                *pixel = 0;
             }
         }
         assert_eq!(FrameWriter::compute_mean_luma(&frame, w, h), 200);
@@ -649,23 +660,24 @@ mod tests {
         let mut last_mean_luma = None;
         let mut flicker_reported = false;
 
-        let observe = |mean: u8, last: &mut Option<u8>, reported: &mut bool| -> (bool, bool, bool) {
-            let mut event_started = false;
-            let mut event_stopped = false;
-            if let Some(previous) = *last {
-                let jump = (mean as i16 - previous as i16).abs() as u8;
-                let flickering = jump > LUMA_JUMP_THRESHOLD;
-                if flickering && !*reported {
-                    *reported = true;
-                    event_started = true;
-                } else if !flickering && *reported {
-                    *reported = false;
-                    event_stopped = true;
+        let observe =
+            |mean: u8, last: &mut Option<u8>, reported: &mut bool| -> (bool, bool, bool) {
+                let mut event_started = false;
+                let mut event_stopped = false;
+                if let Some(previous) = *last {
+                    let jump = (mean as i16 - previous as i16).unsigned_abs() as u8;
+                    let flickering = jump > LUMA_JUMP_THRESHOLD;
+                    if flickering && !*reported {
+                        *reported = true;
+                        event_started = true;
+                    } else if !flickering && *reported {
+                        *reported = false;
+                        event_stopped = true;
+                    }
                 }
-            }
-            *last = Some(mean);
-            (event_started, event_stopped, *reported)
-        };
+                *last = Some(mean);
+                (event_started, event_stopped, *reported)
+            };
 
         // Frame 1: mean 100
         let (s, e, rep) = observe(100, &mut last_mean_luma, &mut flicker_reported);
