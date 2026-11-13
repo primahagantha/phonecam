@@ -605,6 +605,7 @@ class StreamSession(
     }
 
     fun disconnect(notifyPeer: Boolean = true) {
+        stopStreaming(notifyPeer = false, keepVideoChannel = false)
         // Every teardown path stops the loops it owns, not just the socket: the
         // stats tick otherwise kept reading the battery and re-posting the
         // notification once a second after the desktop had gone.
@@ -1172,7 +1173,7 @@ class StreamSession(
                 sendState()
             }
 
-            DesktopMessage.StartStream -> startStreaming()
+            DesktopMessage.StartStream -> startStreaming(force = true)
             DesktopMessage.StopStream -> stopStreaming(notifyPeer = false)
 
             is DesktopMessage.Ping -> sendPong(message.serverNonce)
@@ -1257,7 +1258,8 @@ class StreamSession(
 
         if (!wasStreaming) return
 
-        if (swapInPlace && liveSurface != null) {
+        if (swapInPlace) {
+            val surface = liveSurface!!
             Log.i("switching to camera ${target.id} in place; the encoder and the video channel stay up")
             val requestedResolution = _state.value.requestedResolution
             val requestedFps = _state.value.requestedFps
@@ -1272,7 +1274,7 @@ class StreamSession(
             scope.launch {
                 camera.start(
                     cameraId = targetId,
-                    targetSurface = liveSurface,
+                    targetSurface = surface,
                     requestedResolution = requestedResolution,
                     requestedFps = requestedFps,
                     requestedBitrate = requestedBitrate,
@@ -1495,17 +1497,35 @@ class StreamSession(
 
     // ---------------------------------------------------------------- streaming
 
-    private fun startStreaming() {
-        if (_state.value.isStreaming || _state.value.phase == SessionState.Phase.CONNECTING || streamingJob?.isActive == true) {
-            Log.i("startStreaming: already streaming or connecting; ignoring duplicate request")
+    private fun startStreaming(force: Boolean = false) {
+        val currentChannel = videoChannel
+        val currentConn = video
+        val isChannelHealthy = _state.value.isStreaming &&
+            currentChannel != null && currentChannel.isRunning &&
+            currentConn != null && currentConn.isOpen
+
+        if (isChannelHealthy && !force) {
+            Log.i("startStreaming: already streaming with healthy video channel; requesting keyframe")
+            encoder?.requestKeyframe()
             return
         }
+
+        if (streamingJob?.isActive == true && !force) {
+            Log.i("startStreaming: already connecting; ignoring duplicate request")
+            return
+        }
+
+        if (_state.value.isStreaming || streamingJob?.isActive == true || !isChannelHealthy) {
+            Log.i("startStreaming: resetting previous stream state (force=$force, isChannelHealthy=$isChannelHealthy)")
+            stopStreaming(notifyPeer = false, keepVideoChannel = !force && isChannelHealthy)
+        }
+
         restartJob?.cancel()
         restartJob = null
         // A start the user or the desktop asked for is a fresh attempt: the
         // stepped-retry budget belongs to the failures it is about to replace.
         cameraStartFailures = 0
-        Log.i("start streaming requested host=${_state.value.host} port=${_state.value.port} camera=${_state.value.selectedCameraId}")
+        Log.i("start streaming requested host=${_state.value.host} port=${_state.value.port} camera=${_state.value.selectedCameraId} force=$force")
         val host = _state.value.host ?: return
         val port = _state.value.port ?: return
         val cameraId = _state.value.selectedCameraId ?: run {
@@ -1561,10 +1581,14 @@ class StreamSession(
                 // makes the switch a re-encode instead of a reconnect.
                 val openChannel = videoChannel
                 val openConnection = video
+                val canReuse = !force &&
+                    openChannel != null && openChannel.isRunning &&
+                    openConnection != null && openConnection.isOpen
+
                 val channel: VideoChannel
-                if (openChannel != null && openConnection != null && openConnection.isOpen) {
+                if (canReuse) {
                     Log.i("reusing the open video channel for the camera switch")
-                    channel = openChannel
+                    channel = openChannel!!
                 } else {
                     val videoResult = PeerConnection.dialAsKnownDevice(
                         identity = identity,
@@ -1587,7 +1611,24 @@ class StreamSession(
                     val videoConnection = videoResult.connection
                     attemptConnection = videoConnection
                     video = videoConnection
-                    val opened = VideoChannel(videoConnection).also { it.start() }
+                    val opened = VideoChannel(
+                        connection = videoConnection,
+                        onClosed = { error ->
+                            scope.launch {
+                                Log.w("video channel closed: ${error?.javaClass?.simpleName ?: "EOF"}")
+                                if (video === videoConnection) {
+                                    video = null
+                                    videoChannel = null
+                                }
+                                if (_state.value.isStreaming && control?.isOpen == true) {
+                                    Log.i("video channel lost while streaming; restarting video stream")
+                                    startStreaming(force = true)
+                                } else if (control?.isOpen != true) {
+                                    onConnectionLost()
+                                }
+                            }
+                        },
+                    ).also { it.start() }
                     attemptChannel = opened
                     videoChannel = opened
                     channel = opened

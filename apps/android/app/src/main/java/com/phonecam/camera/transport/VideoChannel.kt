@@ -30,7 +30,10 @@ data class VideoChannelStats(
  * stability above completeness and a stalled encoder degrades the whole stream.
  * Dropped frames feed the adaptive quality controller (PRD §48).
  */
-class VideoChannel(private val connection: PeerConnection) {
+class VideoChannel(
+    private val connection: PeerConnection,
+    private val onClosed: ((Throwable?) -> Unit)? = null,
+) {
 
     private val queue = ArrayBlockingQueue<PendingFrame>(QUEUE_CAPACITY)
     private val recyclePool = ArrayBlockingQueue<PendingFrame>(POOL_CAPACITY)
@@ -70,7 +73,11 @@ class VideoChannel(private val connection: PeerConnection) {
         writerThread = null
         queue.clear()
         recyclePool.clear()
+        runCatching { connection.close() }
     }
+
+    val isRunning: Boolean
+        get() = running.get()
 
     val stats: VideoChannelStats
         get() = VideoChannelStats(sentFrames.get(), droppedFrames.get(), bytesSent.get())
@@ -190,6 +197,8 @@ class VideoChannel(private val connection: PeerConnection) {
                     Log.w(TAG, "video write failed: ${t.javaClass.simpleName}")
                 }
                 running.set(false)
+                runCatching { connection.close() }
+                onClosed?.invoke(t)
                 return
             }
         }
