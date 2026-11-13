@@ -191,7 +191,7 @@ impl Space {
 
 /// The rail's fixed width. It narrows on a small window so the picture keeps
 /// its share.
-pub const RAIL_WIDTH: f32 = 396.0;
+pub const RAIL_WIDTH: f32 = 416.0;
 pub const RAIL_WIDTH_NARROW: f32 = 352.0;
 /// Below this window width the rail narrows.
 pub const NARROW_WINDOW: f32 = 1100.0;

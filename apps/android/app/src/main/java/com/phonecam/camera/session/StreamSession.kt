@@ -869,6 +869,21 @@ class StreamSession(
         reportFailure(code, message)
     }
 
+    private val controlWriteLock = Any()
+
+    private fun sendControlMessage(message: PhoneMessage): Boolean {
+        val connection = control ?: return false
+        return runCatching {
+            val encoded = ControlCodec.encode(message)
+            synchronized(controlWriteLock) {
+                Framing.writeControl(connection.output, encoded)
+            }
+            true
+        }.onFailure {
+            Log.d("control send ${message.javaClass.simpleName} failed: ${it.javaClass.simpleName}")
+        }.isSuccess
+    }
+
     /**
      * Tells the desktop why a stream could not start, or why it stopped.
      *
@@ -880,10 +895,7 @@ class StreamSession(
      * still open; a phone that has lost the PC has nothing to report to.
      */
     private fun reportFailure(code: String, message: String) {
-        val connection = control ?: return
-        runCatching {
-            Framing.writeControl(connection.output, ControlCodec.encode(PhoneMessage.Error(code, message)))
-        }.onFailure { Log.w("could not report '$code' to the desktop: ${it.javaClass.simpleName}") }
+        sendControlMessage(PhoneMessage.Error(code, message))
     }
 
     /**
@@ -978,68 +990,56 @@ class StreamSession(
     // ---------------------------------------------------------------- outbound
 
     private fun sendHello() {
-        val connection = control ?: return
-        runCatching {
-            Framing.writeControl(connection.output, ControlCodec.encode(
-                    PhoneMessage.Hello(
-                        protocol = Proto.VERSION,
-                        deviceId = identity.deviceId,
-                        deviceName = identity.deviceName,
-                        model = Build.MODEL,
-                        androidVersion = Build.VERSION.SDK_INT,
-                        appVersion = BuildConfig.VERSION_NAME,
-                    ),
-                ))
-        }.onFailure { Log.w("hello send failed: ${it.javaClass.simpleName}") }
+        sendControlMessage(
+            PhoneMessage.Hello(
+                protocol = Proto.VERSION,
+                deviceId = identity.deviceId,
+                deviceName = identity.deviceName,
+                model = Build.MODEL,
+                androidVersion = Build.VERSION.SDK_INT,
+                appVersion = BuildConfig.VERSION_NAME,
+            ),
+        )
     }
 
     private fun sendCapabilities() {
-        val connection = control ?: return
         val cameras = probeCameras()
         _state.value = _state.value.copy(
             capabilities = cameras,
             selectedCameraId = _state.value.selectedCameraId ?: cameras.firstOrNull()?.id,
         )
-        runCatching {
-            Framing.writeControl(
-                connection.output,
-                ControlCodec.encode(
-                    PhoneMessage.Capabilities(
-                        device = DeviceInfo(
-                            model = Build.MODEL,
-                            androidVersion = Build.VERSION.SDK_INT,
-                            appVersion = BuildConfig.VERSION_NAME,
-                        ),
-                        cameras = cameras,
-                    ),
+        sendControlMessage(
+            PhoneMessage.Capabilities(
+                device = DeviceInfo(
+                    model = Build.MODEL,
+                    androidVersion = Build.VERSION.SDK_INT,
+                    appVersion = BuildConfig.VERSION_NAME,
                 ),
-            )
-        }.onFailure { Log.w("capabilities send failed: ${it.javaClass.simpleName}") }
+                cameras = cameras,
+            ),
+        )
     }
 
     private fun sendState() {
-        val connection = control ?: return
         val current = _state.value
-        runCatching {
-            Framing.writeControl(connection.output, ControlCodec.encode(
-                    PhoneMessage.State(
-                        streaming = current.isStreaming,
-                        camera = current.activeCamera?.facing ?: "unknown",
-                        resolution = current.requestedResolution,
-                        fps = current.requestedFps ?: 0,
-                        actualResolution = current.actualResolution ?: "",
-                        actualFps = current.actualFps ?: 0,
-                        bitrate = current.bitrate,
-                        mirror = current.mirror,
-                        rotation = current.rotation,
-                        torch = current.torch,
-                        zoom = current.zoom,
-                        battery = current.batteryPercent,
-                        charging = current.charging,
-                        thermal = current.thermal,
-                    ),
-                ))
-        }.onFailure { Log.d("state send failed: ${it.javaClass.simpleName}") }
+        sendControlMessage(
+            PhoneMessage.State(
+                streaming = current.isStreaming,
+                camera = current.activeCamera?.facing ?: "unknown",
+                resolution = current.requestedResolution,
+                fps = current.requestedFps ?: 0,
+                actualResolution = current.actualResolution ?: "",
+                actualFps = current.actualFps ?: 0,
+                bitrate = current.bitrate,
+                mirror = current.mirror,
+                rotation = current.rotation,
+                torch = current.torch,
+                zoom = current.zoom,
+                battery = current.batteryPercent,
+                charging = current.charging,
+                thermal = current.thermal,
+            ),
+        )
     }
 
     private fun startControlLoop() {
@@ -1134,26 +1134,20 @@ class StreamSession(
             thermal = healthSnapshot.thermal,
         )
 
-        val connection = control ?: return
-        runCatching {
-            Framing.writeControl(
-                connection.output,
-                ControlCodec.encode(
-                    PhoneMessage.Stats(
-                        fps = fps,
-                        bitrate = bitrate,
-                        dropped = dropPercent,
-                        encodedFrames = frames,
-                        // Always 0: the round trip is measured by the desktop,
-                        // which is the only side that can time the return leg
-                        // (docs/protocol.md §11). The field is part of the frozen
-                        // message and stays so the shape does not change.
-                        rttUs = 0,
-                        thermal = healthSnapshot.thermal,
-                    ),
-                ),
-            )
-        }.onFailure { Log.d("stats send failed: ${it.javaClass.simpleName}") }
+        sendControlMessage(
+            PhoneMessage.Stats(
+                fps = fps,
+                bitrate = bitrate,
+                dropped = dropPercent,
+                encodedFrames = frames,
+                // Always 0: the round trip is measured by the desktop,
+                // which is the only side that can time the return leg
+                // (docs/protocol.md §11). The field is part of the frozen
+                // message and stays so the shape does not change.
+                rttUs = 0,
+                thermal = healthSnapshot.thermal,
+            ),
+        )
     }
 
     // ---------------------------------------------------------------- inbound
@@ -1210,10 +1204,7 @@ class StreamSession(
     }
 
     private fun sendPong(nonce: Long) {
-        val connection = control ?: return
-        runCatching {
-            Framing.writeControl(connection.output, ControlCodec.encode(PhoneMessage.Pong(nonce)))
-        }
+        sendControlMessage(PhoneMessage.Pong(nonce))
     }
 
     /** The camera a `set_camera` value names, or `null` when this phone has no such camera. */

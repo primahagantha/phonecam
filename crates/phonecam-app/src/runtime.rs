@@ -330,7 +330,11 @@ impl Runtime {
         self.bump_state_version();
     }
 
-    /// Synchronizes mirror/rotation onto settings, the active `FrameWriter`, and the phone.
+    /// Synchronizes mirror/rotation onto settings, the active `FrameWriter`, and the desktop preview.
+    ///
+    /// Per protocol §8, mirror and rotation are local desktop display transforms;
+    /// they do not affect what the phone captures or encodes, and avoiding network traffic
+    /// here allows rapid rotation toggling (0°/90°/180°/270°) without stalling video frames.
     pub fn sync_output_transform(&self, mirror: bool, rotation: u32) {
         let normalized_rot = rotation % 360;
         self.output_mirror.store(mirror, Ordering::Relaxed);
@@ -344,12 +348,6 @@ impl Runtime {
         if let Some(writer) = self.writer.lock().as_mut() {
             writer.set_transform(mirror, normalized_rot);
         }
-        let zoom = f32::from_bits(self.zoom_bits.load(Ordering::Relaxed));
-        self.send_to_phone(DesktopToPhone::SetImage {
-            mirror,
-            rotation: normalized_rot,
-            zoom,
-        });
         self.broadcast_state();
     }
 
@@ -3208,14 +3206,7 @@ mod tests {
             outbox[5],
             DesktopToPhone::SetQualityMode { mode: QualityMode::Manual }
         ));
-        assert!(matches!(
-            outbox[6],
-            DesktopToPhone::SetImage {
-                mirror: true,
-                rotation: 90,
-                ..
-            }
-        ));
+        assert_eq!(outbox.len(), 6, "sync_output_transform operates locally without polluting outbox");
 
         {
             let state = runtime.state.lock();

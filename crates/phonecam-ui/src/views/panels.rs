@@ -1029,63 +1029,48 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
     children.push(section(
         "Which camera",
         vec![
-            crate::views::widgets::field(
-                "Camera",
-                Some(format!("{} available", cameras.len()).into()),
-                camera_tiles(&cameras, &resolved_id),
-                None,
-            ),
-            crate::views::widgets::field(
-                "Camera id",
-                Some("If the list missed one".into()),
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(Space::SM))
-                    .child(pill_button(
-                        "cam-id-prev",
-                        "<",
+            camera_tiles(&cameras, &resolved_id),
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(Space::XS))
+                .child(
+                    div()
+                        .font_family(Fonts::SANS)
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(Text::MUTED)
+                        .mr(px(Space::XS))
+                        .child("Manual ID:"),
+                )
+                .child(pill_button(
+                    "cam-id-prev",
+                    "<",
+                    false,
+                    false,
+                    move |_window, _cx| push_effect(SideEffect::SetCamera(prev_id.clone())),
+                ))
+                .children(["0", "1", "2", "3"].into_iter().map(|id| {
+                    let active = resolved_id == id;
+                    pill_button(
+                        format!("cam-id-{id}"),
+                        id,
+                        active,
                         false,
-                        false,
-                        move |_window, _cx| push_effect(SideEffect::SetCamera(prev_id.clone())),
-                    ))
-                    .child(
-                        div()
-                            .rounded(px(Radius::MD))
-                            .border_1()
-                            .border_color(SHELL.border)
-                            .bg(SHELL.base)
-                            .px(px(Space::LG))
-                            .py(px(Space::SM))
-                            .font_family(Fonts::MONO)
-                            .text_size(px(Type::XS))
-                            .text_color(Text::HEADING)
-                            .child(format!("id {resolved_id}")),
+                        move |_window, _cx| {
+                            push_effect(SideEffect::SetCamera(id.to_string()))
+                        },
                     )
-                    .child(pill_button(
-                        "cam-id-next",
-                        ">",
-                        false,
-                        false,
-                        move |_window, _cx| push_effect(SideEffect::SetCamera(next_id.clone())),
-                    ))
-                    .children(["0", "1", "2", "3"].into_iter().map(|id| {
-                        let active = resolved_id == id;
-                        pill_button(
-                            format!("cam-id-{id}"),
-                            id,
-                            active,
-                            false,
-                            move |_window, _cx| {
-                                push_effect(SideEffect::SetCamera(id.to_string()))
-                            },
-                        )
-                    }))
-                    .into_any_element(),
-                None,
-            ),
+                }))
+                .child(pill_button(
+                    "cam-id-next",
+                    ">",
+                    false,
+                    false,
+                    move |_window, _cx| push_effect(SideEffect::SetCamera(next_id.clone())),
+                ))
+                .into_any_element(),
         ],
     ));
 
@@ -1141,7 +1126,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                         let label = if res == "auto" {
                             "Auto".to_string()
                         } else {
-                            format!("{} ({})", resolution_label_of(&res), res)
+                            resolution_label_of(&res)
                         };
                         let id = format!("res-{res}");
                         pill_button(id, label, active, false, move |_window, _cx| {
@@ -1149,7 +1134,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                         })
                     }))
                     .into_any_element(),
-                Some("The phone picks the nearest it supports and tells you what it used.".into()),
+                None,
             ),
             crate::views::widgets::field(
                 "Frame rate",
@@ -1360,46 +1345,65 @@ fn camera_tiles(
         .flex()
         .flex_row()
         .flex_wrap()
-        .gap(px(Space::LG))
+        .gap(px(Space::MD))
         .children(cameras.iter().map(|camera| {
             let is_selected = camera.id == selected_id;
             let id = camera.id.clone();
             div()
                 .id(gpui::ElementId::Name(SharedString::from(format!("camera-{id}"))))
+                .flex_1()
+                .min_w(px(130.0))
                 .flex()
-                .flex_col()
-                .min_w(px(120.0))
+                .flex_row()
                 .items_center()
-                .justify_center()
-                .gap(px(Space::XS))
-                .rounded(px(Radius::LG))
+                .justify_between()
+                .gap(px(Space::SM))
+                .rounded(px(Radius::MD))
                 .border_1()
                 .border_color(if is_selected { Accent::DEFAULT } else { SHELL.control })
-                .bg(if is_selected { Accent::DEFAULT.alpha(0.10) } else { SHELL.raised })
-                .px(px(16.0))
-                .py(px(Space::PAD))
-                .text_color(if is_selected { Text::PRIMARY } else { Text::BODY })
+                .bg(if is_selected { Accent::DEFAULT.alpha(0.12) } else { SHELL.base })
+                .px(px(Space::PAD))
+                .py(px(Space::MD))
                 .cursor_pointer()
                 .child(
                     div()
-                        .font_family(Fonts::SANS)
-                        .text_size(px(14.0))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .child(camera_facing_label(camera.facing)),
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .font_family(Fonts::SANS)
+                                .text_size(px(Type::TWO_SM))
+                                .font_weight(if is_selected { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::MEDIUM })
+                                .text_color(if is_selected { Text::PRIMARY } else { Text::BODY })
+                                .child(camera_facing_label(camera.facing)),
+                        )
+                        .child(
+                            div()
+                                .font_family(Fonts::MONO)
+                                .text_size(px(Type::TWO_XS))
+                                .text_color(Text::MUTED)
+                                .child(format!("Lens ID {}", camera.id)),
+                        ),
                 )
                 .child(
-                    div()
-                        .font_family(Fonts::MONO)
-                        .text_size(px(Type::TWO_XS))
-                        .text_color(Text::MUTED)
-                        .child(format!("id {}", camera.id)),
-                )
-                .child(
-                    div()
-                        .font_family(Fonts::SANS)
-                        .text_size(px(Type::XS))
-                        .opacity(0.7)
-                        .child(if is_selected { "In use" } else { "Tap to use" }),
+                    if is_selected {
+                        div()
+                            .rounded(px(Radius::FULL))
+                            .bg(Accent::DEFAULT)
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(SHELL.base)
+                            .child("Active")
+                    } else {
+                        div()
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .text_color(Text::MUTED)
+                            .child("Select")
+                    }
                 )
                 .on_click(move |_event, _window, _cx| {
                     push_effect(SideEffect::SetCamera(id.clone()))
