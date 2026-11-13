@@ -1401,13 +1401,20 @@ class StreamSession(
             supportedFps = camera.supportedFrameRates(cameraId),
             highSpeedSizes = camera.highSpeedSizes(cameraId),
         )
-        val unchanged = resolved.width == _state.value.actualResolution?.let {
-            VideoPreset.parseResolution(it)?.first
-        } && resolved.fps == _state.value.actualFps
+        val actualParsed = _state.value.actualResolution?.let {
+            VideoPreset.parseResolution(it)
+        }
+        val sameResolution = actualParsed != null &&
+            resolved.width == actualParsed.first &&
+            resolved.height == actualParsed.second
 
-        if (unchanged) {
+        if (sameResolution) {
+            if (resolved.fps != _state.value.actualFps) {
+                camera.setFrameRate(resolved.fps)
+            }
             encoder?.updateBitrate(resolved.bitrate)
             _state.value = _state.value.copy(
+                actualFps = resolved.fps,
                 bitrate = resolved.bitrate,
                 notice = resolved.notice,
                 // A substitution, so it goes back to the default heading.
@@ -1415,7 +1422,7 @@ class StreamSession(
             )
             sendState()
         } else {
-            stopStreaming(notifyPeer = false)
+            stopStreaming(notifyPeer = false, keepVideoChannel = true)
             scheduleStreamRestart()
         }
     }
@@ -1426,7 +1433,7 @@ class StreamSession(
             rotation = message.rotation,
         )
         val cameraId = _state.value.selectedCameraId
-        if (message.zoom > 0f && cameraId != null) {
+        if (message.zoom > 0f && message.zoom != _state.value.zoom && cameraId != null) {
             camera.setZoom(cameraId, message.zoom)
             // CameraController clamps to the sensor's real maximum. Report the
             // value that is actually applied, not the value the desktop asked for.

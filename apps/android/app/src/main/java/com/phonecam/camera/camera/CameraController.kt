@@ -360,14 +360,15 @@ class CameraController(private val context: Context) {
     }
 
     /**
-     * Selects antibanding mode. Prefers 50 Hz (the standard in Indonesia, Asia, and Europe)
-     * so exposure times synchronize with 100 Hz LED/neon optical pulses, eliminating flicker.
+     * Selects antibanding mode. Prefers AUTO when supported so the camera HAL
+     * dynamically detects 50 Hz vs 60 Hz flicker (eliminating lighting and monitor
+     * beat flicker), falling back to 50 Hz then 60 Hz.
      */
     private fun selectAntibandingMode(characteristics: CameraCharacteristics): Int {
         val modes = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES) ?: intArrayOf()
         return when {
-            modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
             modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+            modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
             modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ) -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ
             else -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
         }

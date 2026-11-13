@@ -219,6 +219,13 @@ class ProtoTest {
         assertEquals(30, decoded.fps)
         assertEquals(8_000_000, decoded.bitrate)
 
+        val setVideoAuto = """{"t":"set_video","resolution":"1920x1080","fps":"auto","bitrate":8000000}"""
+        val decodedAuto = ControlCodec.decodeDesktop(setVideoAuto.toByteArray())
+        assertTrue(decodedAuto is DesktopMessage.SetVideo)
+        assertEquals("1920x1080", (decodedAuto as DesktopMessage.SetVideo).resolution)
+        assertEquals(-1, decodedAuto.fps)
+        assertEquals(8_000_000, decodedAuto.bitrate)
+
         // Forward compatibility: a newer desktop may send a command this build
         // does not know, which must be ignored rather than throwing (docs §6).
         val unknown = """{"t":"a_command_from_the_future","payload":{"x":1}}"""

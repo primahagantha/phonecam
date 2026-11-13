@@ -1,9 +1,51 @@
 package com.phonecam.camera.protocol
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
+
+/**
+ * Handles wire serialization for FPS which can arrive as an integer (e.g. 30, 60)
+ * or as the string "auto" (§6.1).
+ */
+object FpsSerializer : KSerializer<Int> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("Fps", PrimitiveKind.INT)
+
+    override fun serialize(encoder: Encoder, value: Int) {
+        if (value <= 0) {
+            encoder.encodeString("auto")
+        } else {
+            encoder.encodeInt(value)
+        }
+    }
+
+    override fun deserialize(decoder: Decoder): Int {
+        val jsonDecoder = decoder as? JsonDecoder
+        if (jsonDecoder != null) {
+            val element = jsonDecoder.decodeJsonElement()
+            return when {
+                element is JsonPrimitive && element.isString -> {
+                    if (element.content.equals("auto", ignoreCase = true)) -1
+                    else element.content.toIntOrNull() ?: -1
+                }
+                element is JsonPrimitive -> element.intOrNull ?: -1
+                else -> -1
+            }
+        }
+        return runCatching { decoder.decodeInt() }.getOrElse { -1 }
+    }
+}
 
 /**
  * Control-channel messages, matching `docs/protocol.md` §6.
@@ -115,6 +157,7 @@ sealed class DesktopMessage {
     @SerialName("set_video")
     data class SetVideo(
         val resolution: String,
+        @Serializable(with = FpsSerializer::class)
         val fps: Int = -1,
         val bitrate: Int,
     ) : DesktopMessage()

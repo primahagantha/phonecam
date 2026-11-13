@@ -101,16 +101,20 @@ impl AppView {
         self.set_preview_in(pixels, width, height, None)
     }
 
-    /// Installs a decoded picture and drops the previous GPU texture from `window`.
+    /// Installs a decoded picture into the preview slot. Reclaims the previous
+    /// frame's buffer for recycling without forcefully dropping the GPU texture
+    /// mid-stream (which causes D3D11 texture atlas eviction flickering).
     pub fn set_preview_in(
         &mut self,
         pixels: Vec<u8>,
         width: u32,
         height: u32,
-        window: Option<&mut Window>,
+        _window: Option<&mut Window>,
     ) -> Option<Vec<u8>> {
+        // Pass None for window drop during per-frame stream updates so GPUI replaces
+        // textures smoothly without blanking or atlas churn.
         let recycled =
-            recycle_preview_image(&mut self.preview_image, &mut self.preview_capacity, window);
+            recycle_preview_image(&mut self.preview_image, &mut self.preview_capacity, None);
 
         let cap = pixels.capacity();
         if let Some(buffer) = image::RgbaImage::from_raw(width, height, pixels) {

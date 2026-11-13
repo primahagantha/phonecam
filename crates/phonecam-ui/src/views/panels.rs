@@ -1694,11 +1694,13 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
 
     let stats = state.core.as_ref().map(|c| &c.stats);
     let readout = rules::throughput_readout(stats, state.phase(), crate::theme::EMPTY_VALUE);
-    let phase_label = state
-        .core
-        .as_ref()
-        .map(|c| crate::views::state::stream_phase_label(c.phase))
-        .unwrap_or("Idle");
+    let (status_chip_label, status_tone) = if !state.status.connected {
+        ("ERROR", Tone::Danger)
+    } else if state.is_streaming() {
+        ("OK", Tone::Ok)
+    } else {
+        ("IDLE", Tone::Neutral)
+    };
 
     let mut children: Vec<AnyElement> = Vec::new();
 
@@ -1708,27 +1710,27 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
             div()
                 .flex()
                 .flex_row()
-                .items_baseline()
+                .items_center()
                 .justify_between()
                 .gap(px(Space::LG))
                 .child(
                     div()
                         .font_family(Fonts::SANS)
-                        .text_size(px(Type::TWO_XS))
+                        .text_size(px(Type::TWO_SM))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(Text::BODY)
+                        .text_color(Text::PRIMARY)
                         .child("Throughput"),
                 )
                 .child(chip(
-                    phase_label,
-                    if state.is_streaming() { Tone::Ok } else { Tone::Neutral },
+                    status_chip_label,
+                    status_tone,
                 ))
                 .into_any_element(),
             div()
                 .grid()
                 .grid_cols(2)
-                .gap_x(px(16.0))
-                .gap_y(px(Space::XL))
+                .gap_x(px(Space::XL))
+                .gap_y(px(Space::LG))
                 .child(metric("Frames per second", readout.fps, None))
                 .child(metric("Bitrate", readout.bitrate, None))
                 .child(metric("Latency", readout.latency, None))
@@ -1784,12 +1786,23 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
 
     let published_output = if state.settings.output_follows_stream {
         match state.frame_size {
-            Some((w, h)) => format!("Follow phone ({w}x{h})"),
-            None => "Follow phone stream".to_string(),
+            Some((w, h)) => format!("{w}×{h}"),
+            None => format!("{}×{}", state.settings.output_width, state.settings.output_height),
         }
     } else {
-        format!("{}x{}", state.settings.output_width, state.settings.output_height)
+        format!("{}×{}", state.settings.output_width, state.settings.output_height)
     };
+    let decoded_str = state
+        .frame_size
+        .map(|(w, h)| format!("{w}×{h}"))
+        .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string());
+    let phone_out_str = state
+        .core
+        .as_ref()
+        .and_then(|c| c.phone.as_ref())
+        .map(|p| p.actual_resolution.replace('x', "×"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string());
 
     children.push(section(
         "Being published",
@@ -1797,31 +1810,24 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
             key_value("Mirror", if state.settings.output_mirror { "On" } else { "Off" }, false),
             key_value("Rotation", format!("{}°", state.settings.output_rotation), false),
             key_value("Output", published_output, false),
-            key_value(
-                "Decoded",
-                state
-                    .frame_size
-                    .map(|(w, h)| format!("{w}x{h}"))
-                    .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string()),
-                false,
-            ),
-            key_value(
-                "Phone output",
-                state
-                    .core
-                    .as_ref()
-                    .and_then(|c| c.phone.as_ref())
-                    .map(|p| p.actual_resolution.clone())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string()),
-                false,
-            ),
+            key_value("Decoded", decoded_str, false),
+            key_value("Phone output", phone_out_str, false),
         ],
     ));
 
+    let service_endpoint = format!("127.0.0.1:{}", phonecam_protocol::SERVICE_PORT);
+    let socket_status = if state.status.connected { "connected" } else { "error" };
+    let socket_tone = if state.status.connected { Some(Tone::Ok) } else { Some(Tone::Danger) };
+
     children.push(section(
         "This app",
-        vec![key_value("Build", app_metadata_summary(), false)],
+        vec![
+            key_value("PhoneCam", env!("CARGO_PKG_VERSION"), false),
+            key_value("Engine", "GPUI", false),
+            key_value("Platform", if cfg!(windows) { "win32 x64" } else { "linux x64" }, false),
+            key_value("Service endpoint", service_endpoint, false),
+            key_value_toned("Service socket", socket_status, socket_tone),
+        ],
     ));
 
     let matching_logs = filtered_logs(state);
@@ -1884,64 +1890,67 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
             .collect()
     };
 
-    let level_filters: [(Option<phonecam_protocol::LogLevel>, &str, &str); 5] = [
-        (None, "All", "log-filter-lvl-all"),
-        (Some(phonecam_protocol::LogLevel::Error), "Error", "log-filter-lvl-error"),
-        (Some(phonecam_protocol::LogLevel::Warn), "Warn", "log-filter-lvl-warn"),
-        (Some(phonecam_protocol::LogLevel::Info), "Info", "log-filter-lvl-info"),
-        (Some(phonecam_protocol::LogLevel::Debug), "Debug", "log-filter-lvl-debug"),
-    ];
-    let source_filters: [(Option<LogSource>, &str, &str); 5] = [
-        (None, "All", "log-filter-src-all"),
-        (Some(LogSource::Core), "Core", "log-filter-src-core"),
-        (Some(LogSource::Media), "Media", "log-filter-src-media"),
-        (Some(LogSource::App), "App", "log-filter-src-app"),
-        (Some(LogSource::Phone), "Phone", "log-filter-src-phone"),
-    ];
-    let runtime_levels: [(phonecam_protocol::LogLevel, &str, &str); 5] = [
-        (phonecam_protocol::LogLevel::Error, "Error", "log-lvl-error"),
-        (phonecam_protocol::LogLevel::Warn, "Warn", "log-lvl-warn"),
-        (phonecam_protocol::LogLevel::Info, "Info", "log-lvl-info"),
-        (phonecam_protocol::LogLevel::Debug, "Debug", "log-lvl-debug"),
-        (phonecam_protocol::LogLevel::Trace, "Trace", "log-lvl-trace"),
-    ];
+    let next_filter_lvl = match state.log_filter_level {
+        None => Some(phonecam_protocol::LogLevel::Error),
+        Some(phonecam_protocol::LogLevel::Error) => Some(phonecam_protocol::LogLevel::Warn),
+        Some(phonecam_protocol::LogLevel::Warn) => Some(phonecam_protocol::LogLevel::Info),
+        Some(phonecam_protocol::LogLevel::Info) => Some(phonecam_protocol::LogLevel::Debug),
+        Some(phonecam_protocol::LogLevel::Debug) => None,
+        Some(phonecam_protocol::LogLevel::Trace) => None,
+    };
+    let filter_lvl_label = match state.log_filter_level {
+        None => "All levels",
+        Some(phonecam_protocol::LogLevel::Error) => "Error",
+        Some(phonecam_protocol::LogLevel::Warn) => "Warn",
+        Some(phonecam_protocol::LogLevel::Info) => "Info",
+        Some(phonecam_protocol::LogLevel::Debug) => "Debug",
+        Some(phonecam_protocol::LogLevel::Trace) => "Trace",
+    };
+
+    let next_filter_src = match state.log_filter_source {
+        None => Some(LogSource::Core),
+        Some(LogSource::Core) => Some(LogSource::App),
+        Some(LogSource::App) => Some(LogSource::Renderer),
+        Some(LogSource::Renderer) => Some(LogSource::Media),
+        Some(LogSource::Media) => Some(LogSource::Phone),
+        Some(LogSource::Phone) => None,
+    };
+    let filter_src_label = match state.log_filter_source {
+        None => "All sources",
+        Some(LogSource::Core) => "Service",
+        Some(LogSource::App) => "PhoneCam",
+        Some(LogSource::Renderer) => "App",
+        Some(LogSource::Media) => "Media",
+        Some(LogSource::Phone) => "Phone",
+    };
+
+    let next_runtime_lvl = match state.settings.log_level {
+        phonecam_protocol::LogLevel::Info => phonecam_protocol::LogLevel::Debug,
+        phonecam_protocol::LogLevel::Debug => phonecam_protocol::LogLevel::Trace,
+        phonecam_protocol::LogLevel::Trace => phonecam_protocol::LogLevel::Error,
+        phonecam_protocol::LogLevel::Error => phonecam_protocol::LogLevel::Warn,
+        phonecam_protocol::LogLevel::Warn => phonecam_protocol::LogLevel::Info,
+    };
+    let runtime_lvl_label = format!("Log level: {}", state.settings.log_level.as_str());
 
     children.push(section(
         "Log",
         vec![
             div()
-                .mb(px(Space::SM))
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .items_center()
-                .gap(px(Space::XS))
-                .children(level_filters.into_iter().map(|(lvl, label, id)| {
-                    pill_button(
-                        id,
-                        label,
-                        state.log_filter_level == lvl,
-                        false,
-                        move |_window, _cx| push_effect(SideEffect::SetLogFilterLevel(lvl)),
-                    )
-                }))
-                .into_any_element(),
-            div()
                 .mb(px(Space::MD))
                 .flex()
                 .flex_row()
-                .flex_wrap()
-                .items_center()
-                .gap(px(Space::XS))
-                .children(source_filters.into_iter().map(|(src, label, id)| {
-                    pill_button(
-                        id,
-                        label,
-                        state.log_filter_source == src,
-                        false,
-                        move |_window, _cx| push_effect(SideEffect::SetLogFilterSource(src)),
-                    )
-                }))
+                .gap(px(Space::MD))
+                .child(select_dropdown(
+                    "log-filter-level-select",
+                    filter_lvl_label,
+                    move |_window, _cx| push_effect(SideEffect::SetLogFilterLevel(next_filter_lvl)),
+                ))
+                .child(select_dropdown(
+                    "log-filter-source-select",
+                    filter_src_label,
+                    move |_window, _cx| push_effect(SideEffect::SetLogFilterSource(next_filter_src)),
+                ))
                 .into_any_element(),
             div()
                 .id(gpui::ElementId::Name(SharedString::from("log-well")))
@@ -1949,35 +1958,27 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                 .border_1()
                 .border_color(SHELL.border.alpha(0.6))
                 .bg(SHELL.recessed)
+                .min_h(px(140.0))
                 .max_h(px(288.0))
                 .overflow_y_scroll()
                 .p(px(Space::MD))
                 .children(log_body)
                 .into_any_element(),
             div()
-                .mt(px(Space::LG))
+                .mt(px(Space::MD))
                 .flex()
                 .flex_row()
-                .flex_wrap()
                 .items_center()
                 .justify_between()
-                .gap(px(Space::SM))
+                .gap(px(Space::MD))
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .items_center()
-                        .gap(px(Space::XS))
-                        .children(runtime_levels.into_iter().map(|(lvl, label, id)| {
-                            pill_button(
-                                id,
-                                label,
-                                state.settings.log_level == lvl,
-                                false,
-                                move |_window, _cx| push_effect(SideEffect::SetLogLevel(lvl)),
-                            )
-                        })),
+                        .w(px(220.0))
+                        .child(select_dropdown(
+                            "log-runtime-level-select",
+                            runtime_lvl_label,
+                            move |_window, _cx| push_effect(SideEffect::SetLogLevel(next_runtime_lvl)),
+                        )),
                 )
                 .child(
                     Button::new("Clear")
@@ -2127,6 +2128,49 @@ fn key_value_toned(label: &str, value: &str, tone: Option<Tone>) -> AnyElement {
         .into_any_element()
 }
 
+fn select_dropdown(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    div()
+        .id(gpui::ElementId::Name(id.into()))
+        .flex_1()
+        .min_w(px(120.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(Space::MD))
+        .rounded(px(Radius::MD))
+        .border_1()
+        .border_color(SHELL.border)
+        .bg(SHELL.control)
+        .hover(|s| s.bg(SHELL.raised).border_color(Accent::DEFAULT.alpha(0.6)))
+        .cursor_pointer()
+        .px(px(Space::LG))
+        .py(px(Space::SM))
+        .on_click(move |_ev, window, cx| {
+            on_click(window, cx);
+        })
+        .child(
+            div()
+                .font_family(Fonts::SANS)
+                .text_size(px(Type::XS))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(Text::PRIMARY)
+                .child(label.into()),
+        )
+        .child(
+            div()
+                .font_family(Fonts::SANS)
+                .text_size(px(Type::TWO_XS))
+                .text_color(Text::MUTED)
+                .child("▼"),
+        )
+        .into_any_element()
+}
+
 fn pill_button(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
@@ -2184,6 +2228,7 @@ const OUTPUT_SIZE_PRESETS: [(u32, u32); 6] = [
     (640, 360),
 ];
 
+#[allow(dead_code)]
 fn app_metadata_summary() -> String {
     let os = if cfg!(target_os = "windows") {
         "Windows"
