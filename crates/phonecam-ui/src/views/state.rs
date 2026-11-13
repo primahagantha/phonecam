@@ -338,6 +338,8 @@ pub struct AppState {
     /// flight: the phone keeps reporting the old camera until the new one is up,
     /// and reading that back made a working switch look ignored.
     pub pending_camera_id: Option<String>,
+    /// The primary local Wi-Fi / LAN IP address for phone connection.
+    pub local_ip: Option<String>,
 }
 
 impl AppState {

@@ -1417,6 +1417,7 @@ impl Runtime {
 
     /// Selects a phone camera immediately, persisting settings and sending `set_camera`.
     pub fn set_camera(&self, id: String) {
+        self.zoom_bits.store(1.0f32.to_bits(), Ordering::Relaxed);
         {
             let mut state = self.state.lock();
             state.settings.camera = id.clone();
@@ -2062,6 +2063,7 @@ impl Runtime {
         }
 
         state.core = Some(core);
+        state.local_ip = local_ipv4_addresses().into_iter().find(|ip| ip != "127.0.0.1");
         state.status = CoreStatus {
             connected: true,
             last_error: None,

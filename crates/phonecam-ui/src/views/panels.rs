@@ -595,6 +595,92 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
         }));
     }
 
+    let local_ip_str = state.local_ip.as_deref().unwrap_or("127.0.0.1");
+    let wifi_endpoint = format!("{}:{}", local_ip_str, phonecam_protocol::SERVICE_PORT);
+
+    children.push(section(
+        "Connect via Wi-Fi",
+        vec![
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(Space::SM))
+                .rounded(px(Radius::MD))
+                .border_1()
+                .border_color(Accent::DEFAULT.alpha(0.35))
+                .bg(Accent::DEFAULT.alpha(0.06))
+                .p(px(Space::PAD))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(Space::SM))
+                                .child(status_dot(Tone::Ok))
+                                .child(
+                                    div()
+                                        .font_family(Fonts::SANS)
+                                        .text_size(px(Type::TWO_SM))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(Text::PRIMARY)
+                                        .child("Wi-Fi / LAN Network"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .rounded(px(Radius::FULL))
+                                .border_1()
+                                .border_color(SHELL.border)
+                                .bg(SHELL.base)
+                                .px(px(Space::SM))
+                                .py(px(2.0))
+                                .font_family(Fonts::MONO)
+                                .text_size(px(Type::TWO_XS))
+                                .text_color(Accent::DEFAULT)
+                                .child(format!("Port {}", phonecam_protocol::SERVICE_PORT)),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(Space::XS))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .font_family(Fonts::SANS)
+                                .text_size(px(Type::XS))
+                                .text_color(Text::MUTED)
+                                .child("PC IP Address:"),
+                        )
+                        .child(
+                            div()
+                                .font_family(Fonts::MONO)
+                                .text_size(px(Type::TWO_SM))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(Text::PRIMARY)
+                                .child(wifi_endpoint),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(Space::XS))
+                        .font_family(Fonts::SANS)
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(Text::BODY)
+                        .child("1. Connect phone and PC to the same Wi-Fi.\n2. In PhoneCam Android, scan the QR code on the left or tap Search.\n3. Or enter the PC IP address above manually in the Android app."),
+                )
+                .into_any_element(),
+        ],
+    ));
+
     children.push(section(
         "Or use a cable",
         vec![
@@ -1820,6 +1906,11 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
     ));
 
     let service_endpoint = format!("127.0.0.1:{}", phonecam_protocol::SERVICE_PORT);
+    let wifi_endpoint = state
+        .local_ip
+        .as_deref()
+        .map(|ip| format!("{}:{}", ip, phonecam_protocol::SERVICE_PORT))
+        .unwrap_or_else(|| "Unavailable".to_string());
     let socket_status = if state.status.connected { "connected" } else { "error" };
     let socket_tone = if state.status.connected { Some(Tone::Ok) } else { Some(Tone::Danger) };
 
@@ -1830,7 +1921,9 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
             key_value("Engine", "GPUI", false),
             key_value("Platform", if cfg!(windows) { "win32 x64" } else { "linux x64" }, false),
             key_value("Service endpoint", service_endpoint, false),
+            key_value("Wi-Fi endpoint", wifi_endpoint, false),
             key_value_toned("Service socket", socket_status, socket_tone),
+            key_value("Log file", "%APPDATA%\\PhoneCam\\desktop.log", true),
         ],
     ));
 
@@ -1856,10 +1949,13 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                 div()
                     .flex()
                     .flex_row()
-                    .gap(px(Space::MD))
+                    .items_start()
+                    .gap(px(Space::SM))
+                    .py(px(2.0))
                     .child(
                         div()
                             .flex_shrink_0()
+                            .w(px(72.0))
                             .font_family(Fonts::MONO)
                             .text_size(px(Type::TWO_XS))
                             .text_color(Text::MUTED)
@@ -1868,25 +1964,31 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                     .child(
                         div()
                             .flex_shrink_0()
+                            .w(px(46.0))
                             .font_family(Fonts::MONO)
                             .text_size(px(Type::TWO_XS))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(log_level_colour(line.level))
                             .child(level_label(line.level)),
                     )
                     .child(
                         div()
                             .flex_shrink_0()
+                            .rounded(px(Radius::SM))
+                            .bg(Accent::DEFAULT.alpha(0.10))
+                            .px(px(Space::XS))
                             .font_family(Fonts::MONO)
                             .text_size(px(Type::TWO_XS))
-                            .text_color(Text::MUTED)
+                            .text_color(Accent::DEFAULT)
                             .child(line.source.label()),
                     )
                     .child(
                         div()
+                            .flex_grow()
                             .min_w(px(0.0))
                             .font_family(Fonts::MONO)
                             .text_size(px(Type::TWO_XS))
-                            .text_color(Text::BODY)
+                            .text_color(Text::PRIMARY)
                             .child(line.message.clone()),
                     )
                     .into_any_element()
@@ -1958,12 +2060,15 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                 .into_any_element(),
             div()
                 .id(gpui::ElementId::Name(SharedString::from("log-well")))
+                .flex()
+                .flex_col()
+                .gap(px(Space::XS))
                 .rounded(px(Radius::MD))
                 .border_1()
                 .border_color(SHELL.border.alpha(0.6))
                 .bg(SHELL.recessed)
-                .min_h(px(140.0))
-                .max_h(px(288.0))
+                .min_h(px(160.0))
+                .max_h(px(320.0))
                 .overflow_y_scroll()
                 .p(px(Space::MD))
                 .children(log_body)
@@ -1977,7 +2082,7 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                 .gap(px(Space::MD))
                 .child(
                     div()
-                        .w(px(220.0))
+                        .w(px(200.0))
                         .child(select_dropdown(
                             "log-runtime-level-select",
                             runtime_lvl_label,
@@ -1985,9 +2090,20 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                         )),
                 )
                 .child(
-                    Button::new("Clear")
-                        .disabled(state.logs.is_empty())
-                        .on_click(|_window, _cx| push_effect(SideEffect::ClearLogs)),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(Space::SM))
+                        .child(
+                            Button::new("Open log file")
+                                .on_click(|_window, _cx| push_effect(SideEffect::OpenLogFile)),
+                        )
+                        .child(
+                            Button::new("Clear")
+                                .disabled(state.logs.is_empty())
+                                .on_click(|_window, _cx| push_effect(SideEffect::ClearLogs)),
+                        ),
                 )
                 .into_any_element(),
             div()

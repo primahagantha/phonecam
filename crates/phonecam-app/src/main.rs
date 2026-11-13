@@ -464,6 +464,32 @@ fn apply_effect(
             runtime.state.lock().logs.clear();
             runtime.bump_state_version();
         }
+        SideEffect::OpenLogFile => {
+            let log_path = crate::logging::default_log_path();
+            if let Some(parent) = log_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if !log_path.exists() {
+                let _ = std::fs::write(&log_path, "");
+            }
+            #[cfg(windows)]
+            {
+                let spawned = std::process::Command::new("notepad.exe")
+                    .arg(&log_path)
+                    .spawn();
+                if spawned.is_err() {
+                    let _ = std::process::Command::new("explorer.exe")
+                        .arg(&log_path)
+                        .spawn();
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(&log_path)
+                    .spawn();
+            }
+        }
         SideEffect::ToggleAlwaysOnTop => {
             let snapshot = {
                 let mut state = runtime.state.lock();

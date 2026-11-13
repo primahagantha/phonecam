@@ -597,29 +597,48 @@ class CameraController(private val context: Context) {
 
     private fun computeCropRect(characteristics: CameraCharacteristics, zoomFactor: Float): Rect? {
         val maxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+        if (maxZoom <= 1.0f) return null
         val clamped = zoomFactor.coerceIn(1f, maxZoom)
-        zoom = clamped
         val sensorRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
-        val cropWidth = (sensorRect.width() / clamped).toInt()
-        val cropHeight = (sensorRect.height() / clamped).toInt()
-        return Rect(
-            sensorRect.centerX() - cropWidth / 2,
-            sensorRect.centerY() - cropHeight / 2,
-            sensorRect.centerX() + cropWidth / 2,
-            sensorRect.centerY() + cropHeight / 2,
-        )
+        if (clamped <= 1.001f) {
+            zoom = 1f
+            return sensorRect
+        }
+        zoom = clamped
+        val cropWidth = (sensorRect.width() / clamped).toInt().coerceAtLeast(1)
+        val cropHeight = (sensorRect.height() / clamped).toInt().coerceAtLeast(1)
+        val left = sensorRect.left + (sensorRect.width() - cropWidth) / 2
+        val top = sensorRect.top + (sensorRect.height() - cropHeight) / 2
+        return Rect(left, top, left + cropWidth, top + cropHeight)
     }
 
     /**
-     * Digital zoom via a crop region.
+     * Digital zoom via a crop region or Android 11+ zoom ratio.
      *
      * Clamped to the sensor's reported maximum so a request beyond the hardware
-     * cannot silently produce a black frame.
+     * cannot silently produce an invalid frame or HAL crash.
      */
     fun setZoom(cameraId: String, zoomFactor: Float) {
         val builder = requestBuilder ?: return
         val characteristics = getCharacteristics(cameraId) ?: return
+        val maxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+        if (maxZoom <= 1.0f) {
+            zoom = 1f
+            return
+        }
+
         runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val zoomRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                if (zoomRange != null) {
+                    val clamped = zoomFactor.coerceIn(zoomRange.lower, zoomRange.upper)
+                    zoom = clamped
+                    builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, clamped)
+                    applyRequest(builder)
+                    return
+                }
+            }
+
             val crop = computeCropRect(characteristics, zoomFactor) ?: return
             builder.set(CaptureRequest.SCALER_CROP_REGION, crop)
             applyRequest(builder)

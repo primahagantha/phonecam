@@ -41,6 +41,7 @@
 
     <!-- Connection -->
     <string name="section_connection">Connection</string>
+    <string name="section_connection_subtitle">Wi-Fi (Same Network) or USB Cable</string>
     <string name="action_start_session">Start PhoneCam</string>
     <string name="action_stop_session">Stop PhoneCam</string>
     <string name="action_search_now">Search again</string>
@@ -69,13 +70,13 @@
     <string name="discovered_state_busy">Busy with another phone</string>
     <string name="paired_title">Paired PC</string>
     <string name="paired_none">No PC paired yet</string>
-    <string name="manual_title">Connect by address</string>
-    <string name="action_manual_show">Connect by address instead</string>
-    <string name="action_manual_hide">Hide address form</string>
+    <string name="manual_title">Connect by Wi-Fi / LAN IP</string>
+    <string name="action_manual_show">Connect by Wi-Fi IP address instead</string>
+    <string name="action_manual_hide">Hide Wi-Fi IP form</string>
     <string name="manual_host_label">PC address</string>
     <string name="manual_host_hint">192.168.1.24</string>
     <string name="manual_port_label">Port</string>
-    <string name="manual_hint">Use this when the PC isn\'t found automatically. A USB connection uses 127.0.0.1.</string>
+    <string name="manual_hint">Use this when auto-discovery is blocked on your Wi-Fi network. Default port is 48721. For USB cable, use 127.0.0.1.</string>
     <string name="error_invalid_host">Enter your PC\'s address, for example 192.168.1.24.</string>
     <string name="error_invalid_port">Enter a port between 1 and 65535.</string>
     <string name="error_invalid_qr">That code isn\'t a PhoneCam pairing code.</string>

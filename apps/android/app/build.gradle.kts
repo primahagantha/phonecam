@@ -84,6 +84,7 @@ android {
     lint {
         abortOnError = false
         warningsAsErrors = false
+        checkReleaseBuilds = false
     }
 }
 

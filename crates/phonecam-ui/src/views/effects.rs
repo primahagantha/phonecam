@@ -45,6 +45,7 @@ pub enum SideEffect {
     ExportDiagnostics,
     CopyDiagnosticsReport,
     ClearLogs,
+    OpenLogFile,
     ToggleAlwaysOnTop,
     SelectPairingNetwork(usize),
     CopyPairingPayload,

@@ -68,6 +68,7 @@ fun ConnectionCard(
 ) {
     SectionCard(
         title = stringResource(R.string.section_connection),
+        subtitle = stringResource(R.string.section_connection_subtitle),
         modifier = modifier,
     ) {
         PairingBlock(
