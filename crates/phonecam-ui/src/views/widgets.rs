@@ -225,6 +225,7 @@ pub struct Button {
     variant: ButtonVariant,
     disabled: bool,
     selected: bool,
+    full_width: bool,
     on_click: Option<Box<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
     focus_handle: Option<gpui::FocusHandle>,
     tab_index: Option<isize>,
@@ -237,6 +238,7 @@ impl Button {
             variant: ButtonVariant::Default,
             disabled: false,
             selected: false,
+            full_width: false,
             on_click: None,
             focus_handle: None,
             tab_index: None,
@@ -263,6 +265,11 @@ impl Button {
     /// Draws the button in its "selected" state, which the accent marks.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    pub fn full_width(mut self) -> Self {
+        self.full_width = true;
         self
     }
 
@@ -337,6 +344,10 @@ impl IntoElement for Button {
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(text)
             .child(self.label);
+
+        if self.full_width {
+            element = element.w_full();
+        }
 
         if self.disabled {
             element = element.opacity(0.4).cursor_default();
@@ -820,5 +831,11 @@ mod interaction_tests {
 
         let tgl = Toggle::new("Test", false).tab_index(2);
         assert_eq!(tgl.tab_index, Some(2));
+    }
+
+    #[test]
+    fn button_supports_full_width() {
+        let btn = Button::new("Test").full_width();
+        assert!(btn.full_width);
     }
 }

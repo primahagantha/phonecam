@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -29,6 +31,7 @@ import androidx.compose.material.icons.filled.Output
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Troubleshoot
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -51,10 +54,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -88,6 +95,7 @@ import com.phonecam.camera.ui.components.PermissionDeniedCard
 import com.phonecam.camera.ui.components.PhasePill
 import com.phonecam.camera.ui.components.StatusCard
 import com.phonecam.camera.ui.components.StreamingOverlay
+import com.phonecam.camera.ui.theme.PhoneCamShapes
 import com.phonecam.camera.ui.theme.PhoneCamTheme
 
 /**
@@ -544,13 +552,15 @@ private fun StatusScreen(
         }
 
         // A failure is calm prose with a way out, never a wall (PRD §38).
-        state.error?.let { message ->
+        if (state.phase == SessionState.Phase.ERROR && state.error != null) {
             ErrorCard(
-                message = message,
+                message = state.error,
                 onRetry = onRetry,
                 secondaryLabel = stringResource(R.string.action_scan_qr),
                 onSecondary = onScanQr,
             )
+        } else if (state.phase == SessionState.Phase.CONNECTING || state.phase == SessionState.Phase.RECONNECTING) {
+            ConnectingCard()
         }
 
         // A capability substitution is normal operation, so it is an inline
@@ -762,4 +772,36 @@ private fun aspectRatioOf(resolution: String?, rotation: Int = 0): Float {
     if (width <= 0f || height <= 0f) return 16f / 9f
     val ratio = width / height
     return if (rotation == 90 || rotation == 270) 1f / ratio else ratio
+}
+
+/**
+ * A calm indicator shown while connecting or reconnecting to a PC.
+ *
+ * Avoids flashing an alarming red error card when the session is simply
+ * searching for or negotiating a connection to the desktop.
+ */
+@Composable
+private fun ConnectingCard(modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(PhoneCamShapes.Panel)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PhoneCamShapes.Panel)
+            .padding(16.dp)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(20.dp),
+            strokeWidth = 2.dp,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Text(
+            text = "Searching for PC on local network...",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
 }

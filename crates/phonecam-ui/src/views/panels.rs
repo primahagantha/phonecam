@@ -17,7 +17,7 @@ use crate::views::state::{
     thermal_label, AppState, LogSource, NoticeAction,
 };
 use crate::views::widgets::{
-    chip, key_value, metric, prose, section, status_dot, tinted_box, Button, Panel,
+    chip, key_value, numeric_font, prose, section, status_dot, tinted_box, Button, Panel,
     Toggle,
 };
 
@@ -1818,22 +1818,6 @@ pub fn connection_panel(state: &AppState) -> AnyElement {
 
 /// The numbers, and the log.
 pub fn diagnostics_panel(state: &AppState) -> AnyElement {
-    let panel = Panel::new("Diagnostics")
-        .action(Button::new("Refresh").on_click(|_window, _cx| {
-            push_effect(SideEffect::RefreshState)
-        }))
-        .action(Button::new("Open log").on_click(|_window, _cx| {
-            push_effect(SideEffect::OpenLogFile)
-        }))
-        .action(Button::new("Export").on_click(|_window, _cx| {
-            push_effect(SideEffect::ExportDiagnostics)
-        }))
-        .action(Button::new("Copy report").on_click(|_window, _cx| {
-            push_effect(SideEffect::CopyDiagnosticsReport)
-        }));
-
-    let stats = state.core.as_ref().map(|c| &c.stats);
-    let readout = rules::throughput_readout(stats, state.phase(), crate::theme::EMPTY_VALUE);
     let (status_chip_label, status_tone) = if !state.status.connected {
         ("ERROR", Tone::Danger)
     } else if state.is_streaming() {
@@ -1842,88 +1826,120 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         ("IDLE", Tone::Neutral)
     };
 
+    let panel = Panel::new("Diagnostics")
+        .action(chip(status_chip_label, status_tone));
+
     let mut children: Vec<AnyElement> = Vec::new();
 
-    children.push(section(
-        "Live",
-        vec![
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap(px(Space::LG))
-                .child(
-                    div()
-                        .font_family(Fonts::SANS)
-                        .text_size(px(Type::TWO_SM))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(Text::PRIMARY)
-                        .child("Throughput"),
-                )
-                .child(chip(
-                    status_chip_label,
-                    status_tone,
-                ))
-                .into_any_element(),
-            div()
-                .grid()
-                .grid_cols(2)
-                .gap_x(px(Space::XL))
-                .gap_y(px(Space::LG))
-                .child(metric("Frames per second", readout.fps, None))
-                .child(metric("Bitrate", readout.bitrate, None))
-                .child(metric("Latency", readout.latency, None))
-                .child(metric("Dropped", readout.dropped, None))
-                .into_any_element(),
-        ],
-    ));
+    // 1. Action Toolbar: dedicated, beautifully aligned 2x2 grid
+    let toolbar = div()
+        .grid()
+        .grid_cols(2)
+        .gap(px(Space::MD))
+        .child(
+            Button::new("Refresh")
+                .full_width()
+                .on_click(|_window, _cx| push_effect(SideEffect::RefreshState)),
+        )
+        .child(
+            Button::new("Copy Report")
+                .full_width()
+                .on_click(|_window, _cx| push_effect(SideEffect::CopyDiagnosticsReport)),
+        )
+        .child(
+            Button::new("Export")
+                .full_width()
+                .on_click(|_window, _cx| push_effect(SideEffect::ExportDiagnostics)),
+        )
+        .child(
+            Button::new("Open Log File")
+                .full_width()
+                .on_click(|_window, _cx| push_effect(SideEffect::OpenLogFile)),
+        )
+        .into_any_element();
+    children.push(toolbar);
 
+    // 2. Live Throughput Metric Cards: modern 2x2 card tiles
+    let stats = state.core.as_ref().map(|c| &c.stats);
+    let readout = rules::throughput_readout(stats, state.phase(), crate::theme::EMPTY_VALUE);
+    let fps_display = if readout.fps == crate::theme::EMPTY_VALUE {
+        crate::theme::EMPTY_VALUE.to_string()
+    } else {
+        format!("{} fps", readout.fps)
+    };
+
+    let throughput_grid = div()
+        .grid()
+        .grid_cols(2)
+        .gap(px(Space::MD))
+        .child(metric_card_tile("FPS", fps_display))
+        .child(metric_card_tile("BITRATE", readout.bitrate))
+        .child(metric_card_tile("LATENCY", readout.latency))
+        .child(metric_card_tile("DROPPED", readout.dropped))
+        .into_any_element();
+    children.push(section("Throughput", vec![throughput_grid]));
+
+    // 3. Structured System & Device Info Cards
+    // Card A: "Connected Phone"
     let device = state.core.as_ref().and_then(|c| c.device.as_ref());
     let facts = state.device_facts();
-    let phone_rows: Vec<AnyElement> = match device {
+    let phone_card: AnyElement = match device {
         Some(device) => {
-            let mut rows = vec![key_value("Name", device.name.clone(), false)];
+            let mut rows: Vec<(SharedString, AnyElement)> = Vec::new();
+            rows.push(("Name".into(), card_text_val(device.name.clone(), false)));
             if let Some(model) = facts.model {
-                rows.push(key_value("Model", model, false));
+                rows.push(("Model".into(), chip(model, Tone::Neutral)));
             }
-            rows.push(key_value("Device id", device.device_id.clone(), true));
+            rows.push(("Device ID".into(), card_text_val(device.device_id.clone(), true)));
             if let Some(version) = facts.android_version {
-                rows.push(key_value("Android", version.to_string(), false));
+                rows.push(("Android".into(), card_text_val(version.to_string(), false)));
             }
-            let battery_value = state
-                .core
-                .as_ref()
-                .and_then(|c| c.phone.as_ref())
-                .and_then(|p| format_battery(p.battery, p.charging))
-                .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string());
-            rows.push(key_value("Battery", battery_value, false));
-            rows.push(key_value(
-                "Cameras",
-                state
-                    .capabilities
-                    .as_ref()
-                    .map(|c| c.cameras.len().to_string())
-                    .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string()),
-                false,
-            ));
-            rows.push(key_value(
-                "App version",
-                state
-                    .capabilities
-                    .as_ref()
-                    .map(|c| c.device.app_version.clone())
-                    .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string()),
-                false,
-            ));
-            rows
-        }
-        None => vec![prose(
-            "Nothing connected. Pair a phone from Setup and its details appear here.",
-        )],
-    };
-    children.push(section("Connected phone", phone_rows));
 
+            let phone_info = state.core.as_ref().and_then(|c| c.phone.as_ref());
+            let (batt_label, batt_tone) = match phone_info.and_then(|p| format_battery(p.battery, p.charging)) {
+                Some(label) => {
+                    let b = phone_info.map(|p| p.battery).unwrap_or(0);
+                    let is_charging = phone_info.map(|p| p.charging).unwrap_or(false);
+                    let tone = if is_charging {
+                        Tone::Ok
+                    } else if b <= 20 {
+                        Tone::Danger
+                    } else {
+                        Tone::Neutral
+                    };
+                    (label, tone)
+                }
+                None => (crate::theme::EMPTY_VALUE.to_string(), Tone::Neutral),
+            };
+            rows.push(("Battery".into(), chip(batt_label, batt_tone)));
+
+            let cam_count = state.capabilities.as_ref().map(|c| c.cameras.len());
+            let cam_label = cam_count
+                .map(|count| format!("{count} cameras"))
+                .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string());
+            rows.push(("Cameras".into(), chip(cam_label, Tone::Neutral)));
+
+            let app_ver = state
+                .capabilities
+                .as_ref()
+                .map(|c| format!("v{}", c.device.app_version))
+                .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string());
+            rows.push(("App version".into(), chip(app_ver, Tone::Neutral)));
+
+            info_card_from_rows(rows)
+        }
+        None => info_card(vec![
+            div()
+                .py(px(Space::SM))
+                .child(prose(
+                    "Nothing connected. Pair a phone from Setup and its details appear here.",
+                ))
+                .into_any_element(),
+        ]),
+    };
+    children.push(section("Connected phone", vec![phone_card]));
+
+    // Card B: "Output Stream"
     let published_output = if state.settings.output_follows_stream {
         match state.frame_size {
             Some((w, h)) => format!("{w}×{h}"),
@@ -1944,57 +1960,69 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| crate::theme::EMPTY_VALUE.to_string());
 
-    children.push(section(
-        "Being published",
-        vec![
-            key_value("Mirror", if state.settings.output_mirror { "On" } else { "Off" }, false),
-            key_value("Rotation", format!("{}°", state.settings.output_rotation), false),
-            key_value("Output", published_output, false),
-            key_value("Decoded", decoded_str, false),
-            key_value("Phone output", phone_out_str, false),
-        ],
-    ));
+    let output_rows = vec![
+        ("Mirror".into(), card_text_val(if state.settings.output_mirror { "On" } else { "Off" }, false)),
+        ("Rotation".into(), card_text_val(format!("{}°", state.settings.output_rotation), false)),
+        ("Output resolution".into(), card_text_val(published_output, false)),
+        ("Decoded stream".into(), card_text_val(decoded_str, false)),
+        ("Phone stream resolution".into(), card_text_val(phone_out_str, false)),
+    ];
+    children.push(section("Output stream", vec![info_card_from_rows(output_rows)]));
 
+    // Card C: "Network & Endpoints"
     let service_endpoint = format!("127.0.0.1:{}", phonecam_protocol::SERVICE_PORT);
     let wifi_endpoint = state
         .local_ip
         .as_deref()
         .map(|ip| format!("{}:{}", ip, phonecam_protocol::SERVICE_PORT))
         .unwrap_or_else(|| "Unavailable".to_string());
-    let socket_status = if state.status.connected { "connected" } else { "error" };
-    let socket_tone = if state.status.connected { Some(Tone::Ok) } else { Some(Tone::Danger) };
 
-    children.push(section(
-        "This app",
-        vec![
-            key_value("PhoneCam", env!("CARGO_PKG_VERSION"), false),
-            key_value("Engine", "GPUI", false),
-            key_value("Platform", if cfg!(windows) { "win32 x64" } else { "linux x64" }, false),
-            key_value("Service endpoint", service_endpoint, false),
-            key_value("Wi-Fi endpoint", wifi_endpoint, false),
-            key_value_toned("Service socket", socket_status, socket_tone),
-            key_value("Log file", "%APPDATA%\\PhoneCam\\desktop.log", true),
-        ],
-    ));
+    let socket_dot_el = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(Space::SM))
+        .child(status_dot(if state.status.connected { Tone::Ok } else { Tone::Danger }))
+        .child(
+            div()
+                .font_family(Fonts::SANS)
+                .text_size(px(Type::TWO_SM))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(if state.status.connected { Status::OK } else { Status::DANGER_TEXT })
+                .child(if state.status.connected { "Connected" } else { "Disconnected" }),
+        )
+        .into_any_element();
 
+    let network_rows = vec![
+        ("Service endpoint".into(), card_text_val(service_endpoint, true)),
+        ("Wi-Fi endpoint".into(), card_text_val(wifi_endpoint, true)),
+        ("Socket status".into(), socket_dot_el),
+        ("Log file".into(), card_text_val("%APPDATA%\\PhoneCam\\desktop.log", true)),
+        ("Platform".into(), card_text_val(if cfg!(windows) { "win32 x64" } else { "linux x64" }, false)),
+    ];
+    children.push(section("Network & endpoints", vec![info_card_from_rows(network_rows)]));
+
+    // 4. Redesigned Log Viewer
     let matching_logs = filtered_logs(state);
     let log_body: Vec<AnyElement> = if state.logs.is_empty() {
         vec![div()
-            .font_family(Fonts::SANS)
+            .py(px(Space::MD))
+            .font_family(Fonts::MONO)
             .text_size(px(Type::XS))
             .text_color(Text::MUTED)
             .child("Nothing logged yet. Lines appear as the service and the phone report in.")
             .into_any_element()]
     } else if matching_logs.is_empty() {
         vec![div()
-            .font_family(Fonts::SANS)
+            .py(px(Space::MD))
+            .font_family(Fonts::MONO)
             .text_size(px(Type::XS))
             .text_color(Text::MUTED)
             .child("No lines match these filters.")
             .into_any_element()]
     } else {
         matching_logs
-            .into_iter()
+            .iter()
             .map(|line| {
                 div()
                     .flex()
@@ -2011,22 +2039,19 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                             .text_color(Text::MUTED)
                             .child(format_log_time(line.ts_ms)),
                     )
+                    .child(log_level_badge(line.level))
                     .child(
                         div()
                             .flex_shrink_0()
-                            .w(px(46.0))
-                            .font_family(Fonts::MONO)
-                            .text_size(px(Type::TWO_XS))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(log_level_colour(line.level))
-                            .child(level_label(line.level)),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
+                            .w(px(52.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .rounded(px(Radius::SM))
                             .bg(Accent::DEFAULT.alpha(0.10))
-                            .px(px(Space::XS))
+                            .border_1()
+                            .border_color(Accent::DEFAULT.alpha(0.20))
+                            .py(px(1.0))
                             .font_family(Fonts::MONO)
                             .text_size(px(Type::TWO_XS))
                             .text_color(Accent::DEFAULT)
@@ -2089,14 +2114,25 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
     };
     let runtime_lvl_label = format!("Log level: {}", state.settings.log_level.as_str());
 
-    children.push(section(
-        "Log",
-        vec![
+    let log_line_count = if matching_logs.len() == state.logs.len() {
+        format!("{} lines", matching_logs.len())
+    } else {
+        format!("{}/{} lines", matching_logs.len(), state.logs.len())
+    };
+
+    let filter_bar = div()
+        .mb(px(Space::MD))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(Space::MD))
+        .child(
             div()
-                .mb(px(Space::MD))
                 .flex()
                 .flex_row()
-                .gap(px(Space::MD))
+                .items_center()
+                .gap(px(Space::SM))
                 .child(select_dropdown(
                     "log-filter-level-select",
                     filter_lvl_label,
@@ -2106,25 +2142,52 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                     "log-filter-source-select",
                     filter_src_label,
                     move |_window, _cx| push_effect(SideEffect::SetLogFilterSource(next_filter_src)),
-                ))
-                .into_any_element(),
+                )),
+        )
+        .child(
             div()
-                .id(gpui::ElementId::Name(SharedString::from("log-well")))
                 .flex()
-                .flex_col()
-                .gap(px(Space::XS))
-                .rounded(px(Radius::MD))
-                .border_1()
-                .border_color(SHELL.border.alpha(0.6))
-                .bg(SHELL.recessed)
-                .min_h(px(160.0))
-                .max_h(px(320.0))
-                .overflow_y_scroll()
-                .p(px(Space::MD))
-                .children(log_body)
-                .into_any_element(),
+                .flex_row()
+                .items_center()
+                .gap(px(Space::MD))
+                .child(
+                    div()
+                        .font_family(Fonts::MONO)
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(Text::MUTED)
+                        .child(log_line_count),
+                )
+                .child(
+                    Button::new("Clear")
+                        .disabled(state.logs.is_empty())
+                        .on_click(|_window, _cx| push_effect(SideEffect::ClearLogs)),
+                ),
+        )
+        .into_any_element();
+
+    let terminal_well = div()
+        .id(gpui::ElementId::Name(SharedString::from("log-well")))
+        .flex()
+        .flex_col()
+        .gap(px(Space::XS))
+        .rounded(px(Radius::MD))
+        .border_1()
+        .border_color(SHELL.border.alpha(0.6))
+        .bg(SHELL.recessed)
+        .min_h(px(160.0))
+        .max_h(px(320.0))
+        .overflow_y_scroll()
+        .p(px(Space::MD))
+        .children(log_body)
+        .into_any_element();
+
+    let bottom_bar = div()
+        .mt(px(Space::MD))
+        .flex()
+        .flex_col()
+        .gap(px(Space::SM))
+        .child(
             div()
-                .mt(px(Space::MD))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -2140,33 +2203,168 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
                         )),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(Space::SM))
-                        .child(
-                            Button::new("Open log file")
-                                .on_click(|_window, _cx| push_effect(SideEffect::OpenLogFile)),
-                        )
-                        .child(
-                            Button::new("Clear")
-                                .disabled(state.logs.is_empty())
-                                .on_click(|_window, _cx| push_effect(SideEffect::ClearLogs)),
-                        ),
-                )
-                .into_any_element(),
+                    Button::new("Open in Notepad")
+                        .on_click(|_window, _cx| push_effect(SideEffect::OpenLogFile)),
+                ),
+        )
+        .child(
             div()
-                .mt(px(Space::MD))
                 .font_family(Fonts::SANS)
                 .text_size(px(Type::XS))
                 .text_color(Text::MUTED)
-                .child("Pairing tokens, device secrets and video data never appear here.")
-                .into_any_element(),
-        ],
-    ));
+                .child("Pairing tokens, device secrets and video frames are never logged. Open desktop.log directly in Notepad."),
+        )
+        .into_any_element();
+
+    children.push(section("Log", vec![filter_bar, terminal_well, bottom_bar]));
 
     panel.children(children).into_element()
+}
+
+/// A modern metric card tile: rounded corners, dark recessed background, subtle border,
+/// small uppercase muted label, and large prominent bold numeric value with unit.
+fn metric_card_tile(label: &'static str, value: impl Into<SharedString>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .justify_between()
+        .rounded(px(Radius::MD))
+        .border_1()
+        .border_color(SHELL.border.alpha(0.6))
+        .bg(SHELL.recessed)
+        .p(px(Space::PAD))
+        .gap(px(Space::XS))
+        .child(
+            div()
+                .font_family(Fonts::SANS)
+                .text_size(px(Type::TWO_XS))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(Text::MUTED)
+                .child(label),
+        )
+        .child(
+            div()
+                .font(numeric_font(Fonts::DISPLAY))
+                .text_size(px(18.0))
+                .font_weight(gpui::FontWeight::BOLD)
+                .text_color(Text::PRIMARY)
+                .child(value.into()),
+        )
+        .into_any_element()
+}
+
+/// A structured info card container: rounded corners, subtle border, recessed background.
+fn info_card(rows: Vec<AnyElement>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .rounded(px(Radius::MD))
+        .border_1()
+        .border_color(SHELL.border.alpha(0.6))
+        .bg(SHELL.recessed)
+        .px(px(Space::PAD))
+        .py(px(Space::XS))
+        .children(rows)
+        .into_any_element()
+}
+
+/// A key-value row inside a structured card, with subtle row divider if not last.
+fn card_kv_row(
+    label: impl Into<SharedString>,
+    value_el: AnyElement,
+    is_last: bool,
+) -> AnyElement {
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(Space::PAD))
+        .py(px(Space::SM))
+        .child(
+            div()
+                .flex_shrink()
+                .overflow_hidden()
+                .font_family(Fonts::SANS)
+                .text_size(px(Type::TWO_XS))
+                .text_color(Text::MUTED)
+                .child(label.into()),
+        )
+        .child(value_el);
+
+    if !is_last {
+        row = row.border_b_1().border_color(SHELL.border.alpha(0.25));
+    }
+
+    row.into_any_element()
+}
+
+/// Formats a value as text for a card row.
+fn card_text_val(text: impl Into<SharedString>, mono: bool) -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .text_right()
+        .font_family(if mono { Fonts::MONO } else { Fonts::SANS })
+        .text_size(px(if mono { Type::XS } else { Type::TWO_SM }))
+        .text_color(Text::HEADING)
+        .child(text.into())
+        .into_any_element()
+}
+
+/// Builds an info card from a list of (label, value_element) pairs.
+fn info_card_from_rows(rows: Vec<(SharedString, AnyElement)>) -> AnyElement {
+    let len = rows.len();
+    let row_elements = rows
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (label, val))| card_kv_row(label, val, idx + 1 == len))
+        .collect();
+    info_card(row_elements)
+}
+
+/// A fixed-width level badge with distinct background, border, and text styling.
+fn log_level_badge(level: phonecam_protocol::LogLevel) -> AnyElement {
+    let (bg, border) = match level {
+        phonecam_protocol::LogLevel::Error => (
+            Status::DANGER.alpha(0.15),
+            Status::DANGER.alpha(0.4),
+        ),
+        phonecam_protocol::LogLevel::Warn => (
+            Status::WARN.alpha(0.15),
+            Status::WARN.alpha(0.4),
+        ),
+        phonecam_protocol::LogLevel::Info => (
+            Accent::DEFAULT.alpha(0.12),
+            Accent::DEFAULT.alpha(0.3),
+        ),
+        phonecam_protocol::LogLevel::Debug => (
+            SHELL.border.alpha(0.2),
+            SHELL.border.alpha(0.4),
+        ),
+        phonecam_protocol::LogLevel::Trace => (
+            SHELL.border.alpha(0.1),
+            SHELL.border.alpha(0.3),
+        ),
+    };
+    let text = log_level_colour(level);
+
+    div()
+        .flex_shrink_0()
+        .w(px(46.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(Radius::SM))
+        .border_1()
+        .border_color(border)
+        .bg(bg)
+        .py(px(1.0))
+        .font_family(Fonts::MONO)
+        .text_size(px(Type::TWO_XS))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(text)
+        .child(level_label(level))
+        .into_any_element()
 }
 
 fn log_level_rank(level: phonecam_protocol::LogLevel) -> u8 {
@@ -2640,6 +2838,63 @@ mod tests {
         let summary = app_metadata_summary();
         assert!(summary.contains(env!("CARGO_PKG_VERSION")));
         assert!(summary.contains("Rust/GPUI"));
+    }
+
+    #[test]
+    fn diagnostics_panel_renders_different_states_without_panicking() {
+        // 1. Idle disconnected
+        let state = AppState::default();
+        let _el = diagnostics_panel(&state);
+
+        // 2. Connected with device and facts
+        let mut connected_state = AppState::default();
+        connected_state.status.connected = true;
+        let core = phonecam_protocol::CoreState {
+            phase: phonecam_protocol::StreamPhase::Connected,
+            device: Some(phonecam_protocol::DeviceIdentity {
+                device_id: "dev-123".into(),
+                name: "Pixel 9".into(),
+                model: "Pixel 9 Pro".into(),
+                android_version: 34,
+            }),
+            phone: Some(phonecam_protocol::PhoneState {
+                battery: 75,
+                charging: true,
+                actual_resolution: "1920x1080".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        connected_state.core = Some(core);
+        let _el2 = diagnostics_panel(&connected_state);
+
+        // 3. Streaming with throughput stats
+        let mut streaming_state = connected_state.clone();
+        if let Some(core) = &mut streaming_state.core {
+            core.phase = phonecam_protocol::StreamPhase::Streaming;
+            core.stats = phonecam_protocol::ConnectionStats {
+                fps: 60.0,
+                bitrate: 15_000_000,
+                latency_ms: 12.0,
+                dropped_percent: 0.05,
+                ..Default::default()
+            };
+        }
+        let _el3 = diagnostics_panel(&streaming_state);
+    }
+
+    #[test]
+    fn log_level_badge_covers_all_variants() {
+        use phonecam_protocol::LogLevel;
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            let _el = log_level_badge(level);
+        }
     }
 }
 

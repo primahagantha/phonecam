@@ -836,10 +836,12 @@ class StreamSession(
             DialResult.BadRequest -> fail("The PC didn't accept the connection. Try pairing again.")
             DialResult.UnauthorizedSource -> fail("The PC rejected the connection source. Check your network settings.")
             is DialResult.Unreachable -> {
-                _state.value = _state.value.copy(
-                    phase = SessionState.Phase.ERROR,
-                    error = "PhoneCam couldn't find your PC.\n\nMake sure both devices are connected to the same local network.",
-                )
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    _state.value = _state.value.copy(
+                        phase = SessionState.Phase.RECONNECTING,
+                        error = null,
+                    )
+                }
                 // A PC with Wi-Fi and Ethernet advertises a beacon per interface,
                 // and on some networks one of those addresses is not routable from
                 // the phone (the LAN test hit exactly this: the phone reached
@@ -938,6 +940,12 @@ class StreamSession(
             fail(finalMessage)
             return
         }
+        _state.value = _state.value.copy(
+            phase = SessionState.Phase.RECONNECTING,
+            error = null,
+            notice = null,
+            noticeKind = NoticeKind.Substitution,
+        )
         val delayMs = backoffDelay()
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
@@ -945,6 +953,7 @@ class StreamSession(
             // notice explaining it must not survive into the retry state.
             _state.value = _state.value.copy(
                 phase = SessionState.Phase.RECONNECTING,
+                error = null,
                 notice = null,
                 noticeKind = NoticeKind.Substitution,
             )
@@ -984,7 +993,7 @@ class StreamSession(
     }
 
     private fun backoffDelay(): Long {
-        val steps = longArrayOf(250, 500, 1000, 2000, 4000, 8000)
+        val steps = listOf(1000L, 2000L, 3000L, 4000L, 6000L)
         return steps[reconnectAttempts.coerceIn(0, steps.size - 1)]
     }
 
