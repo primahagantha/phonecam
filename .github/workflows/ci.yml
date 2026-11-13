@@ -31,19 +31,28 @@ jobs:
         with:
           configFile: .commitlintrc.json
 
-  rust-ci:
-    name: Rust Workspace (${{ matrix.os }})
+  rust-matrix:
+    name: Rust CI (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            name: Windows x64
+            target: windows
+          - os: ubuntu-latest
+            name: Ubuntu Linux
+            target: linux
+          - os: macos-latest
+            name: macOS
+            target: macos
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+        if: matrix.target == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -61,17 +70,36 @@ jobs:
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache Cargo dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: "rust-ci-${{ matrix.os }}"
+          prefix-key: "rust-ci-${{ matrix.target }}"
 
-      - name: Cargo check workspace
+      # Windows-latest (x64): cargo test --workspace, clippy, check
+      - name: Cargo check workspace (Windows)
+        if: matrix.target == 'windows'
         run: cargo check --workspace
 
-      - name: Cargo test workspace
+      - name: Cargo clippy workspace (Windows)
+        if: matrix.target == 'windows'
+        run: cargo clippy --workspace
+
+      - name: Cargo test workspace (Windows)
+        if: matrix.target == 'windows'
         run: cargo test --workspace
+
+      # Ubuntu-latest: cargo test for core/media/protocol/android-core
+      - name: Cargo test core, media, protocol, android-core (Ubuntu)
+        if: matrix.target == 'linux'
+        run: cargo test -p phonecam-core -p phonecam-media -p phonecam-protocol -p phonecam-android-core
+
+      # macOS-latest: cargo test for core/media/protocol
+      - name: Cargo test core, media, protocol (macOS)
+        if: matrix.target == 'macos'
+        run: cargo test -p phonecam-core -p phonecam-media -p phonecam-protocol
 
   android-ci:
     name: Android CI
@@ -86,8 +114,16 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "rust-android-ci"
 
       - name: Build phonecam-android-core host library for JVM unit tests
         run: cargo build -p phonecam-android-core --release
@@ -114,3 +150,10 @@ jobs:
         with:
           name: android-test-reports
           path: apps/android/app/build/reports/tests/
+
+      - name: Upload Android APK artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ci-apks
+          path: apps/android/app/build/outputs/apk/release/*.apk

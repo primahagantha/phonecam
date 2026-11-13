@@ -1,0 +1,8 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "release_enabled": false,
+  "version": "1.0.0",
+  "approved_by": "RegenadeJester",
+  "allow_prerelease": false,
+  "description": "PhoneCam Release Gatekeeper. When release_enabled is false, commits and pushes to GitHub will build and test across all platforms, but will NOT publish a public GitHub release. Set release_enabled to true only when you are ready to authorize the automated multi-platform release."
+}

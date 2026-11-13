@@ -1,0 +1,43 @@
+changelog:
+  categories:
+    - title: "🚀 Features & Enhancements"
+      labels:
+        - "feature"
+        - "enhancement"
+        - "feat"
+    - title: "🐛 Bug Fixes & Stability"
+      labels:
+        - "fix"
+        - "bug"
+        - "patch"
+    - title: "⚡ Performance Optimizations"
+      labels:
+        - "performance"
+        - "perf"
+    - title: "🏗 Architectural & System Refactoring"
+      labels:
+        - "refactor"
+        - "architecture"
+    - title: "📱 Android & Mobile Streaming"
+      labels:
+        - "android"
+        - "kotlin"
+    - title: "📹 Virtual Camera & Drivers"
+      labels:
+        - "vcam"
+        - "directshow"
+        - "mf"
+        - "v4l2"
+    - title: "📝 Documentation, Skills & Developer Guides"
+      labels:
+        - "docs"
+        - "skills"
+    - title: "👷 CI/CD, Packaging & Multi-Platform Matrix"
+      labels:
+        - "ci"
+        - "build"
+        - "deps"
+  exclude:
+    labels:
+      - "ignore-for-release"
+      - "chore"

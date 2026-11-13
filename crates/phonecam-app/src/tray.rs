@@ -177,6 +177,101 @@ pub fn set_window_always_on_top(hwnd: isize, enabled: bool) {
     }
 }
 
+/// Sets the window titlebar icon and Windows taskbar icon via WM_SETICON.
+#[cfg(windows)]
+pub fn set_window_icon(hwnd: isize) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, LoadIconW, LoadImageW, SendMessageW, HICON, ICON_BIG, ICON_SMALL,
+        IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE, SM_CXICON, SM_CXSMICON, SM_CYICON,
+        SM_CYSMICON, WM_SETICON,
+    };
+
+    if hwnd == 0 {
+        return;
+    }
+    let hwnd = HWND(hwnd as *mut _);
+
+    let icon_path = find_icon_path();
+    let (hicon_big, hicon_small) = if let Some(ref path) = icon_path {
+        let wide_path: Vec<u16> = path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let cx_big = unsafe { GetSystemMetrics(SM_CXICON) };
+        let cy_big = unsafe { GetSystemMetrics(SM_CYICON) };
+        let cx_sm = unsafe { GetSystemMetrics(SM_CXSMICON) };
+        let cy_sm = unsafe { GetSystemMetrics(SM_CYSMICON) };
+
+        let big = unsafe {
+            LoadImageW(
+                None,
+                PCWSTR(wide_path.as_ptr()),
+                IMAGE_ICON,
+                cx_big,
+                cy_big,
+                LR_LOADFROMFILE,
+            )
+        }
+        .ok()
+        .map(|h| HICON(h.0))
+        .filter(|h| !h.is_invalid());
+
+        let small = unsafe {
+            LoadImageW(
+                None,
+                PCWSTR(wide_path.as_ptr()),
+                IMAGE_ICON,
+                cx_sm,
+                cy_sm,
+                LR_LOADFROMFILE,
+            )
+        }
+        .ok()
+        .map(|h| HICON(h.0))
+        .filter(|h| !h.is_invalid());
+
+        (big, small)
+    } else {
+        (None, None)
+    };
+
+    let fallback = if hicon_big.is_none() && hicon_small.is_none() {
+        unsafe { LoadIconW(None, IDI_APPLICATION).ok().filter(|h| !h.is_invalid()) }
+    } else {
+        None
+    };
+
+    let final_big = hicon_big.or(fallback);
+    let final_small = hicon_small.or(final_big);
+
+    if let Some(hicon) = final_big {
+        unsafe {
+            let _ = SendMessageW(
+                hwnd,
+                WM_SETICON,
+                Some(WPARAM(ICON_BIG as usize)),
+                Some(LPARAM(hicon.0 as isize)),
+            );
+        }
+    }
+    if let Some(hicon) = final_small {
+        unsafe {
+            let _ = SendMessageW(
+                hwnd,
+                WM_SETICON,
+                Some(WPARAM(ICON_SMALL as usize)),
+                Some(LPARAM(hicon.0 as isize)),
+            );
+        }
+    }
+    if icon_path.is_some() {
+        tracing::info!("Applied PhoneCam window & taskbar icon from {:?}", icon_path);
+    }
+}
+
 /// Keeps the process-wide single-instance mutex alive for the lifetime of the app.
 #[cfg(windows)]
 pub struct SingleInstanceGuard(isize);
@@ -427,8 +522,32 @@ pub fn find_icon_path() -> Option<std::path::PathBuf> {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("icon.ico"));
             candidates.push(dir.join("resources").join("icon.ico"));
+            candidates.push(dir.join("assets").join("icon.ico"));
+            let mut curr = dir.parent();
+            while let Some(parent) = curr {
+                candidates.push(parent.join("assets").join("icon.ico"));
+                candidates.push(parent.join("resources").join("icon.ico"));
+                candidates.push(parent.join("dist").join("unpacked").join("icon.ico"));
+                candidates.push(parent.join("icon.ico"));
+                curr = parent.parent();
+            }
         }
     }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("assets").join("icon.ico"));
+        candidates.push(cwd.join("resources").join("icon.ico"));
+        candidates.push(cwd.join("dist").join("unpacked").join("icon.ico"));
+        candidates.push(cwd.join("icon.ico"));
+        let mut curr = cwd.parent();
+        while let Some(parent) = curr {
+            candidates.push(parent.join("assets").join("icon.ico"));
+            candidates.push(parent.join("resources").join("icon.ico"));
+            candidates.push(parent.join("dist").join("unpacked").join("icon.ico"));
+            candidates.push(parent.join("icon.ico"));
+            curr = parent.parent();
+        }
+    }
+    candidates.push(std::path::PathBuf::from("assets").join("icon.ico"));
     candidates.push(std::path::PathBuf::from("resources").join("icon.ico"));
     candidates.push(std::path::PathBuf::from("dist").join("unpacked").join("icon.ico"));
     candidates.push(std::path::PathBuf::from("icon.ico"));
@@ -444,6 +563,8 @@ pub fn window_bounds(_hwnd: isize) -> Option<(f32, f32, f32, f32, bool)> {
 pub fn hide_window(_hwnd: isize) {}
 #[cfg(not(windows))]
 pub fn set_window_always_on_top(_hwnd: isize, _enabled: bool) {}
+#[cfg(not(windows))]
+pub fn set_window_icon(_hwnd: isize) {}
 #[cfg(not(windows))]
 pub fn hwnd_of(_window: &gpui::Window) -> Option<isize> {
     None
@@ -649,6 +770,7 @@ mod imp {
 
         /// Brings the GPUI window back after a close hid it.
         pub fn show_target(&self) {
+            set_window_icon(self.target.0 as isize);
             unsafe {
                 let _ = ShowWindow(self.target, SW_SHOW);
                 let _ = SetForegroundWindow(self.target);
@@ -883,6 +1005,19 @@ mod tests {
         assert_eq!(find_icon_path_in(&[missing.clone(), present.clone()]), Some(present.clone()));
         assert_eq!(find_icon_path_in(&[missing]), None);
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn set_window_icon_handles_null_hwnd_safely() {
+        set_window_icon(0);
+    }
+
+    #[test]
+    fn find_icon_path_finds_workspace_icon() {
+        let path = find_icon_path();
+        assert!(path.is_some(), "expected to find icon.ico in repository");
+        let p = path.unwrap();
+        assert!(p.exists(), "found path {:?} should exist", p);
     }
 }
 

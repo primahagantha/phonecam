@@ -1,11 +1,19 @@
-﻿# PhoneCam
+﻿<p align="center">
+  <img src="assets/logo.png" alt="PhoneCam Logo" width="160" height="160" />
+</p>
 
-[![CI Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/phonecam/phonecam/actions)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%2011%20%7C%20Android%208.0%2B-lightgrey.svg)](#requirements)
-[![Rust Version](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](#prerequisites)
+<h1 align="center">PhoneCam</h1>
 
-> Turn any modern Android phone into a high-performance, studio-grade, ultra-low latency webcam for PC.
+<p align="center">
+  <strong>Turn any modern Android phone into a high-performance, studio-grade, ultra-low latency webcam for PC.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/phonecam/phonecam/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="CI Status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License" /></a>
+  <a href="#system-requirements"><img src="https://img.shields.io/badge/platform-Windows%2011%20%7C%20Android%208.0%2B-lightgrey.svg" alt="Platform" /></a>
+  <a href="#prerequisites"><img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust Version" /></a>
+</p>
 
 PhoneCam is a complete, native Rust rewrite of the desktop webcam companion. Engineered from the ground up with **GPUI**, **openh264**, **Windows Media Foundation**, and **Android Camera2 + MediaCodec**, PhoneCam delivers fluid 60 FPS streaming at minimal CPU and memory footprints with zero cloud dependencies.
 
@@ -39,51 +47,65 @@ PhoneCam is a complete, native Rust rewrite of the desktop webcam companion. Eng
 
 PhoneCam operates on a single-process, zero-copy philosophy. A connected Android device encodes raw sensor frames in hardware using `MediaCodec`, streaming H.264 Annex-B over a high-throughput TCP socket. The native desktop process receives the bitstream, executes a **single in-process decode** via `openh264`, and directly delivers the picture to both the Windows Virtual Camera and the local desktop preview window.
 
-```
-┌─────────────────────────────────┐
-│       Android Phone (Client)    │
-│  Camera2 API (YUV_420_888)     │
-│  Hardware MediaCodec (H.264)   │
-│  phonecam-android-core (JNI)    │
-└────────────────┬────────────────┘
-                 │
-                 │ H.264 Annex-B Stream over TCP
-                 │ (Wi-Fi LAN or USB via ADB Reverse)
-                 ▼
-┌────────────────────────────────────────────────────────┐
-│             PhoneCam Desktop (Single Process)          │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │  Transport & Auth (HMAC-SHA256, Replay Guard)     │  │
-│  └────────────────────────┬─────────────────────────┘  │
-│                           ▼                            │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │  Single In-Process Decode (openh264)             │  │
-│  └─────────────┬──────────────────────────┬─────────┘  │
-│                │                          │            │
-│    NV12 Frames │                          │ BGRA       │
-│  (Zero-Copy)   │                          │ Textures   │
-│                ▼                          ▼            │
-│  ┌───────────────────────────┐  ┌───────────────────┐  │
-│  │ Windows Shared Memory     │  │ GPUI GPU Preview  │  │
-│  │ (68-byte Header, Seqlock) │  │ (DirectX / D3D11) │  │
-│  └─────────────┬─────────────┘  └───────────────────┘  │
-└────────────────┼───────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│ PhoneCamVirtualCamera.dll (MF)  │ ◄── Loaded by Windows Camera Frame Server
-│ (svchost.exe -k Camera)         │     (NT AUTHORITY\LocalService)
-└────────────────┬────────────────┘
-                 │
-                 ▼ Windows Media Foundation Virtual Camera
-┌────────────────────────────────────────────────────────┐
-│ Applications: OBS Studio, Discord, Google Meet, Zoom   │
-└────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Android["Android Phone (Client)"]
+        Cam["Camera2 API (YUV_420_888)"]
+        Enc["Hardware MediaCodec (H.264 Annex-B)"]
+        JNI["phonecam-android-core (Rust JNI)"]
+        Cam --> Enc --> JNI
+    end
+
+    subgraph Link["Transport Channels"]
+        WiFi["Wi-Fi LAN (UDP 48720 Beacon + TCP 48721)"]
+        USB["USB Cable (ADB Reverse tcp:48721)"]
+    end
+
+    JNI --> WiFi
+    JNI --> USB
+
+    subgraph Desktop["PhoneCam Desktop (Single Native Process)"]
+        Auth["Transport & Auth (HMAC-SHA256, Replay Guard)"]
+        Dec["In-Process Single Decode (openh264)"]
+        Shm["Windows Shared Memory (68-byte Header, Seqlock)"]
+        UI["GPUI GPU Preview (DirectX / D3D11 Surface)"]
+
+        Auth --> Dec
+        Dec -->|"NV12 (Zero-Copy)"| Shm
+        Dec -->|"Premultiplied BGRA"| UI
+    end
+
+    WiFi --> Auth
+    USB --> Auth
+
+    subgraph VCamService["Windows Camera Frame Server (svchost.exe)"]
+        DLL["PhoneCamVirtualCamera.dll (Media Foundation)"]
+    end
+
+    Shm -->|"framebuffer-v2.bin"| DLL
+
+    subgraph Apps["Target Applications"]
+        Consumer["OBS Studio / Discord / Google Meet / Zoom"]
+    end
+
+    DLL -->|"Virtual Camera Stream"| Consumer
 ```
 
 ### Core Architecture Principles
 
 1. **Single Decode Pipeline**: Previous Electron-based implementations decoded H.264 twice (once in C++ for the virtual camera and once via WebCodecs for GUI preview). PhoneCam decodes the bitstream **exactly once**. From that single decode, NV12 pixels are copied to shared memory and premultiplied BGRA pixels are pushed to the GPUI texture surface.
+
+```mermaid
+flowchart LR
+    A["Android Sensor (Camera2)"] -->|"YUV_420_888"| B["Hardware MediaCodec"]
+    B -->|"H.264 Annex-B (TCP 48721)"| C["openh264 In-Process Decoder"]
+    C -->|"NV12 Zero-Copy"| D["Shared Memory (framebuffer-v2.bin)"]
+    C -->|"Premultiplied BGRA"| E["GPUI D3D11 Texture Surface"]
+    D -->|"MF Source Reader"| F["Virtual Camera (svchost.exe)"]
+    E -->|"Immediate Render"| G["Desktop UI Preview Stage"]
+    F -->|"IMFMediaStream"| H["OBS / Discord / WebRTC"]
+```
+
 2. **Windows Shared Memory Framebus**: Video frames are transferred to the Media Foundation virtual camera via a zero-latency memory-mapped file (`C:\ProgramData\PhoneCam\framebuffer-v2.bin`) protected by an atomic seqlock. The virtual camera DLL runs inside Windows' `svchost.exe -k Camera` service.
 3. **Hardware-Accelerated Android Capture**: The Android client hooks into the Android Camera2 NDK/Java APIs, binding directly to hardware `MediaCodec` encoders to stream Annex-B NAL units with low jitter.
 4. **Resilient Reconnection**: If a network glitch occurs or the USB cable is unplugged, the virtual camera never crashes or unregisters from Windows. It continuously serves the last valid frame, transitions gracefully to a clean disconnected slate after 3 seconds, and automatically recovers the moment the phone reconnects.
@@ -132,6 +154,40 @@ PhoneCam supports both wireless freedom and tethered reliability using a single 
 - **Automatic UDP Beacon Discovery**: The desktop broadcasts an encrypted UDP beacon on port `48720`. The Android app detects the desktop instantly when connected to the same Wi-Fi subnet.
 - **QR Code Pairing**: Scan a cryptographically secure, one-time pairing QR code rendered on the desktop stage to establish an authenticated pairing in seconds.
 
+### Pairing & Live Streaming Handshake
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Phone as Android App
+    participant Desktop as PhoneCam Desktop
+    participant VCam as Media Foundation Virtual Camera
+
+    Note over Phone,Desktop: Phase 1: Discovery & Pairing
+    Desktop->>Phone: UDP 48720 Beacon broadcast (nonce, port, fingerprint)
+    Phone->>Desktop: TCP 48721 Connect (Client Hello)
+    Desktop-->>Phone: Challenge Nonce (Server Nonce)
+    Phone->>Desktop: Pair Request (HMAC-SHA256 + 128-bit One-Time QR Token)
+    Desktop-->>Phone: Pair Response (Session Secret + Confirmation)
+
+    Note over Phone,Desktop: Phase 2: Live Video Streaming Handshake
+    Phone->>Desktop: Start Stream Request (Codec: H.264, Resolution: 1080p60)
+    Desktop-->>Phone: Stream Ack & Bitrate Parameters
+    loop 60 FPS Capture & Decode
+        Phone->>Desktop: H.264 Annex-B NAL Units (TCP 48721)
+        Desktop->>Desktop: Single In-Process Decode (openh264)
+        Desktop->>VCam: Atomic Seqlock Write (framebuffer-v2.bin NV12)
+        Desktop->>Desktop: Blit Premultiplied BGRA to GPUI Surface
+    end
+
+    Note over Phone,Desktop: Phase 3: Adaptive Quality Feedback
+    Desktop-->>Phone: Stats Ack (rttUs, packet drops, thermal state)
+    opt Network Jitter or High Thermal Load
+        Desktop->>Phone: Set Video Quality (Step down rung: 1080p60 -> 1080p30)
+        Phone-->>Desktop: Quality Changed Confirmation
+    end
+```
+
 ---
 
 ## Network Protocol & Port Reference
@@ -155,12 +211,16 @@ When `PHONECAM_PORT` is specified, the QR pairing code and UDP beacon automatica
 ## System Requirements
 
 ### Desktop (Receiver & Virtual Camera)
-- **Operating System**: Windows 11 (Build 22621 or newer required for `MFCreateVirtualCamera` API support).
-- **Processor**: 64-bit Intel, AMD, or ARM64 processor.
-- **Graphics**: DirectX 11 / Direct3D 11 compatible GPU (for GPUI hardware acceleration).
+- **Windows 11 (Build 22621+)**: Native Windows Media Foundation Virtual Camera (`MFCreateVirtualCamera`).
+- **Windows 10 (Version 1809+, Build 17763+)**: Full desktop companion app, preview, audio, hardware controls, and DirectShow COM Virtual Camera driver (`PhoneCamVirtualCamera.dll` via `phonecam-vcam-register.exe`).
+- **Linux (Ubuntu/Debian, Fedora, Arch Linux)**: Supported via native build and `v4l2loopback` virtual video device.
+- **macOS (Apple Silicon & Intel x86_64)**: Supported via native build (Metal backend) and CoreMediaIO DAL plugin / Camera Extension.
+- **Processor & GPU**: 64-bit Intel, AMD, or ARM64 processor; DirectX 11 / Metal / Vulkan compatible GPU.
+- For detailed multi-platform architecture and build matrices, see [docs/platform-support.md](docs/platform-support.md).
 
 ### Android Phone (Sender & Camera)
 - **Operating System**: Android 8.0 (Oreo, API Level 26) or newer.
+- **Architectures**: arm64-v8a (primary), armeabi-v7a (legacy 32-bit), x86_64 (emulators).
 - **Camera Hardware**: Camera2 API support with hardware H.264 `MediaCodec` encoder.
 - **Permissions**: Camera (`android.permission.CAMERA`), Local Network / Wi-Fi state, Foreground Service.
 
@@ -234,6 +294,18 @@ makensis scripts\installer.nsi
 The completed installer will be output to:
 `dist\installer\PhoneCam-Setup-1.0.0.exe`
 
+#### Standalone Portable Release
+To run PhoneCam portably without system-wide installation:
+1. Extract `dist\PhoneCam-v1.0.0-windows-x64.zip` (or navigate to `dist\unpacked\`).
+2. Run `run-portable.bat` to launch `phonecam.exe` with bundled local dependency checks.
+3. For virtual camera registration in OBS/Zoom/Meet, run `install-virtual-camera.bat` as Administrator.
+
+#### Release Gatekeeper & Automated Changelog
+PhoneCam includes an automated release gate so normal commits do not accidentally publish releases:
+- **Release Gate (`release-gate.json`)**: Default is `"release_enabled": false`. Commits to `master` build and test across CI, but will not publish a public release.
+- **Enabling a Release**: Set `"release_enabled": true` in `release-gate.json` and push. GitHub Actions automatically executes the multi-platform matrix (Windows NSIS + portable ZIP, Linux standalone tarball, Android multi-ABI APKs) and publishes the GitHub release.
+- **Contributor Transparency**: Every release automatically generates changelogs grouped by category (Features, Fixes, Performance, Refactor, Docs, CI) and credits all contributors with their live GitHub avatar profiles.
+
 ---
 
 ### 3. Android Native Rust JNI Core
@@ -265,8 +337,11 @@ cd apps\android
 # Build production release APK
 .\gradlew.bat assembleRelease
 ```
-The generated APK will be placed in:
-`apps\android\app\build\outputs\apk\release\app-release.apk` (or copied to `dist\PhoneCam.apk`).
+The generated APKs will be placed in `apps\android\app\build\outputs\apk\release\`:
+- `app-arm64-v8a-release.apk` (~2.36 MB, optimized for 64-bit ARM)
+- `app-armeabi-v7a-release.apk` (~2.14 MB, optimized for 32-bit ARM)
+- `app-x86_64-release.apk` (~2.34 MB, optimized for x86_64 emulators)
+- `app-universal-release.apk` (~3.75 MB, universal bundle containing all native ABIs, copied to `dist\PhoneCam.apk`)
 
 ---
 

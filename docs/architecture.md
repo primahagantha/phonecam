@@ -1,7 +1,7 @@
 ﻿# PhoneCam Architecture (Rust + GPUI)
 
 This document explains how the pieces fit together and, more importantly, **why**
-each boundary sits where it does â€” including the ones that were deliberately
+each boundary sits where it does — including the ones that were deliberately
 moved from the Electron build and the ones that deliberately were not.
 
 ---
@@ -11,22 +11,48 @@ moved from the Electron build and the ones that deliberately were not.
 > A phone captures and encodes; one native process decodes once and publishes to
 > two places: the Windows virtual camera and its own window.
 
-```
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”   H.264 over TCP    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚ Android app  â”‚ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–º â”‚ phonecam (one process)           â”‚
-â”‚ (Kotlin)     â”‚   LAN or USB        â”‚  transport â†’ auth â†’ decode       â”‚
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                     â””â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-                                             â”‚              â”‚
-                              NV12 frames    â”‚              â”‚  BGRA
-                              (shared mem)   â–¼              â–¼
-                                  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-                                  â”‚ PhoneCam Camera  â”‚  â”‚ GPUI window  â”‚
-                                  â”‚ (MF DLL, C++)    â”‚  â”‚ (preview)    â”‚
-                                  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-                                           â–²
-                                    Windows Camera API
-                                           â–²
-                                  OBS / Chrome / Discord
+```mermaid
+flowchart TD
+    subgraph Android["Android Phone (Client)"]
+        Cam["Camera2 API (YUV_420_888)"]
+        Enc["Hardware MediaCodec (H.264 Annex-B)"]
+        JNI["phonecam-android-core (Rust JNI)"]
+        Cam --> Enc --> JNI
+    end
+
+    subgraph Link["Transport Channels"]
+        WiFi["Wi-Fi LAN (UDP 48720 Beacon + TCP 48721)"]
+        USB["USB Cable (ADB Reverse tcp:48721)"]
+    end
+
+    JNI --> WiFi
+    JNI --> USB
+
+    subgraph Desktop["PhoneCam Desktop (Single Native Process)"]
+        Auth["Transport & Auth (HMAC-SHA256, Replay Guard)"]
+        Dec["In-Process Single Decode (openh264)"]
+        Shm["Windows Shared Memory (68-byte Header, Seqlock)"]
+        UI["GPUI GPU Preview (DirectX / D3D11 Surface)"]
+
+        Auth --> Dec
+        Dec -->|"NV12 (Zero-Copy)"| Shm
+        Dec -->|"Premultiplied BGRA"| UI
+    end
+
+    WiFi --> Auth
+    USB --> Auth
+
+    subgraph VCamService["Windows Camera Frame Server (svchost.exe)"]
+        DLL["PhoneCamVirtualCamera.dll (Media Foundation)"]
+    end
+
+    Shm -->|"framebuffer-v2.bin"| DLL
+
+    subgraph Apps["Target Applications"]
+        Consumer["OBS Studio / Discord / Google Meet / Zoom"]
+    end
+
+    DLL -->|"Virtual Camera Stream"| Consumer
 ```
 
 ---
@@ -37,13 +63,24 @@ moved from the Electron build and the ones that deliberately were not.
 
 The Electron build decoded the stream **twice**: the C++ core decoded to NV12 for
 the virtual camera, and the renderer decoded the phone's original H.264 again
-with WebCodecs for the preview. The reasoning was sound at the time â€” re-encoding
-decoded frames to reach a canvas would cost a full encode â€” but it meant two
+with WebCodecs for the preview. The reasoning was sound at the time — re-encoding
+decoded frames to reach a canvas would cost a full encode — but it meant two
 decoders, two failure modes, and an IPC hop carrying the bitstream.
 
 Here the decoder runs once. Its output goes to the frame bus as NV12 and to the
 window as BGRA. The preview cannot disagree with the camera because it is the
 same decoded picture, not a second decode of the same bitstream.
+
+```mermaid
+flowchart LR
+    A["Android Sensor (Camera2)"] -->|"YUV_420_888"| B["Hardware MediaCodec"]
+    B -->|"H.264 Annex-B (TCP 48721)"| C["openh264 In-Process Decoder"]
+    C -->|"NV12 Zero-Copy"| D["Shared Memory (framebuffer-v2.bin)"]
+    C -->|"Premultiplied BGRA"| E["GPUI D3D11 Texture Surface"]
+    D -->|"MF Source Reader"| F["Virtual Camera (svchost.exe)"]
+    E -->|"Immediate Render"| G["Desktop UI Preview Stage"]
+    F -->|"IMFMediaStream"| H["OBS / Discord / WebRTC"]
+```
 
 ### The decoder itself changed
 
@@ -51,7 +88,7 @@ The C++ core did not use the H.264 decoder MFT directly. It muxed each group of
 pictures into a fragmented MP4 on disk, then read it back through a Media
 Foundation Source Reader, because the direct `IMFTransform` path produced **zero
 frames** on some machines (roughly 35 configurations were tried). That worked,
-and cost a temp-file write plus a read per group â€” about 24 ms per batch, the
+and cost a temp-file write plus a read per group — about 24 ms per batch, the
 largest single latency term in the pipeline.
 
 `phonecam-media` uses openh264 instead: in process, no container, no temp file,
@@ -74,7 +111,7 @@ streams, decodes and reports healthy frames while the camera shows
   every field offset;
 - `magic = 0x5043414D`, `layout_version = 2`, payload at offset 68;
 - a **grow-only** file, because Windows refuses to truncate a file another
-  process has mapped â€” which is exactly the state during a resolution step down;
+  process has mapped — which is exactly the state during a resolution step down;
 - `capacity`, not the file size, bounds a read;
 - `readers` is written **only** by readers, and never reset by the writer.
 
@@ -84,16 +121,16 @@ streams, decodes and reports healthy frames while the camera shows
 
 | Channel | Port | Between | Framing |
 | --- | --- | --- | --- |
-| Discovery | UDP 48720 | phone â‡„ desktop | one JSON datagram per packet |
-| Service | TCP 48721 | phone â†’ desktop | `u32`-length JSON, and `u32 totalLen` + 24-byte header for video |
-| Frame bus | a file | core â†’ camera DLL | 68-byte header + seqlock + NV12 |
+| Discovery | UDP 48720 | phone ⇄ desktop | one JSON datagram per packet |
+| Service | TCP 48721 | phone → desktop | `u32`-length JSON, and `u32 totalLen` + 24-byte header for video |
+| Frame bus | a file | core → camera DLL | 68-byte header + seqlock + NV12 |
 
 The loopback IPC channel the Electron build needed (TCP 48723) is **gone**: the
 UI and the core are the same process, so there is nothing to frame.
 
 ---
 
-## 4. Authentication
+## 4. Authentication & Pairing Handshake
 
 The rule is that `IP + fixed password` is not acceptable. What satisfies it:
 
@@ -117,6 +154,40 @@ requester saw the fresh server nonce, which stops blind spraying. The actual
 authorisation is the human approval plus the one-time token. Conflating the two
 would be a security bug, so they are separate in the code and named separately.
 
+### Wi-Fi / USB Pairing & Streaming Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Phone as Android App
+    participant Desktop as PhoneCam Desktop
+    participant VCam as Media Foundation Virtual Camera
+
+    Note over Phone,Desktop: Phase 1: Discovery & Pairing
+    Desktop->>Phone: UDP 48720 Beacon broadcast (nonce, port, fingerprint)
+    Phone->>Desktop: TCP 48721 Connect (Client Hello)
+    Desktop-->>Phone: Challenge Nonce (Server Nonce)
+    Phone->>Desktop: Pair Request (HMAC-SHA256 + 128-bit One-Time QR Token)
+    Desktop-->>Phone: Pair Response (Session Secret + Confirmation)
+
+    Note over Phone,Desktop: Phase 2: Live Video Streaming Handshake
+    Phone->>Desktop: Start Stream Request (Codec: H.264, Resolution: 1080p60)
+    Desktop-->>Phone: Stream Ack & Bitrate Parameters
+    loop 60 FPS Capture & Decode
+        Phone->>Desktop: H.264 Annex-B NAL Units (TCP 48721)
+        Desktop->>Desktop: Single In-Process Decode (openh264)
+        Desktop->>VCam: Atomic Seqlock Write (framebuffer-v2.bin NV12)
+        Desktop->>Desktop: Blit Premultiplied BGRA to GPUI Surface
+    end
+
+    Note over Phone,Desktop: Phase 3: Adaptive Quality Feedback
+    Desktop-->>Phone: Stats Ack (rttUs, packet drops, thermal state)
+    opt Network Jitter or High Thermal Load
+        Desktop->>Phone: Set Video Quality (Step down rung: 1080p60 -> 1080p30)
+        Phone-->>Desktop: Quality Changed Confirmation
+    end
+```
+
 ---
 
 ## 5. The session, and what a phase means
@@ -135,7 +206,7 @@ when that is true.
 
 A video socket being accepted is **not** `streaming`: the socket says a channel
 exists, a decoded frame says there is a picture. The phone's own `streaming` flag
-is **not** sufficient either â€” it is set from the phone's encoder starting,
+is **not** sufficient either — it is set from the phone's encoder starting,
 before this PC has a socket or has decoded anything, so it is evidence about the
 phone's encoder rather than about a picture reaching this PC. It cannot promote
 the phase; only a decoded frame can.
@@ -156,8 +227,14 @@ both ends: the phone owns the encoder and the thermal sensor, the desktop owns
 the round trip and the decode path. A single decision has to be made where both
 are visible.
 
-```
-1080p60 -> 1080p30 -> 720p30 -> 480p30
+```mermaid
+flowchart LR
+    R1["1080p60 (Default Max)"] -->|"Thermal / RTT High"| R2["1080p30"]
+    R2 -->|"Congestion"| R3["720p30"]
+    R3 -->|"Critical Thermal"| R4["480p30"]
+    R4 -.->|"Clean Stats (30s)"| R3
+    R3 -.->|"Clean Stats (30s)"| R2
+    R2 -.->|"Clean Stats (30s)"| R1
 ```
 
 Quick to drop (10 s dwell), slow to climb (30 s of clean stats). Critical thermal
@@ -177,7 +254,7 @@ Two rules that look like details and are not:
 
 The ceiling is the user's own capture setting, not the camera's maximum. Without
 that, a phone asked for 720p climbed back to 1080p within thirty seconds of clean
-stream and silently overrode the choice â€” measured on a Redmi Note 11, that took
+stream and silently overrode the choice — measured on a Redmi Note 11, that took
 the app from 25% to 38% CPU and the camera HAL from 109% to 129%.
 
 ---
@@ -186,9 +263,9 @@ the app from 25% to 38% CPU and the camera HAL from 109% to 129%.
 
 Three regions, each with one job:
 
-- **status bar** â€” one sentence: is the picture flowing.
-- **stage** â€” the picture, or the pairing code, or the next step.
-- **rail** â€” four tabs in the order the job happens: Setup, Capture, Publish,
+- **status bar** — one sentence: is the picture flowing.
+- **stage** — the picture, or the pairing code, or the next step.
+- **rail** — four tabs in the order the job happens: Setup, Capture, Publish,
   Diagnostics.
 
 The preview is never a tab. It is always visible, because an answer you have to
@@ -223,14 +300,12 @@ restoring the window.
 The single most important reliability property is that **the camera device must
 not disappear**. When the link drops:
 
-```
-frames stop
-   â†“ (immediately)
-virtual camera keeps publishing the last frame
-   â†“ (after 3 s)
-core publishes a black NV12 frame with state = Disconnected
-   â†“
-phone re-dials on its own, with exponential backoff
+```mermaid
+flowchart TD
+    S1["Connection Dropped / Cable Unplugged"] -->|"Immediately"| S2["Virtual Camera Keeps Publishing Last Frame"]
+    S2 -->|"After 3 seconds dwell"| S3["Core Publishes Black NV12 Frame with state=Disconnected"]
+    S3 -->|"Autonomous Reconnect"| S4["Phone Re-dials with Exponential Backoff"]
+    S4 -->|"Stream Restored"| S5["Virtual Camera Instantly Resumes 60 FPS Video"]
 ```
 
 The phone owns reconnection. The core keeps publishing the placeholder and
@@ -238,8 +313,8 @@ resumes the moment a phone arrives, which is what stops OBS and browsers ever
 losing the device. The state is expressed **in the frame**, so a consumer sees
 `PHONECAM / DEVICE NOT CONNECTED` rather than a frozen image.
 
-Publishing black pixels alongside the state â€” rather than only flipping the state
-field â€” is deliberate: a reader that ignores the header would otherwise keep
+Publishing black pixels alongside the state — rather than only flipping the state
+field — is deliberate: a reader that ignores the header would otherwise keep
 showing the last frame of a phone that is gone.
 
 ---
@@ -284,6 +359,7 @@ having no close-to-tray. `ShowWindow(SW_HIDE)` does it, because GPUI exposes
 `hide` on its platform window but not on `Window`.
 
 Quit lives in the tray, which is the only place it can be deliberate.
+
 ## 11. Logging
 
 Never log pairing tokens, device secrets, or HMAC values. Log
@@ -293,7 +369,7 @@ log lengths and timestamps only.
 `redact()` is applied to every line and swallows any run of 32 or more lowercase
 hex characters, because a line that forgot to declare itself sensitive must still
 not leak. Over-redacting prose costs a word; under-redacting a secret costs the
-secret â€” and matching only the exact 32/64 lengths once left the tail of a
+secret — and matching only the exact 32/64 lengths once left the tail of a
 33-character run in the clear.
 
 ---
@@ -310,6 +386,7 @@ same number the listener bound, instead of assuming the protocol default.
 Discovery still uses UDP 48720 and will fail while the original core holds it;
 the app says so in its log and pairs by QR code instead, which is the documented
 fallback rather than a silent degradation.
+
 ## 13. Platform roadmap
 
 Only the virtual camera layer is platform-specific.
@@ -322,5 +399,3 @@ Only the virtual camera layer is platform-specific.
 
 Transport, decode and the frame bus are already portable; the frame bus would
 become a shared memory segment instead of a file.
-
-

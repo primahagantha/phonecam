@@ -19,6 +19,8 @@ Cargo.lock.orig
 /dist/unpacked/phonecam.exe
 /dist/unpacked/PhoneCam.apk
 /dist/PhoneCam.apk
+/dist/*.zip
+/dist/*.tar.gz
 *.apk
 *.aab
 
@@ -32,6 +34,8 @@ Cargo.lock.orig
 !dist/unpacked/adb.exe
 !dist/unpacked/AdbWinApi.dll
 !dist/unpacked/AdbWinUsbApi.dll
+!dist/unpacked/*.bat
+!dist/unpacked/*.txt
 
 # OS & Editor files
 *.log

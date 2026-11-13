@@ -44,6 +44,7 @@ Section "PhoneCam Core (required)" SecCore
   File "..\dist\unpacked\AdbWinApi.dll"
   File "..\dist\unpacked\AdbWinUsbApi.dll"
   File "..\dist\unpacked\icon.ico"
+  File "..\dist\unpacked\PhoneCam.apk"
 
   ; Register Virtual Camera
   DetailPrint "Registering PhoneCam virtual camera..."
@@ -92,6 +93,7 @@ Section "Uninstall"
   Delete "$INSTDIR\AdbWinApi.dll"
   Delete "$INSTDIR\AdbWinUsbApi.dll"
   Delete "$INSTDIR\icon.ico"
+  Delete "$INSTDIR\PhoneCam.apk"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 

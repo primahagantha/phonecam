@@ -5,7 +5,7 @@ description: Developer skill reference for AI agents and human contributors to b
 
 # PhoneCam Developer Skill Guide
 
-This skill guide provides a comprehensive reference of commands, workflows, and diagnostic procedures for building, testing, packaging, and debugging the PhoneCam ecosystem.
+This skill guide provides a comprehensive reference of commands, workflows, and diagnostic procedures for building, testing, packaging, and debugging the PhoneCam ecosystem across desktop and Android platforms.
 
 ---
 
@@ -59,10 +59,10 @@ cargo test --workspace
 
 ### Testing Individual Subsystems
 ```powershell
-# Wire protocol and framing tests
+# Wire protocol, HMAC-SHA256, and framing tests
 cargo test -p phonecam-protocol
 
-# Shared memory seqlock and header tests
+# Shared memory seqlock and 68-byte header tests
 cargo test -p phonecam-framebus
 
 # H.264 decode, SPS parsing, and color conversions
@@ -131,7 +131,7 @@ Ensure the latest release binaries are placed in `dist\unpacked\`:
 
 ```powershell
 # 1. Copy fresh release binary
-Copy-Item target\release\phonecam.exe dist\unpacked\phonecam.exe
+Copy-Item target\release\phonecam.exe dist\unpacked\phonecam.exe -Force
 
 # 2. Compile NSIS installer
 makensis scripts\installer.nsi
@@ -150,7 +150,7 @@ The virtual camera driver interacts directly with Windows Media Foundation and t
 # Register the virtual camera with Windows
 .\dist\unpacked\phonecam-vcam-register.exe --register
 
-# Check current registration status
+# Check current registration and device enumeration status
 .\dist\unpacked\phonecam-vcam-register.exe --status
 
 # Unregister the virtual camera
@@ -162,10 +162,14 @@ The framebus backing file is maintained at:
 `C:\ProgramData\PhoneCam\framebuffer-v2.bin`
 
 When streaming is live:
-- Header size: exactly 68 bytes.
+- Header size: exactly 68 bytes packed.
 - Magic bytes: `0x5043414D` (`PCAM`).
 - Layout version: `2`.
 - `state`: `1` (Live).
+- `seq`: Even number when quiescent.
+- `readers`: Written exclusively by driver consumers (never reset by writer).
+
+For complete driver architecture across Windows, Linux (`v4l2loopback`), and macOS (`CoreMediaIO`), see [phonecam-virtualcam](file:///d:/production/phonecam-rust/.agent/skills/phonecam-virtualcam/SKILL.md).
 
 ---
 
@@ -212,7 +216,24 @@ adb logcat -v time -s PhoneCam:V CameraStreamService:V
 | Issue | Root Cause | Solution |
 | :--- | :--- | :--- |
 | `Address already in use (os error 10048)` | Port 48721 is bound by another app | Set `$env:PHONECAM_PORT = 48791` before starting PhoneCam |
-| `MFCreateVirtualCamera failed` | Windows build earlier than 22621 | Requires Windows 11 Build 22621 or newer |
+| `MFCreateVirtualCamera failed` | Windows build earlier than 22621 | Requires Windows 11 Build 22621 or newer; fallback to DirectShow |
 | Camera registered but OBS shows black screen | Shared memory seqlock mismatch | Confirm `magic = 0x5043414D` and `layout_version = 2` |
 | `adb: device unauthorized` | Android device prompt not accepted | Unlock phone and tap "Always allow from this computer" |
 | JNI `UnsatisfiedLinkError` | Missing `.so` in APK | Run `.\scripts\build-android-core.ps1` before Gradle build |
+
+For full step-by-step diagnostic workflows, see [phonecam-troubleshoot](file:///d:/production/phonecam-rust/.agent/skills/phonecam-troubleshoot/SKILL.md).
+
+---
+
+## 10. Specialized Skills Cross-Reference
+
+PhoneCam includes dedicated skill modules for specific development domains:
+
+- **[phonecam-ci](file:///d:/production/phonecam-rust/.agent/skills/phonecam-ci/SKILL.md)**:
+  Complete reference for GitHub Actions matrix (`ci.yml`, `release.yml`), multi-platform builds, semantic versioning, and release artifact generation.
+- **[phonecam-virtualcam](file:///d:/production/phonecam-rust/.agent/skills/phonecam-virtualcam/SKILL.md)**:
+  Exhaustive virtual camera implementations across Windows (`MFCreateVirtualCamera` & DirectShow COM), Linux (`v4l2loopback`), and macOS (`CoreMediaIO` DAL / `CMIOExtension`).
+- **[phonecam-protocol](file:///d:/production/phonecam-rust/.agent/skills/phonecam-protocol/SKILL.md)**:
+  Deep guide for binary framing, 40-byte greeting, 20-byte client handshake, HMAC-SHA256 crypto, JSON payloads, replay guard, and diagnostics.
+- **[phonecam-troubleshoot](file:///d:/production/phonecam-rust/.agent/skills/phonecam-troubleshoot/SKILL.md)**:
+  Step-by-step diagnostic procedures for Wi-Fi discovery, USB ADB reverse tunnels, hardware encoder fallbacks, thermal clamps, and audio sync.

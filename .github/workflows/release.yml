@@ -2,6 +2,9 @@ name: Release
 
 on:
   push:
+    branches:
+      - master
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -9,18 +12,165 @@ on:
       tag_name:
         description: 'Tag or release version (e.g. v1.0.0)'
         required: false
-        default: ''
+        default: 'v1.0.0'
+      force_release:
+        description: 'Bypass release-gate.json and force release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
+  check-gate:
+    name: Check Release Gatekeeper
+    runs-on: ubuntu-latest
+    outputs:
+      release_enabled: ${{ steps.gate.outputs.release_enabled }}
+      tag_name: ${{ steps.gate.outputs.tag_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Evaluate Release Gate (release-gate.json)
+        id: gate
+        shell: bash
+        run: |
+          FORCE="${{ github.event.inputs.force_release }}"
+          if [ "$FORCE" = "true" ]; then
+            echo "Force release requested via workflow_dispatch."
+            TAG="${{ github.event.inputs.tag_name || 'v1.0.0' }}"
+            echo "release_enabled=true" >> $GITHUB_OUTPUT
+            echo "tag_name=$TAG" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [ ! -f "release-gate.json" ]; then
+            echo "::warning::release-gate.json not found! Release publishing is disabled by default."
+            echo "release_enabled=false" >> $GITHUB_OUTPUT
+            echo "tag_name=v1.0.0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          ENABLED=$(jq -r '.release_enabled // false' release-gate.json)
+          VERSION=$(jq -r '.version // "1.0.0"' release-gate.json)
+          if [[ ! "$VERSION" =~ ^v ]]; then
+            VERSION="v$VERSION"
+          fi
+
+          if [ -n "${{ github.ref_name }}" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${{ github.ref_name }}"
+          fi
+
+          echo "Evaluated release gate: release_enabled=$ENABLED, target_version=$VERSION"
+          echo "release_enabled=$ENABLED" >> $GITHUB_OUTPUT
+          echo "tag_name=$VERSION" >> $GITHUB_OUTPUT
+
+          if [ "$ENABLED" != "true" ]; then
+            echo "=========================================================================="
+            echo "⛔ RELEASE GATE IS CLOSED ('release_enabled' is false in release-gate.json)."
+            echo "A commit was pushed, but automated public release publishing is suspended."
+            echo "To publish a release, edit release-gate.json -> set 'release_enabled': true"
+            echo "=========================================================================="
+          else
+            echo "=========================================================================="
+            echo "✅ RELEASE GATE IS OPEN ('release_enabled' is true in release-gate.json)."
+            echo "Proceeding with automated multi-platform compilation & release publishing!"
+            echo "=========================================================================="
+          fi
+
+  build-android:
+    name: Build Android Release APKs
+    needs: [check-gate]
+    if: needs.check-gate.outputs.release_enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "rust-release-android-host"
+
+      - name: Build phonecam-android-core host library for JVM tests
+        run: cargo build -p phonecam-android-core --release
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x apps/android/gradlew
+
+      - name: Build Android Release APKs
+        working-directory: apps/android
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Organize release APKs
+        shell: bash
+        run: |
+          mkdir -p dist/android
+          APK_DIR="apps/android/app/build/outputs/apk/release"
+          
+          # Universal APK
+          if [ -f "$APK_DIR/app-universal-release.apk" ]; then
+            cp "$APK_DIR/app-universal-release.apk" dist/android/PhoneCam-universal.apk
+            cp "$APK_DIR/app-universal-release.apk" dist/android/PhoneCam.apk
+          elif [ -f "$APK_DIR/app-release.apk" ]; then
+            cp "$APK_DIR/app-release.apk" dist/android/PhoneCam-universal.apk
+            cp "$APK_DIR/app-release.apk" dist/android/PhoneCam.apk
+          fi
+
+          # Per-ABI APKs
+          if [ -f "$APK_DIR/app-arm64-v8a-release.apk" ]; then
+            cp "$APK_DIR/app-arm64-v8a-release.apk" dist/android/PhoneCam-arm64-v8a.apk
+          fi
+          if [ -f "$APK_DIR/app-armeabi-v7a-release.apk" ]; then
+            cp "$APK_DIR/app-armeabi-v7a-release.apk" dist/android/PhoneCam-armeabi-v7a.apk
+          fi
+          if [ -f "$APK_DIR/app-x86_64-release.apk" ]; then
+            cp "$APK_DIR/app-x86_64-release.apk" dist/android/PhoneCam-x86_64.apk
+          fi
+
+          echo "Organized release APKs:"
+          ls -la dist/android/
+
+      - name: Upload Android APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: dist/android/*.apk
+          if-no-files-found: error
+
   build-windows:
     name: Build Windows Release & Installer
+    needs: [check-gate, build-android]
+    if: needs.check-gate.outputs.release_enabled == 'true'
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download Android APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apks
+          path: dist/android
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -38,27 +188,51 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist/unpacked
           Copy-Item target/release/phonecam.exe -Destination dist/unpacked/phonecam.exe -Force
+          if (Test-Path "dist/android/PhoneCam.apk") {
+            Copy-Item "dist/android/PhoneCam.apk" -Destination "dist/unpacked/PhoneCam.apk" -Force
+          } elseif (-not (Test-Path "dist/unpacked/PhoneCam.apk")) {
+            New-Item -ItemType File -Force -Path "dist/unpacked/PhoneCam.apk"
+          }
+
+      - name: Set up NSIS
+        uses: nsis-dev/setup-nsis@v1
 
       - name: Compile NSIS Installer
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/installer
-          if (Get-Command makensis -ErrorAction SilentlyContinue) {
-            makensis scripts/installer.nsi
-          } elseif (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe") {
-            & "C:\Program Files (x86)\NSIS\makensis.exe" scripts/installer.nsi
-          } else {
-            choco install nsis -y
-            & "C:\Program Files (x86)\NSIS\makensis.exe" scripts/installer.nsi
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            if (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe") {
+              $env:PATH = "C:\Program Files (x86)\NSIS;$env:PATH"
+            } else {
+              choco install nsis -y --no-progress
+              $env:PATH = "C:\Program Files (x86)\NSIS;$env:PATH"
+            }
+          }
+          makensis scripts/installer.nsi
+          
+          # Ensure PhoneCam-Setup-1.0.0.exe is generated or mapped
+          $installer = Get-ChildItem -Path dist/installer/PhoneCam-Setup-*.exe | Select-Object -First 1
+          if ($installer -and $installer.Name -ne "PhoneCam-Setup-1.0.0.exe") {
+            Copy-Item $installer.FullName -Destination "dist/installer/PhoneCam-Setup-1.0.0.exe" -Force
+          }
+          $tag = "${{ needs.check-gate.outputs.tag_name }}"
+          $version = $tag.TrimStart('v')
+          if ($version -and $version -ne "1.0.0") {
+            Copy-Item "dist/installer/PhoneCam-Setup-1.0.0.exe" -Destination "dist/installer/PhoneCam-Setup-$version.exe" -Force
           }
 
       - name: Create portable zip archive
         shell: pwsh
         run: |
+          $tag = "${{ needs.check-gate.outputs.tag_name }}"
           $portableDir = "dist/portable_staging"
           New-Item -ItemType Directory -Force -Path $portableDir
-          Get-ChildItem -Path dist/unpacked -Exclude "*.apk" | Copy-Item -Destination $portableDir -Recurse -Force
-          Compress-Archive -Path "$portableDir/*" -DestinationPath "dist/PhoneCam-portable.zip" -Force
+          Get-ChildItem -Path dist/unpacked | Copy-Item -Destination $portableDir -Recurse -Force
+          Compress-Archive -Path "$portableDir/*" -DestinationPath "dist/PhoneCam-v1.0.0-windows-x64.zip" -Force
+          if ($tag -ne "v1.0.0") {
+            Copy-Item "dist/PhoneCam-v1.0.0-windows-x64.zip" -Destination "dist/PhoneCam-$tag-windows-x64.zip" -Force
+          }
 
       - name: Upload Windows Installer artifact
         uses: actions/upload-artifact@v4
@@ -71,64 +245,77 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-portable
-          path: dist/PhoneCam-portable.zip
+          path: dist/PhoneCam-*-windows-x64.zip
           if-no-files-found: error
 
-  build-android:
-    name: Build Android Release APK
+  build-linux:
+    name: Build Linux Release
+    needs: [check-gate]
+    if: needs.check-gate.outputs.release_enabled == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libx11-xcb-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            libssl-dev \
+            pkg-config
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build phonecam-android-core host library
-        run: cargo build -p phonecam-android-core --release
+      - name: Cache Cargo dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "rust-release-linux"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Build PhoneCam Linux binary
+        run: cargo build --release -p phonecam-app
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x apps/android/gradlew
-
-      - name: Build Android Release APK
-        working-directory: apps/android
-        run: ./gradlew assembleRelease --stacktrace
-
-      - name: Package APK for release
+      - name: Package Linux tar.gz
         shell: bash
         run: |
-          mkdir -p dist
-          APK_PATH=$(find apps/android/app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "Error: Release APK not found in apps/android/app/build/outputs/apk/release!"
-            exit 1
+          TAG="${{ needs.check-gate.outputs.tag_name }}"
+          mkdir -p dist/staging-linux
+          cp target/release/phonecam dist/staging-linux/
+          [ -f README.md ] && cp README.md dist/staging-linux/ || true
+          [ -f LICENSE ] && cp LICENSE* dist/staging-linux/ || true
+          tar -czvf "dist/PhoneCam-v1.0.0-linux-x64.tar.gz" -C dist/staging-linux .
+          if [ "$TAG" != "v1.0.0" ]; then
+            cp "dist/PhoneCam-v1.0.0-linux-x64.tar.gz" "dist/PhoneCam-${TAG}-linux-x64.tar.gz"
           fi
-          echo "Discovered release APK: $APK_PATH"
-          cp "$APK_PATH" dist/PhoneCam.apk
+          echo "Packaged Linux release:"
+          ls -la dist/*.tar.gz
 
-      - name: Upload Android APK artifact
+      - name: Upload Linux Tarball artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
-          path: dist/PhoneCam.apk
+          name: linux-tarball
+          path: dist/PhoneCam-*-linux-x64.tar.gz
           if-no-files-found: error
 
   publish-release:
     name: Publish GitHub Release
-    needs: [build-windows, build-android]
+    needs: [check-gate, build-windows, build-linux, build-android]
+    if: needs.check-gate.outputs.release_enabled == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Download Windows Installer
         uses: actions/download-artifact@v4
@@ -142,25 +329,43 @@ jobs:
           name: windows-portable
           path: release-assets
 
-      - name: Download Android APK
+      - name: Download Linux Tarball
         uses: actions/download-artifact@v4
         with:
-          name: android-apk
+          name: linux-tarball
+          path: release-assets
+
+      - name: Download Android APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apks
           path: release-assets
 
       - name: Inspect release assets
         shell: bash
-        run: ls -la release-assets
+        run: |
+          echo "Aggregated release assets:"
+          ls -lh release-assets
 
-      - name: Create GitHub Release
+      - name: Generate Release Notes with Contributor Avatars & Changelog
+        shell: bash
+        run: |
+          TARGET_TAG="${{ needs.check-gate.outputs.tag_name }}"
+          python3 scripts/generate-release-notes.py "$TARGET_TAG" release-notes.md
+          echo "--- Generated Release Notes ---"
+          cat release-notes.md
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             release-assets/PhoneCam-Setup-*.exe
-            release-assets/PhoneCam-portable.zip
-            release-assets/PhoneCam.apk
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+            release-assets/PhoneCam-*-windows-x64.zip
+            release-assets/PhoneCam-*-linux-x64.tar.gz
+            release-assets/PhoneCam*.apk
+          name: PhoneCam Release ${{ needs.check-gate.outputs.tag_name }}
+          tag_name: ${{ needs.check-gate.outputs.tag_name }}
+          body_path: release-notes.md
           generate_release_notes: true
           draft: false
           prerelease: false

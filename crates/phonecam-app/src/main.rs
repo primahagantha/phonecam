@@ -118,6 +118,7 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or(None);
 
         if let Some(hwnd) = hwnd {
+            tray::set_window_icon(hwnd);
             tray::set_window_always_on_top(hwnd, settings.always_on_top);
         }
 
