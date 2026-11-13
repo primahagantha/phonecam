@@ -4,7 +4,7 @@
 !include "FileFunc.nsh"
 
 Name "PhoneCam"
-OutFile "..\dist\installer\PhoneCam-Setup-1.1.0.exe"
+OutFile "..\dist\installer\PhoneCam-Setup-1.1.1.exe"
 InstallDir "$PROGRAMFILES64\PhoneCam"
 InstallDirRegKey HKLM "Software\PhoneCam" "Install_Dir"
 RequestExecutionLevel admin
@@ -55,7 +55,7 @@ Section "PhoneCam Core (required)" SecCore
 
   ; Write uninstaller and Add/Remove Programs entry
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\PhoneCam" "DisplayName" "PhoneCam"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\PhoneCam" "DisplayVersion" "1.1.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\PhoneCam" "DisplayVersion" "1.1.1"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\PhoneCam" "Publisher" "PhoneCam"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\PhoneCam" "DisplayIcon" "$INSTDIR\icon.ico"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\PhoneCam" "UninstallString" '"$INSTDIR\uninstall.exe"'

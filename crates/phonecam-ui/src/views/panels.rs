@@ -715,11 +715,88 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
                 )
                 .child(
                     div()
-                        .mt(px(Space::XS))
-                        .font_family(Fonts::SANS)
-                        .text_size(px(Type::TWO_XS))
-                        .text_color(Text::BODY)
-                        .child("1. Connect phone and PC to the same Wi-Fi.\n2. In PhoneCam Android, scan the QR code on the left or tap Search.\n3. Or enter the PC IP address above manually in the Android app."),
+                        .mt(px(Space::SM))
+                        .flex()
+                        .flex_col()
+                        .gap(px(Space::XS))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_start()
+                                .gap(px(Space::SM))
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .w(px(14.0))
+                                        .font_family(Fonts::SANS)
+                                        .text_size(px(Type::TWO_XS))
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(Accent::DEFAULT)
+                                        .child("1."),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .font_family(Fonts::SANS)
+                                        .text_size(px(Type::TWO_XS))
+                                        .text_color(Text::BODY)
+                                        .child("Connect phone and PC to the same Wi-Fi network."),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_start()
+                                .gap(px(Space::SM))
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .w(px(14.0))
+                                        .font_family(Fonts::SANS)
+                                        .text_size(px(Type::TWO_XS))
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(Accent::DEFAULT)
+                                        .child("2."),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .font_family(Fonts::SANS)
+                                        .text_size(px(Type::TWO_XS))
+                                        .text_color(Text::BODY)
+                                        .child("In PhoneCam Android, scan the QR code on the left or tap Search."),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_start()
+                                .gap(px(Space::SM))
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .w(px(14.0))
+                                        .font_family(Fonts::SANS)
+                                        .text_size(px(Type::TWO_XS))
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(Accent::DEFAULT)
+                                        .child("3."),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .font_family(Fonts::SANS)
+                                        .text_size(px(Type::TWO_XS))
+                                        .text_color(Text::BODY)
+                                        .child("Or enter the PC IP address above manually in the Android app."),
+                                ),
+                        ),
                 )
                 .into_any_element(),
         ],
@@ -820,7 +897,7 @@ fn usb_list(state: &AppState) -> AnyElement {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .gap(px(Space::LG))
+                    .gap(px(Space::MD))
                     .rounded(px(Radius::MD))
                     .border_1()
                     .border_color(SHELL.border.alpha(0.6))
@@ -829,18 +906,26 @@ fn usb_list(state: &AppState) -> AnyElement {
                     .py(px(Space::MD))
                     .child(
                         div()
+                            .flex()
+                            .flex_col()
                             .min_w(px(0.0))
-                            .font_family(Fonts::SANS)
-                            .text_size(px(Type::TWO_SM))
-                            .text_color(Text::HEADING)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .font_family(Fonts::MONO)
-                            .text_size(px(Type::XS))
-                            .text_color(Text::MUTED)
-                            .child(format!("serial {}", device.serial)),
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .font_family(Fonts::SANS)
+                                    .text_size(px(Type::TWO_SM))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(Text::HEADING)
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .font_family(Fonts::MONO)
+                                    .text_size(px(Type::TWO_XS))
+                                    .text_color(Text::MUTED)
+                                    .child(format!("serial {}", device.serial)),
+                            ),
                     )
                     .child(match (forwarding, action) {
                         (true, _) => Button::danger("Close tunnel")
@@ -985,7 +1070,7 @@ pub fn usb_debugging_guide() -> AnyElement {
         .mt(px(Space::MD))
         .flex()
         .flex_col()
-        .gap(px(Space::XS))
+        .gap(px(Space::SM))
         .font_family(Fonts::SANS)
         .text_size(px(Type::XS))
         .text_color(Text::MUTED)
@@ -993,14 +1078,17 @@ pub fn usb_debugging_guide() -> AnyElement {
             div()
                 .flex()
                 .flex_row()
+                .items_start()
                 .gap(px(Space::SM))
                 .child(
                     div()
                         .flex_shrink_0()
-                        .text_color(Text::BODY)
+                        .w(px(16.0))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(Accent::DEFAULT)
                         .child(format!("{}.", i + 1)),
                 )
-                .child(div().flex_1().child(*step))
+                .child(div().flex_1().min_w(px(0.0)).child(*step))
         }))
         .into_any_element()
 }
@@ -1244,9 +1332,8 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                 .child(
                     div()
                         .flex()
-                        .flex_row()
-                        .items_baseline()
-                        .gap(px(Space::SM))
+                        .flex_col()
+                        .min_w(px(0.0))
                         .child(
                             div()
                                 .font(numeric_font(Fonts::MONO))
@@ -1269,9 +1356,9 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                         .flex_row()
                         .items_center()
                         .gap(px(Space::XS))
-                        .child(pill_button(
+                        .child(pill_button_compact(
                             "bitrate-dec",
-                            "- 0.5M",
+                            "– 0.5M",
                             false,
                             current_bitrate <= 1_000_000,
                             move |_window, _cx| {
@@ -1281,7 +1368,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                                 })
                             },
                         ))
-                        .child(pill_button(
+                        .child(pill_button_compact(
                             "bitrate-inc",
                             "+ 0.5M",
                             false,
@@ -1300,7 +1387,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                 .flex()
                 .flex_row()
                 .flex_wrap()
-                .gap(px(Space::SM))
+                .gap(px(Space::XS))
                 .children(
                     [
                         (2_000_000, "2M Eco", "bitrate-2M"),
@@ -1311,7 +1398,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                     .into_iter()
                     .map(|(bps, label, id)| {
                         let active = current_bitrate == bps;
-                        pill_button(id, label, active, false, move |_window, _cx| {
+                        pill_button_compact(id, label, active, false, move |_window, _cx| {
                             push_effect(SideEffect::SetVideo {
                                 fps: current_fps_opt,
                                 bitrate: bps,
@@ -1479,6 +1566,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .min_w(px(0.0))
                         .bg(SHELL.base)
                         .rounded(px(Radius::SM))
                         .p(px(Space::SM))
@@ -1503,6 +1591,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .min_w(px(0.0))
                         .bg(SHELL.base)
                         .rounded(px(Radius::SM))
                         .p(px(Space::SM))
@@ -1567,9 +1656,8 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                     .child(
                         div()
                             .flex()
-                            .flex_row()
-                            .items_baseline()
-                            .gap(px(Space::SM))
+                            .flex_col()
+                            .min_w(px(0.0))
                             .child(
                                 div()
                                     .font(numeric_font(Fonts::MONO))
@@ -1583,7 +1671,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                                     .font_family(Fonts::SANS)
                                     .text_size(px(Type::TWO_XS))
                                     .text_color(Text::MUTED)
-                                    .child(format!("Range: {min_zoom:.1}x – {max_zoom:.1}x")),
+                                    .child(format!("{min_zoom:.1}x – {max_zoom:.1}x")),
                             ),
                     )
                     .child(
@@ -1592,14 +1680,14 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                             .flex_row()
                             .items_center()
                             .gap(px(Space::XS))
-                            .child(pill_button(
+                            .child(pill_button_compact(
                                 "zoom-dec",
-                                "- 0.1x",
+                                "– 0.1x",
                                 false,
                                 live_zoom <= min_zoom + 0.01,
                                 move |_window, _cx| push_effect(SideEffect::SetZoom(zoom_dec)),
                             ))
-                            .child(pill_button(
+                            .child(pill_button_compact(
                                 "zoom-inc",
                                 "+ 0.1x",
                                 false,
@@ -1613,11 +1701,11 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                     .flex()
                     .flex_row()
                     .flex_wrap()
-                    .gap(px(Space::SM))
+                    .gap(px(Space::XS))
                     .children(zoom_presets.into_iter().map(|z| {
                         let active = (live_zoom - z).abs() < 0.05;
                         let label = format!("{z:.1}x");
-                        pill_button(
+                        pill_button_compact(
                             format!("zoom-{z:.1}"),
                             label,
                             active,
@@ -3021,6 +3109,58 @@ fn pill_button(
         .bg(background)
         .px(px(Space::LG))
         .py(px(Space::SM))
+        .font_family(Fonts::SANS)
+        .text_size(px(Type::XS))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(text)
+        .child(label.into());
+
+    if disabled {
+        el = el.opacity(0.4).cursor_default();
+    } else {
+        let hover_border = if selected {
+            Accent::DEFAULT
+        } else {
+            Text::MUTED
+        };
+        let hover_bg = if selected { SHELL.control } else { SHELL.hover };
+        el = el
+            .cursor_pointer()
+            .hover(move |style| style.border_color(hover_border).bg(hover_bg))
+            .active(|style| style.opacity(0.85))
+            .focus(|style| style.border_color(Accent::DEFAULT))
+            .on_click(move |_event, window, cx| on_click(window, cx));
+    }
+
+    el.into_any_element()
+}
+
+fn pill_button_compact(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    disabled: bool,
+    on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let (border, background, text) = if selected {
+        (Accent::DEFAULT, SHELL.control, Accent::DEFAULT)
+    } else {
+        (SHELL.border, SHELL.control, Text::PRIMARY)
+    };
+
+    let mut el = div()
+        .id(gpui::ElementId::Name(id.into()))
+        .flex()
+        .flex_row()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .rounded(px(Radius::MD))
+        .border_1()
+        .border_color(border)
+        .bg(background)
+        .px(px(Space::MD))
+        .py(px(Space::XS))
         .font_family(Fonts::SANS)
         .text_size(px(Type::XS))
         .font_weight(gpui::FontWeight::MEDIUM)
