@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/primahagantha/phonecam/actions/workflows/release.yml"><img src="https://github.com/primahagantha/phonecam/actions/workflows/release.yml/badge.svg" alt="Release CI" /></a>
-  <a href="https://github.com/primahagantha/phonecam/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0-blue.svg" alt="Release v1.0.0" /></a>
+  <a href="https://github.com/primahagantha/phonecam/releases/latest"><img src="https://img.shields.io/badge/release-v1.1.0-blue.svg" alt="Latest Release v1.1.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License" /></a>
   <a href="#system-requirements"><img src="https://img.shields.io/badge/platform-Windows%2011%2F10%20%7C%20Linux%20%7C%20Android-lightgrey.svg" alt="Platform" /></a>
   <a href="#prerequisites"><img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust Version" /></a>
@@ -293,11 +293,11 @@ Copy-Item target\release\phonecam.exe dist\unpacked\phonecam.exe
 makensis scripts\installer.nsi
 ```
 The completed installer will be output to:
-`dist\installer\PhoneCam-Setup-1.0.0.exe`
+`dist\installer\PhoneCam-Setup-1.1.0.exe`
 
 #### Standalone Portable Release
 To run PhoneCam portably without system-wide installation:
-1. Extract `dist\PhoneCam-v1.0.0-windows-x64.zip` (or navigate to `dist\unpacked\`).
+1. Extract `dist\PhoneCam-v1.1.0-windows-x64.zip` (or navigate to `dist\unpacked\`).
 2. Run `run-portable.bat` to launch `phonecam.exe` with bundled local dependency checks.
 3. For virtual camera registration in OBS/Zoom/Meet, run `install-virtual-camera.bat` as Administrator.
 
