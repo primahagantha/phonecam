@@ -132,7 +132,9 @@ impl Registrar {
             Ok((true, _)) => Ok(()),
             Ok((false, output)) => {
                 if self.is_elevation_needed(&output) {
-                    tracing::info!("virtual camera registration requires elevation, requesting UAC...");
+                    tracing::info!(
+                        "virtual camera registration requires elevation, requesting UAC..."
+                    );
                     self.run_elevated("--register")
                 } else {
                     Err(output.trim().to_string())
@@ -140,7 +142,9 @@ impl Registrar {
             }
             Err(e) => {
                 if e.contains("elevation") || e.contains("740") {
-                    tracing::info!("virtual camera registration process requires elevation, requesting UAC...");
+                    tracing::info!(
+                        "virtual camera registration process requires elevation, requesting UAC..."
+                    );
                     self.run_elevated("--register")
                 } else {
                     Err(e)
@@ -159,7 +163,9 @@ impl Registrar {
             Ok((true, _)) => Ok(()),
             Ok((false, output)) => {
                 if self.is_elevation_needed(&output) {
-                    tracing::info!("virtual camera unregistration requires elevation, requesting UAC...");
+                    tracing::info!(
+                        "virtual camera unregistration requires elevation, requesting UAC..."
+                    );
                     self.run_elevated("--unregister")
                 } else {
                     Err(output.trim().to_string())
@@ -167,7 +173,9 @@ impl Registrar {
             }
             Err(e) => {
                 if e.contains("elevation") || e.contains("740") {
-                    tracing::info!("virtual camera unregistration requires elevation, requesting UAC...");
+                    tracing::info!(
+                        "virtual camera unregistration requires elevation, requesting UAC..."
+                    );
                     self.run_elevated("--unregister")
                 } else {
                     Err(e)
@@ -235,7 +243,9 @@ impl Registrar {
             std::thread::sleep(Duration::from_millis(500));
             return match self.status() {
                 RegistrationState::Registered => Ok(()),
-                _ => Err("Elevated registration executed, but camera is not yet enumerable.".into()),
+                _ => {
+                    Err("Elevated registration executed, but camera is not yet enumerable.".into())
+                }
             };
         }
 
@@ -253,7 +263,9 @@ impl Registrar {
             return Err("Elevated registrar timed out waiting for completion.".into());
         }
         if code_res.is_err() || exit_code != 0 {
-            return Err(format!("Elevated registrar exited with error code {exit_code}"));
+            return Err(format!(
+                "Elevated registrar exited with error code {exit_code}"
+            ));
         }
 
         Ok(())

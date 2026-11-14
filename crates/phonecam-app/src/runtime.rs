@@ -1714,7 +1714,11 @@ impl Runtime {
                 let directed: Vec<std::net::Ipv4Addr> = host
                     .parse::<std::net::Ipv4Addr>()
                     .ok()
-                    .map(|_| vec![])
+                    .filter(|ip| !ip.is_loopback())
+                    .map(|ip| {
+                        let oct = ip.octets();
+                        vec![std::net::Ipv4Addr::new(oct[0], oct[1], oct[2], 255)]
+                    })
                     .unwrap_or_default();
                 socket.broadcast(&json, DISCOVERY_PORT, &directed);
             }
@@ -1738,6 +1742,49 @@ impl Runtime {
                 let Ok(value) = serde_json::from_slice::<serde_json::Value>(&data) else {
                     continue;
                 };
+                if value.get("t").and_then(|t| t.as_str()) == Some("phonecam.probe") {
+                    let pairing = runtime.pairing.lock();
+                    let open = pairing.is_open(now_ms());
+                    let pairing_id = pairing.pairing_id().map(|s| s.to_string());
+                    drop(pairing);
+
+                    let hosts = local_ipv4_addresses();
+                    let paired: Vec<String> = runtime
+                        .registry
+                        .lock()
+                        .iter()
+                        .map(|r| r.device_id.clone())
+                        .collect();
+
+                    let sender_ip = addr.ip().to_string();
+                    let best_host = hosts
+                        .iter()
+                        .find(|h| {
+                            let h_prefix = h.rsplit_once('.').map(|(p, _)| p);
+                            let s_prefix = sender_ip.rsplit_once('.').map(|(p, _)| p);
+                            h_prefix.is_some() && h_prefix == s_prefix
+                        })
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            hosts.first().cloned().unwrap_or_else(|| "127.0.0.1".into())
+                        });
+
+                    let beacon = DesktopBeacon::new(
+                        &runtime.server_id,
+                        &runtime.server_name,
+                        best_host,
+                        runtime.port.load(Ordering::Relaxed) as u16,
+                        open,
+                        pairing_id,
+                        paired,
+                        !runtime.session.device_id.lock().is_empty(),
+                        env!("CARGO_PKG_VERSION"),
+                    );
+                    if let Ok(json) = serde_json::to_vec(&beacon) {
+                        socket.send_to(&json, addr);
+                    }
+                    continue;
+                }
                 if value.get("t").and_then(|t| t.as_str()) != Some("phonecam.beacon") {
                     continue;
                 }
@@ -2826,14 +2873,21 @@ fn read_video_packet_into(
     }
     let total = u32::from_be_bytes(len_bytes) as usize;
     if total < VIDEO_HEADER_SIZE || total > VIDEO_HEADER_SIZE + MAX_VIDEO_PAYLOAD {
-        tracing::warn!("video packet length {total} is out of range; closing");
+        tracing::warn!("video packet length {total} is out of range; closing connection");
+        conn.close();
         return None;
     }
 
     packet.resize(total, 0);
     match conn.read_exact(packet) {
         ReadResult::Ok(_) => {}
-        _ => return None,
+        _ => {
+            tracing::warn!(
+                "partial video packet read or timeout; closing connection to avoid stream desync"
+            );
+            conn.close();
+            return None;
+        }
     }
 
     let flags = VideoFlags(packet[12]);
@@ -2844,6 +2898,8 @@ fn read_video_packet_into(
     ]);
 
     if codec != 1 || payload_len + VIDEO_HEADER_SIZE != total {
+        tracing::warn!("corrupted video packet header; closing connection");
+        conn.close();
         return None;
     }
     Some((flags, pts_us, total))

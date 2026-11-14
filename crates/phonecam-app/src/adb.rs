@@ -412,10 +412,14 @@ pub fn is_pm_path_installed(output: &str) -> bool {
     output.contains("package:")
 }
 
-/// Returns true if `start-foreground-service` failed because the service was not found or app is not running.
+/// Returns true if `start-foreground-service` failed because the service was not found,
+/// the app is not running, or Android 12+ restricts background foreground service starts.
 pub fn is_foreground_service_not_found(output: &str) -> bool {
     let lower = output.to_lowercase();
-    lower.contains("not found") && lower.contains("no service started")
+    (lower.contains("not found") && lower.contains("no service started"))
+        || lower.contains("foregroundservicestartnotallowedexception")
+        || lower.contains("cannot start service when app is in background")
+        || lower.contains("not allowed to start service")
 }
 
 /// Builds the component string to launch MainActivity for the given package.
@@ -621,6 +625,15 @@ mod tests {
         ));
         assert!(is_foreground_service_not_found(
             "Error: not found; no service started\r\n"
+        ));
+        assert!(is_foreground_service_not_found(
+            "android.app.ForegroundServiceStartNotAllowedException: Service.startForeground() not allowed"
+        ));
+        assert!(is_foreground_service_not_found(
+            "Error: cannot start service when app is in background"
+        ));
+        assert!(is_foreground_service_not_found(
+            "app is not allowed to start service in background"
         ));
         assert!(!is_foreground_service_not_found(
             "Starting service: Intent { cmp=com.phonecam.camera/.service.CameraStreamService }\n"

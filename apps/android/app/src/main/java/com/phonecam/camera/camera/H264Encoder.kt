@@ -143,32 +143,7 @@ class H264Encoder(
                 MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
             ) == true
 
-            val format = MediaFormat.createVideoFormat(MIME, cand.width, cand.height).apply {
-                setInteger(
-                    MediaFormat.KEY_COLOR_FORMAT,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
-                )
-                setInteger(MediaFormat.KEY_BIT_RATE, cand.bitrate)
-                setInteger(MediaFormat.KEY_FRAME_RATE, cand.fps)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SECONDS)
-                if (isCbr && specificCodecName == null) {
-                    setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
-                }
-                // Enforce Baseline profile for guaranteed compatibility with desktop openh264
-                setInteger(
-                    MediaFormat.KEY_PROFILE,
-                    MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
-                )
-                // Real-time zero-latency operating mode (API 26+)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setInteger(MediaFormat.KEY_LATENCY, 0)
-                }
-                // Disallow B-frames to prevent reordering latency (API 29+)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-                }
-                setInteger(MediaFormat.KEY_PRIORITY, 0)
-            }
+            val format = configureMediaFormat(cand, isCbr = isCbr, specificCodecName = specificCodecName)
 
             var configured = false
             try {
@@ -188,26 +163,7 @@ class H264Encoder(
                     runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull() ?: return null
                 }
 
-                val basicFormat = MediaFormat.createVideoFormat(MIME, cand.width, cand.height).apply {
-                    setInteger(
-                        MediaFormat.KEY_COLOR_FORMAT,
-                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
-                    )
-                    setInteger(MediaFormat.KEY_BIT_RATE, cand.bitrate)
-                    setInteger(MediaFormat.KEY_FRAME_RATE, cand.fps)
-                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-                    setInteger(
-                        MediaFormat.KEY_PROFILE,
-                        MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
-                    )
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        setInteger(MediaFormat.KEY_LATENCY, 0)
-                    }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-                    }
-                    setInteger(MediaFormat.KEY_PRIORITY, 0)
-                }
+                val basicFormat = configureMediaFormat(cand, iFrameInterval = 1)
                 try {
                     created.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 } catch (e: Throwable) {
@@ -242,26 +198,7 @@ class H264Encoder(
                     runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull()
                 } ?: return null
 
-                val basicFormat = MediaFormat.createVideoFormat(MIME, cand.width, cand.height).apply {
-                    setInteger(
-                        MediaFormat.KEY_COLOR_FORMAT,
-                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
-                    )
-                    setInteger(MediaFormat.KEY_BIT_RATE, cand.bitrate)
-                    setInteger(MediaFormat.KEY_FRAME_RATE, cand.fps)
-                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-                    setInteger(
-                        MediaFormat.KEY_PROFILE,
-                        MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
-                    )
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        setInteger(MediaFormat.KEY_LATENCY, 0)
-                    }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-                    }
-                    setInteger(MediaFormat.KEY_PRIORITY, 0)
-                }
+                val basicFormat = configureMediaFormat(cand, iFrameInterval = 1)
                 fallback.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 val fallbackSurface = fallback.createInputSurface()
                 fallback.start()
@@ -409,12 +346,68 @@ class H264Encoder(
         }
     }
 
+    private fun configureMediaFormat(
+        cand: EncodeCandidate,
+        isCbr: Boolean = false,
+        specificCodecName: String? = null,
+        iFrameInterval: Int = I_FRAME_INTERVAL_SECONDS,
+    ): MediaFormat = configureMediaFormat(
+        width = cand.width,
+        height = cand.height,
+        fps = cand.fps,
+        bitrate = cand.bitrate,
+        isCbr = isCbr,
+        specificCodecName = specificCodecName,
+        iFrameInterval = iFrameInterval,
+    )
+
     companion object {
         private const val TAG = "H264Encoder"
         private const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
         private const val I_FRAME_INTERVAL_SECONDS = 1
         private const val DEQUEUE_TIMEOUT_US = 100_000L
         private const val DRAIN_JOIN_TIMEOUT_MS = 500L
+
+        internal fun configureMediaFormat(
+            width: Int,
+            height: Int,
+            fps: Int,
+            bitrate: Int,
+            isCbr: Boolean = false,
+            specificCodecName: String? = null,
+            iFrameInterval: Int = I_FRAME_INTERVAL_SECONDS,
+        ): MediaFormat {
+            val format = MediaFormat.createVideoFormat(MIME, width, height).apply {
+                setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+                )
+                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
+                if (isCbr && specificCodecName == null) {
+                    setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                }
+                // Enforce Baseline profile for guaranteed compatibility with desktop openh264
+                setInteger(
+                    MediaFormat.KEY_PROFILE,
+                    MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
+                )
+                if (Build.VERSION.SDK_INT >= 21) {
+                    setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
+                }
+                // Real-time zero-latency operating mode (API 26+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setInteger(MediaFormat.KEY_LATENCY, 0)
+                }
+                // Disallow B-frames to prevent reordering latency (API 29+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                }
+                setInteger(MediaFormat.KEY_PRIORITY, 0)
+            }
+            return format
+        }
 
         private fun hasAnnexBSps(buffer: ByteBuffer, offset: Int, size: Int): Boolean {
             if (size < 5) return false

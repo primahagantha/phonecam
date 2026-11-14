@@ -467,12 +467,14 @@ impl Authenticator<'_> {
         // Peek first. A `busy` refusal means "wait and retry", so it must not
         // spend the credential the retry needs.
         if let Some(peeked) = pairing.peek(&handshake.auth, self.now_ms) {
-            if let Some(bound_to) = &peeked.device_id {
-                if self.is_busy_for(bound_to) {
-                    drop(pairing);
-                    self.refuse(conn, handshake.role, HandshakeStatus::Busy, "{}");
-                    return HandshakeOutcome::refused("busy with another phone");
-                }
+            let is_busy = match &peeked.device_id {
+                Some(bound_to) => self.is_busy_for(bound_to),
+                None => !self.session.device_id.lock().is_empty(),
+            };
+            if is_busy {
+                drop(pairing);
+                self.refuse(conn, handshake.role, HandshakeStatus::Busy, "{}");
+                return HandshakeOutcome::refused("busy with another phone");
             }
         }
 
@@ -1230,6 +1232,51 @@ mod tests {
         assert_eq!(
             tracker.record_failure(),
             Some(std::time::Duration::from_millis(500))
+        );
+    }
+
+    #[test]
+    fn pairing_token_not_consumed_on_busy() {
+        let state = session();
+        let pairing = Mutex::new(PairingManager::new());
+        let registry = Mutex::new(Vec::new());
+
+        let token = pairing.lock().arm(300_000, 1_000).unwrap();
+
+        // Mark the session busy with another phone
+        *state.device_id.lock() = "android-existing".into();
+
+        let auth = Authenticator {
+            pairing: &pairing,
+            registry: &registry,
+            session: &state,
+            server_id: "pc-1",
+            server_name: "DESKTOP",
+            now_ms: 1_000,
+        };
+
+        let handshake = ClientHandshake {
+            proto_version: PROTOCOL_VERSION,
+            role: ChannelRole::Control,
+            client_nonce: 1,
+            auth_mode: AuthMode::PairingToken,
+            auth: token.clone(),
+        };
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+        let conn = Connection::new(server_stream).unwrap();
+
+        let outcome = auth.pairing_token(&conn, &handshake);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.error, "busy with another phone");
+
+        // Crucial invariant: The token MUST NOT have been consumed!
+        assert!(
+            pairing.lock().peek(&token, 1_000).is_some(),
+            "pairing token must still be valid after a busy refusal"
         );
     }
 }

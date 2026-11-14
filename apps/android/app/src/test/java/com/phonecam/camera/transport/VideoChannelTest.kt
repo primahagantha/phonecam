@@ -88,4 +88,79 @@ class VideoChannelTest {
         assertTrue(caughtError.get() is IOException)
         assertFalse(channel.isRunning)
     }
+
+    @Test
+    fun `clean stop does not notify onClosed callback`() {
+        val onClosedCalled = AtomicBoolean(false)
+        val out = ByteArrayOutputStream()
+        val channel = VideoChannel(
+            connection = testConnection(out),
+            onClosed = { onClosedCalled.set(true) },
+        )
+        channel.start()
+        assertTrue(channel.isRunning)
+
+        channel.stop()
+        assertFalse(channel.isRunning)
+        Thread.sleep(100)
+        assertFalse("onClosed must not be called on clean stop", onClosedCalled.get())
+    }
+
+    @Test
+    fun `eviction on keyframe preserves codec config frames`() {
+        val writeBlocker = CountDownLatch(1)
+        val writtenBytes = ByteArrayOutputStream()
+        val blockingOut = object : OutputStream() {
+            private var first = true
+            override fun write(b: Int) {
+                if (first) {
+                    first = false
+                    writeBlocker.await(5, TimeUnit.SECONDS)
+                }
+                writtenBytes.write(b)
+            }
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                if (first) {
+                    first = false
+                    writeBlocker.await(5, TimeUnit.SECONDS)
+                }
+                writtenBytes.write(b, off, len)
+            }
+        }
+
+        val channel = VideoChannel(testConnection(blockingOut))
+        channel.start()
+
+        fun makeFrame(isKey: Boolean, isConfig: Boolean): EncodedFrame {
+            val data = ByteArray(32) { 0x42 }
+            return EncodedFrame(
+                buffer = ByteBuffer.wrap(data),
+                offset = 0,
+                length = data.size,
+                ptsUs = 1000L,
+                isKeyframe = isKey,
+                isCodecConfig = isConfig,
+            )
+        }
+
+        // Submit first frame which blocks writer thread in write()
+        channel.submit(makeFrame(isKey = false, isConfig = false))
+        Thread.sleep(50)
+
+        // Fill queue with 3 delta frames and 1 codec config frame
+        channel.submit(makeFrame(isKey = false, isConfig = false))
+        channel.submit(makeFrame(isKey = false, isConfig = true)) // SPS/PPS
+        channel.submit(makeFrame(isKey = false, isConfig = false))
+
+        // Now submit IDR keyframe; this triggers catch-up eviction (queue.size >= 3)
+        channel.submit(makeFrame(isKey = true, isConfig = false))
+
+        // Unblock writer
+        writeBlocker.countDown()
+        Thread.sleep(100)
+        channel.stop()
+
+        // 2 delta frames were evicted, but the codec config frame was preserved
+        assertEquals(2L, channel.stats.droppedFrames)
+    }
 }

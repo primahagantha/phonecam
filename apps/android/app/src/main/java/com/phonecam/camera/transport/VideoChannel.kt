@@ -131,24 +131,17 @@ class VideoChannel(
 
         // Low-latency catch-up: if queue has accumulated lag when a fresh IDR keyframe
         // arrives, all queued frames belong to the obsolete previous GOP. Evict them
-        // so the stream catches up instantly to real-time.
+        // so the stream catches up instantly to real-time, but keep any frame where
+        // codecConfig == true so SPS/PPS is not dropped.
         if (pending.keyframe && queue.size >= 3) {
-            while (!queue.isEmpty()) {
-                val evicted = queue.poll() ?: break
-                droppedFrames.incrementAndGet()
-                recycleFrame(evicted)
-            }
+            evictStaleFramesOnKeyframe()
         }
 
         if (!queue.offer(pending)) {
             // Prefer dropping non-keyframes; a keyframe starts a new independent GOP,
             // so evict all stale queued frames to make room for the keyframe.
             if (pending.keyframe) {
-                while (!queue.isEmpty()) {
-                    val evicted = queue.poll() ?: break
-                    droppedFrames.incrementAndGet()
-                    recycleFrame(evicted)
-                }
+                evictStaleFramesOnKeyframe()
                 if (!queue.offer(pending)) {
                     droppedFrames.incrementAndGet()
                     recycleFrame(pending)
@@ -157,6 +150,22 @@ class VideoChannel(
                 droppedFrames.incrementAndGet()
                 recycleFrame(pending)
             }
+        }
+    }
+
+    private fun evictStaleFramesOnKeyframe() {
+        val toKeep = mutableListOf<PendingFrame>()
+        while (!queue.isEmpty()) {
+            val evicted = queue.poll() ?: break
+            if (evicted.codecConfig) {
+                toKeep.add(evicted)
+            } else {
+                droppedFrames.incrementAndGet()
+                recycleFrame(evicted)
+            }
+        }
+        for (saved in toKeep) {
+            queue.offer(saved)
         }
     }
 
@@ -204,12 +213,15 @@ class VideoChannel(
                 )
                 reportIfDue()
             } catch (t: Throwable) {
-                if (running.get()) {
+                val wasRunning = running.get()
+                if (wasRunning) {
                     Log.w(TAG, "video write failed: ${t.javaClass.simpleName}")
                 }
                 running.set(false)
                 runCatching { connection.close() }
-                onClosed?.invoke(t)
+                if (wasRunning) {
+                    onClosed?.invoke(t)
+                }
                 return
             }
         }

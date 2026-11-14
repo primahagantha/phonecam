@@ -1481,6 +1481,7 @@ class StreamSession(
         // ignored, so a phone waiting for pairing approval whose desktop closed
         // the socket sat in CONNECTING forever behind a stale notice.
         val wasConnecting = _state.value.phase == SessionState.Phase.CONNECTING
+        val wasConnected = _state.value.phase == SessionState.Phase.CONNECTED
         // The reader is the thing that reports losses, so a loss handled here is
         // the last one this connection gets: leaving a reader armed on the dead
         // socket would let it report the same loss again against the retry state
@@ -1495,7 +1496,7 @@ class StreamSession(
         runCatching { control?.close() }
         control = null
 
-        if (wasStreaming || wasConnecting || _state.value.phase == SessionState.Phase.CONNECTED) {
+        if (wasStreaming || wasConnecting || wasConnected) {
             val host = _state.value.host
             val port = _state.value.port
             if (host != null && port != null) {
