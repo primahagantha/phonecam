@@ -209,7 +209,15 @@ impl Adb {
         // here phrase them differently.
         let lowered = output.to_lowercase();
         if lowered.contains("error") || lowered.contains("cannot") {
-            return Err(output.trim().to_string());
+            // Self-healing: if reverse failed (e.g. stale tunnel or port conflict),
+            // remove any stale reverse for this port and retry once.
+            let _ = self.disable_reverse(port, serial);
+            let retry_output =
+                self.run_for_serial(serial, &["reverse", &spec, &spec], Duration::from_secs(8))?;
+            let retry_lowered = retry_output.to_lowercase();
+            if retry_lowered.contains("error") || retry_lowered.contains("cannot") {
+                return Err(retry_output.trim().to_string());
+            }
         }
         Ok(())
     }

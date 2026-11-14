@@ -408,7 +408,14 @@ mod imp {
 
         pub fn reader_count(&self) -> u32 {
             // A plain volatile load: readers update it with interlocked ops.
-            unsafe { std::ptr::read_volatile(self.base.add(OFF_READERS) as *const u32) }
+            // If an external consumer process crashed uncleanly without teardown,
+            // interlocked underflow can yield values > 4 billion. Cap to plausible bound.
+            let count = unsafe { std::ptr::read_volatile(self.base.add(OFF_READERS) as *const u32) };
+            if count > 64 {
+                0
+            } else {
+                count
+            }
         }
 
         pub fn publish(

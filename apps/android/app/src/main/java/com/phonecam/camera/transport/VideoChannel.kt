@@ -129,12 +129,23 @@ class VideoChannel(
         pending.keyframe = frame.isKeyframe
         pending.codecConfig = frame.isCodecConfig
 
+        // Low-latency catch-up: if queue has accumulated lag when a fresh IDR keyframe
+        // arrives, all queued frames belong to the obsolete previous GOP. Evict them
+        // so the stream catches up instantly to real-time.
+        if (pending.keyframe && queue.size >= 3) {
+            while (!queue.isEmpty()) {
+                val evicted = queue.poll() ?: break
+                droppedFrames.incrementAndGet()
+                recycleFrame(evicted)
+            }
+        }
+
         if (!queue.offer(pending)) {
-            // Prefer dropping a non-keyframe; a dropped keyframe costs the peer a
-            // whole GOP, so replace the queued head when this frame is a keyframe.
+            // Prefer dropping non-keyframes; a keyframe starts a new independent GOP,
+            // so evict all stale queued frames to make room for the keyframe.
             if (pending.keyframe) {
-                val evicted = queue.poll()
-                if (evicted != null) {
+                while (!queue.isEmpty()) {
+                    val evicted = queue.poll() ?: break
                     droppedFrames.incrementAndGet()
                     recycleFrame(evicted)
                 }
