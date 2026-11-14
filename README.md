@@ -28,12 +28,17 @@ PhoneCam is a complete, native Rust rewrite of the desktop webcam companion. Eng
 - [Dual Connection Modes](#dual-connection-modes)
 - [Network Protocol & Port Reference](#network-protocol--port-reference)
 - [System Requirements](#system-requirements)
+- [Installation & Quick Start (Pre-Built Binaries)](#installation--quick-start-pre-built-binaries)
+  - [1. Android APK Installation](#1-android-apk-installation)
+  - [2. Windows Desktop Installation](#2-windows-desktop-installation)
+  - [3. Linux Desktop Installation & Virtual Camera](#3-linux-desktop-installation--virtual-camera)
 - [Building from Source](#building-from-source)
   - [Prerequisites](#prerequisites)
   - [1. Windows Desktop Application](#1-windows-desktop-application)
   - [2. Packaging the Windows NSIS Installer](#2-packaging-the-windows-nsis-installer)
   - [3. Android Native Rust JNI Core](#3-android-native-rust-jni-core)
   - [4. Android APK](#4-android-apk)
+  - [5. Linux Desktop Application](#5-linux-desktop-application)
 - [Virtual Camera Registration](#virtual-camera-registration)
 - [Repository & Workspace Crates](#repository--workspace-crates)
 - [Security & Privacy Guarantee](#security--privacy-guarantee)
@@ -227,6 +232,78 @@ When `PHONECAM_PORT` is specified, the QR pairing code and UDP beacon automatica
 
 ---
 
+## Installation & Quick Start (Pre-Built Binaries)
+
+For everyday users who do not need to compile from source, pre-built binary releases are available on the [GitHub Releases](https://github.com/primahagantha/phonecam/releases/latest) page.
+
+### 1. Android APK Installation
+1. Download **`PhoneCam.apk`** (Universal bundle) or the architecture-specific APK (`PhoneCam-arm64-v8a.apk` for modern phones) from the [Latest Release](https://github.com/primahagantha/phonecam/releases/latest).
+2. Install the APK on your Android device (ensure "Install unknown apps" permission is granted to your browser/file manager).
+3. Open PhoneCam and grant Camera and Local Network permissions.
+
+### 2. Windows Desktop Installation
+1. Download **`PhoneCam-Setup-1.1.1.exe`** (or portable ZIP `PhoneCam-v1.1.1-windows-x64.zip`).
+2. Run the installer and launch PhoneCam.
+3. **Virtual Camera Activation**: In the PhoneCam app, toggle the Virtual Camera switch. The application automatically triggers a native Windows UAC elevation prompt to register `PhoneCamVirtualCamera.dll` into the system registry without requiring manual terminal commands. Once approved, "PhoneCam Camera" is immediately enumerable in OBS Studio, Google Meet, Zoom, and Discord.
+
+### 3. Linux Desktop Installation & Virtual Camera
+Pre-compiled Linux binaries are packaged as standalone tarballs (`PhoneCam-v1.1.1-linux-x64.tar.gz`). Linux uses `v4l2loopback` for the virtual video device (`/dev/video10`).
+
+#### Automated Setup (One-Click)
+Run our automated setup script to install all development and runtime dependencies, load `v4l2loopback`, configure boot persistence, and apply non-root udev access rules:
+```bash
+git clone https://github.com/primahagantha/phonecam.git
+cd phonecam
+chmod +x scripts/setup-linux.sh
+./scripts/setup-linux.sh
+```
+
+#### Manual Package Prerequisites by Distribution
+If you prefer installing dependencies manually:
+
+- **Ubuntu / Debian / Linux Mint**:
+  ```bash
+  sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+      build-essential pkg-config libfontconfig1-dev libfreetype6-dev \
+      libasound2-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev \
+      libxrandr-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev \
+      libwayland-dev libvulkan-dev libssl-dev v4l2loopback-dkms v4l-utils android-tools-adb
+  ```
+
+- **Fedora / RHEL / CentOS Stream**:
+  ```bash
+  sudo dnf install -y \
+      gcc gcc-c++ pkgconf-pkg-config fontconfig-devel freetype-devel \
+      alsa-lib-devel libX11-devel libXcursor-devel libXrandr-devel \
+      libXi-devel libxkbcommon-devel libxkbcommon-x11-devel wayland-devel \
+      vulkan-loader-devel openssl-devel v4l2loopback v4l-utils android-tools
+  ```
+
+- **Arch Linux / Manjaro**:
+  ```bash
+  sudo pacman -S --needed --noconfirm \
+      base-devel pkgconf fontconfig freetype2 alsa-lib libx11 \
+      libxcursor libxrandr libxi libxkbcommon libxkbcommon-x11 \
+      wayland vulkan-icd-loader openssl v4l2loopback-dkms v4l-utils android-tools
+  ```
+
+#### Virtual Camera Module Configuration (`v4l2loopback`)
+```bash
+# 1. Load module with device label and fixed device node
+sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="PhoneCam" exclusive_caps=1
+
+# 2. Persist module on boot:
+echo "v4l2loopback" | sudo tee /etc/modules-load.d/v4l2loopback.conf
+echo 'options v4l2loopback devices=1 video_nr=10 card_label="PhoneCam" exclusive_caps=1' | sudo tee /etc/modprobe.d/v4l2loopback.conf
+
+# 3. Allow non-root access for OBS, Chrome, Meet, and Zoom:
+sudo usermod -aG video,plugdev $USER
+echo 'KERNEL=="video10*", SUBSYSTEM=="video4linux", ATTR{name}=="PhoneCam*", MODE="0666", GROUP="video"' | sudo tee /etc/udev/rules.d/99-phonecam-vcam.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+---
+
 ## Building from Source
 
 ### Prerequisites
@@ -346,21 +423,46 @@ The generated APKs will be placed in `apps\android\app\build\outputs\apk\release
 
 ---
 
+### 5. Linux Desktop Application
+
+Once the Linux prerequisites are installed (or after running `./scripts/setup-linux.sh`):
+
+```bash
+# Run workspace core, protocol, and media tests
+cargo test -p phonecam-core -p phonecam-media -p phonecam-protocol -p phonecam-android-core
+
+# Build release desktop binary
+cargo build --release -p phonecam-app
+```
+The compiled Linux executable will be located at:
+`target/release/phonecam`
+
+---
+
 ## Virtual Camera Registration
 
-Windows Media Foundation virtual cameras must be registered in the Windows system registry so that web browsers, OBS, and conference tools can enumerate them.
-
-Open a PowerShell terminal **as Administrator** and execute:
+### Windows (Automatic Elevation & CLI)
+On Windows 11 and Windows 10, PhoneCam automatically elevates via native Win32 UAC when toggled in the desktop GUI. If you prefer to register or inspect the COM server via CLI, open an elevated (Administrator) terminal:
 
 ```powershell
 # Register the virtual camera driver
 .\dist\unpacked\phonecam-vcam-register.exe --register
 
-# Verify registration status
+# Verify registration and Media Foundation source enumeration
 .\dist\unpacked\phonecam-vcam-register.exe --status
 
 # To unregister:
 .\dist\unpacked\phonecam-vcam-register.exe --unregister
+```
+
+### Linux (v4l2loopback Device Node)
+On Linux, the virtual camera is mediated by the `v4l2loopback` kernel module:
+```bash
+# Verify active loopback device
+v4l2-ctl --device=/dev/video10 --all
+
+# List video capture devices
+v4l2-ctl --list-devices
 ```
 
 ---
