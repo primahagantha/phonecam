@@ -125,13 +125,27 @@ impl Registrar {
         }
     }
 
-    /// Registers the camera. Needs elevation.
+    /// Registers the camera. Attempts direct execution first, then falls back to
+    /// UAC elevation if administrative privileges are required.
     pub fn register(&self) -> Result<(), String> {
-        let (success, output) = self.run(&["--register"])?;
-        if success {
-            Ok(())
-        } else {
-            Err(output.trim().to_string())
+        match self.run(&["--register"]) {
+            Ok((true, _)) => Ok(()),
+            Ok((false, output)) => {
+                if self.is_elevation_needed(&output) {
+                    tracing::info!("virtual camera registration requires elevation, requesting UAC...");
+                    self.run_elevated("--register")
+                } else {
+                    Err(output.trim().to_string())
+                }
+            }
+            Err(e) => {
+                if e.contains("elevation") || e.contains("740") {
+                    tracing::info!("virtual camera registration process requires elevation, requesting UAC...");
+                    self.run_elevated("--register")
+                } else {
+                    Err(e)
+                }
+            }
         }
     }
 
@@ -141,12 +155,113 @@ impl Registrar {
     /// camera is a routine, non-elevated action, and removing HKLM means the next
     /// enable cannot put it back without elevation.
     pub fn unregister(&self) -> Result<(), String> {
-        let (success, output) = self.run(&["--unregister"])?;
-        if success {
-            Ok(())
-        } else {
-            Err(output.trim().to_string())
+        match self.run(&["--unregister"]) {
+            Ok((true, _)) => Ok(()),
+            Ok((false, output)) => {
+                if self.is_elevation_needed(&output) {
+                    tracing::info!("virtual camera unregistration requires elevation, requesting UAC...");
+                    self.run_elevated("--unregister")
+                } else {
+                    Err(output.trim().to_string())
+                }
+            }
+            Err(e) => {
+                if e.contains("elevation") || e.contains("740") {
+                    tracing::info!("virtual camera unregistration requires elevation, requesting UAC...");
+                    self.run_elevated("--unregister")
+                } else {
+                    Err(e)
+                }
+            }
         }
+    }
+
+    fn is_elevation_needed(&self, output: &str) -> bool {
+        let lower = output.to_lowercase();
+        lower.contains("administrator")
+            || lower.contains("access is denied")
+            || lower.contains("elevation")
+            || lower.contains("hkey_local_machine")
+    }
+
+    #[cfg(windows)]
+    fn run_elevated(&self, arg: &str) -> Result<(), String> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, HANDLE};
+        use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+        use windows::Win32::UI::Shell::{
+            ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+        let path_w: Vec<u16> = self
+            .path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let verb_w: Vec<u16> = std::ffi::OsStr::new("runas")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let arg_w: Vec<u16> = std::ffi::OsStr::new(arg)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut exec_info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            lpVerb: PCWSTR(verb_w.as_ptr()),
+            lpFile: PCWSTR(path_w.as_ptr()),
+            lpParameters: PCWSTR(arg_w.as_ptr()),
+            nShow: SW_HIDE.0 as i32,
+            ..Default::default()
+        };
+
+        // SAFETY: `exec_info` contains valid null-terminated UTF-16 wide string pointers whose
+        // underlying Vecs live across the ShellExecuteExW invocation.
+        let status = unsafe { ShellExecuteExW(&mut exec_info) };
+        if let Err(err) = status {
+            if err.code() == ERROR_CANCELLED.to_hresult() {
+                return Err("UAC elevation was declined by user.".into());
+            }
+            return Err(format!("UAC elevation failed: {err}"));
+        }
+
+        let h_process = exec_info.hProcess;
+        if h_process.is_invalid() || h_process == HANDLE::default() {
+            std::thread::sleep(Duration::from_millis(500));
+            return match self.status() {
+                RegistrationState::Registered => Ok(()),
+                _ => Err("Elevated registration executed, but camera is not yet enumerable.".into()),
+            };
+        }
+
+        // SAFETY: `h_process` is a valid process handle returned by ShellExecuteExW with SEE_MASK_NOCLOSEPROCESS.
+        let wait_res = unsafe { WaitForSingleObject(h_process, 30_000) };
+        let mut exit_code: u32 = 0;
+        // SAFETY: `h_process` is valid and pointer to `exit_code` is aligned and writable.
+        let code_res = unsafe { GetExitCodeProcess(h_process, &mut exit_code) };
+        // SAFETY: We own `h_process` due to SEE_MASK_NOCLOSEPROCESS and must close it.
+        unsafe {
+            let _ = CloseHandle(h_process);
+        }
+
+        if wait_res.0 != 0 {
+            return Err("Elevated registrar timed out waiting for completion.".into());
+        }
+        if code_res.is_err() || exit_code != 0 {
+            return Err(format!("Elevated registrar exited with error code {exit_code}"));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    fn run_elevated(&self, _arg: &str) -> Result<(), String> {
+        Err("Elevation is only supported on Windows".into())
     }
 
     fn run(&self, args: &[&str]) -> Result<(bool, String), String> {
