@@ -154,6 +154,20 @@ class H264Encoder(
                 if (isCbr && specificCodecName == null) {
                     setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
                 }
+                // Enforce Baseline profile for guaranteed compatibility with desktop openh264
+                setInteger(
+                    MediaFormat.KEY_PROFILE,
+                    MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
+                )
+                // Real-time zero-latency operating mode (API 26+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setInteger(MediaFormat.KEY_LATENCY, 0)
+                }
+                // Disallow B-frames to prevent reordering latency (API 29+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                }
+                setInteger(MediaFormat.KEY_PRIORITY, 0)
             }
 
             var configured = false
@@ -182,6 +196,17 @@ class H264Encoder(
                     setInteger(MediaFormat.KEY_BIT_RATE, cand.bitrate)
                     setInteger(MediaFormat.KEY_FRAME_RATE, cand.fps)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    setInteger(
+                        MediaFormat.KEY_PROFILE,
+                        MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
+                    )
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        setInteger(MediaFormat.KEY_LATENCY, 0)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                    }
+                    setInteger(MediaFormat.KEY_PRIORITY, 0)
                 }
                 try {
                     created.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -225,6 +250,17 @@ class H264Encoder(
                     setInteger(MediaFormat.KEY_BIT_RATE, cand.bitrate)
                     setInteger(MediaFormat.KEY_FRAME_RATE, cand.fps)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    setInteger(
+                        MediaFormat.KEY_PROFILE,
+                        MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
+                    )
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        setInteger(MediaFormat.KEY_LATENCY, 0)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                    }
+                    setInteger(MediaFormat.KEY_PRIORITY, 0)
                 }
                 fallback.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 val fallbackSurface = fallback.createInputSurface()
