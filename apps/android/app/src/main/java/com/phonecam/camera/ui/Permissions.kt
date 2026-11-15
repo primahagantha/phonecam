@@ -24,6 +24,10 @@ internal fun Context.hasCameraPermission(): Boolean =
     ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
         PackageManager.PERMISSION_GRANTED
 
+internal fun Context.hasAudioPermission(): Boolean =
+    ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+        PackageManager.PERMISSION_GRANTED
+
 internal fun Context.hasNotificationPermission(): Boolean {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
     return ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
@@ -31,14 +35,11 @@ internal fun Context.hasNotificationPermission(): Boolean {
 }
 
 /**
- * What to ask for when the user wants the camera.
- *
- * Notifications are bundled in because both prompts are about the same
- * intention — "I want to stream" — and asking twice for two unrelated switches
- * is the kind of thing that makes a permission dialog feel like nagging.
+ * What to ask for when the user wants the camera and microphone.
  */
 internal fun Context.permissionsToRequest(): Array<String> = buildList {
     add(Manifest.permission.CAMERA)
+    add(Manifest.permission.RECORD_AUDIO)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         add(Manifest.permission.POST_NOTIFICATIONS)
     }

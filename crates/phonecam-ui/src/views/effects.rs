@@ -45,6 +45,7 @@ pub enum SideEffect {
     SetLutFilter(phonecam_media::LutPreset),
     SetPortraitBlur(bool, f32),
     SetAutoFraming(bool),
+    SetHandGestures(bool),
     SetAutoConnectUsb(bool),
     SetMinimizeToTray(bool),
     SetAudioStream(bool),

@@ -105,10 +105,13 @@ class CameraCapabilityProbe(private val context: Context) {
     }
 
     private fun captureSizes(map: StreamConfigurationMap): List<Pair<Int, Int>> {
-        val sizes: Array<Size> = map.getOutputSizes(android.graphics.SurfaceTexture::class.java)
-            ?: map.getOutputSizes(MediaCodecInfo.CodecCapabilities::class.java)
-            ?: emptyArray()
-        return sizes.map { it.width to it.height }
+        val recorderSizes = map.getOutputSizes(android.media.MediaRecorder::class.java) ?: emptyArray()
+        val surfaceSizes = map.getOutputSizes(android.view.Surface::class.java) ?: emptyArray()
+        val textureSizes = map.getOutputSizes(android.graphics.SurfaceTexture::class.java) ?: emptyArray()
+        val codecSizes = map.getOutputSizes(MediaCodecInfo.CodecCapabilities::class.java) ?: emptyArray()
+        val all = (recorderSizes + surfaceSizes + textureSizes + codecSizes).distinctBy { it.width to it.height }
+        val finalSizes = if (all.isNotEmpty()) all.toTypedArray() else (map.getOutputSizes(android.graphics.SurfaceTexture::class.java) ?: emptyArray())
+        return finalSizes.map { it.width to it.height }
     }
 
     /**
@@ -129,26 +132,45 @@ class CameraCapabilityProbe(private val context: Context) {
             if (range.lower in 1..120) candidates += range.lower
         }
 
-        // 30 and below come from the AE ranges, which is what a normal session
-        // honours. Anything above that is only reachable in a high speed session,
-        // and the AE ranges never list it: on this class of device they read
-        // `[13,30] [30,30]` while the camera advertises `1280x720 30-120` for high
-        // speed. So 60 is offered from the high speed configurations, not from AE.
-        val interesting = listOf(24, 25, 30)
+        val interesting = listOf(24, 25, 30, 60)
         val normal = interesting.filter { candidate -> candidates.any { it >= candidate } }
 
-        val hz = map.getOutputMinFrameDuration(android.graphics.SurfaceTexture::class.java, Size(1280, 720))
-        val capped = if (hz > 0) {
-            val maxFps = (1_000_000_000L / hz).toInt()
-            normal.filter { it <= maxFps }
-        } else {
-            normal
-        }
+        val highSpeedSupports60 = map.highSpeedVideoSizes?.any { size ->
+            map.getHighSpeedVideoFpsRangesFor(size)?.any { it.upper >= 60 } == true
+        } == true
 
-        // Always unlock 60 fps for users desiring high refresh rate capture
-        return (capped + listOf(60))
+        val hz = map.getOutputMinFrameDuration(android.graphics.SurfaceTexture::class.java, Size(1280, 720))
+        val maxFpsFromDuration = if (hz > 0) (1_000_000_000L / hz).toInt() else 30
+
+        return (normal + if (highSpeedSupports60 || maxFpsFromDuration >= 60 || candidates.any { it >= 60 }) listOf(60) else emptyList())
             .distinct()
+            .sorted()
             .ifEmpty { listOf(30, 60) }
+    }
+
+    /**
+     * Calculates the maximum FPS supported for a specific video size on this camera,
+     * inspecting minimum frame duration from StreamConfigurationMap, AE ranges, and high-speed configurations.
+     */
+    fun maxFpsForSize(
+        map: StreamConfigurationMap,
+        characteristics: CameraCharacteristics,
+        width: Int,
+        height: Int,
+    ): Int {
+        val size = Size(width, height)
+        val durationNs = map.getOutputMinFrameDuration(android.graphics.SurfaceTexture::class.java, size)
+            .takeIf { it > 0 }
+            ?: map.getOutputMinFrameDuration(android.media.MediaRecorder::class.java, size)
+        val fpsFromDuration = if (durationNs > 0) (1_000_000_000L / durationNs).toInt() else 30
+
+        val aeRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        val aeMax = aeRanges?.maxOfOrNull { it.upper } ?: 30
+
+        val hsRanges = runCatching { map.getHighSpeedVideoFpsRangesFor(size) }.getOrNull()
+        val hsMax = hsRanges?.maxOfOrNull { it.upper } ?: 0
+
+        return maxOf(minOf(fpsFromDuration, aeMax), hsMax, if (aeMax >= 60) 60 else 30)
     }
 
     private fun encoderSizesContains(encoderSizes: List<Pair<Int, Int>>, size: Pair<Int, Int>): Boolean {

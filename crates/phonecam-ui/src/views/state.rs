@@ -287,6 +287,7 @@ pub struct Settings {
     pub portrait_blur: bool,
     pub portrait_blur_intensity: f32,
     pub auto_framing: bool,
+    pub hand_gestures: bool,
     pub auto_connect_usb: bool,
     pub minimize_to_tray: bool,
     pub stream_audio: bool,
@@ -324,6 +325,7 @@ impl Default for Settings {
             portrait_blur: false,
             portrait_blur_intensity: 0.70,
             auto_framing: false,
+            hand_gestures: true,
             auto_connect_usb: true,
             minimize_to_tray: true,
             stream_audio: false,
@@ -380,6 +382,12 @@ pub struct AppState {
     pub local_ip: Option<String>,
     /// Live microphone volume level normalized between 0.0 and 1.0.
     pub audio_level: f32,
+    /// Currently detected hand gesture, if any.
+    pub active_gesture: Option<phonecam_media::HandGesture>,
+    /// Last triggered gesture action description for toast/chip feedback.
+    pub gesture_action: Option<String>,
+    /// Whether auto-framing tracking is currently locked via Open Palm gesture.
+    pub tracking_locked: bool,
 }
 
 impl AppState {

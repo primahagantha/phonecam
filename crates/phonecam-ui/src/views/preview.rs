@@ -490,6 +490,53 @@ fn empty_body(content: &StageContent) -> AnyElement {
         .into_any_element()
 }
 
+/// Renders visual feedback toast/chip on the stage when gestures are detected
+/// or face tracking is locked (OBSBOT style).
+pub fn stage_gesture_feedback(state: &AppState) -> AnyElement {
+    let mut chips = Vec::new();
+
+    // 1. If tracking is locked via Open Palm gesture, show persistent feedback chip
+    if state.settings.auto_framing && state.tracking_locked {
+        chips.push(chip("✋ Tracking Locked", Tone::Warn));
+    }
+
+    // 2. If a hand gesture action toast or active gesture is present, show visual feedback chip
+    if let Some(action) = &state.gesture_action {
+        if state.toast.as_ref() == Some(action) {
+            chips.push(chip(action.clone(), Tone::Ok));
+        }
+    } else if let Some(gesture) = state.active_gesture {
+        match gesture {
+            phonecam_media::HandGesture::OpenPalm => {
+                chips.push(chip("✋ Open Palm", Tone::Ok));
+            }
+            phonecam_media::HandGesture::PeaceV => {
+                chips.push(chip("✌ V-Sign", Tone::Ok));
+            }
+            phonecam_media::HandGesture::ThumbsUp => {
+                chips.push(chip("👍 Thumbs Up", Tone::Ok));
+            }
+            phonecam_media::HandGesture::None => {}
+        }
+    }
+
+    if chips.is_empty() {
+        return div().into_any_element();
+    }
+
+    div()
+        .absolute()
+        .top(px(Space::MD))
+        .left(px(0.0))
+        .right(px(0.0))
+        .flex()
+        .flex_row()
+        .justify_center()
+        .gap(px(Space::SM))
+        .children(chips)
+        .into_any_element()
+}
+
 /// The telemetry strip, inside the frame's bottom edge.
 ///
 /// Deliberately low contrast: it is a confidence check, not the thing being
@@ -938,5 +985,20 @@ mod tests {
     fn preview_waiting_card_renders_with_device_and_cancel_button() {
         let _card_with_name = preview_waiting_card(Some("Pixel 8"));
         let _card_fallback = preview_waiting_card(None);
+    }
+
+    #[test]
+    fn stage_gesture_feedback_renders_chips() {
+        let mut state = AppState::default();
+        let _empty = stage_gesture_feedback(&state);
+
+        state.settings.auto_framing = true;
+        state.tracking_locked = true;
+        let _locked = stage_gesture_feedback(&state);
+
+        state.active_gesture = Some(phonecam_media::HandGesture::PeaceV);
+        state.gesture_action = Some("✌ V-Sign: 2.0x Zoom".into());
+        state.toast = Some("✌ V-Sign: 2.0x Zoom".into());
+        let _feedback = stage_gesture_feedback(&state);
     }
 }

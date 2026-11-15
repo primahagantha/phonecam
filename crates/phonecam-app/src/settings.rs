@@ -82,6 +82,8 @@ struct SettingsFile {
     #[serde(default)]
     auto_framing: Option<bool>,
     #[serde(default)]
+    hand_gestures: Option<bool>,
+    #[serde(default)]
     auto_connect_usb: Option<bool>,
     #[serde(default)]
     minimize_to_tray: Option<bool>,
@@ -198,6 +200,7 @@ fn coerce(file: SettingsFile) -> Settings {
             .portrait_blur_intensity
             .unwrap_or(defaults.portrait_blur_intensity),
         auto_framing: file.auto_framing.unwrap_or(defaults.auto_framing),
+        hand_gestures: file.hand_gestures.unwrap_or(defaults.hand_gestures),
         auto_connect_usb: file.auto_connect_usb.unwrap_or(defaults.auto_connect_usb),
         minimize_to_tray: file.minimize_to_tray.unwrap_or(defaults.minimize_to_tray),
         stream_audio: file.stream_audio.unwrap_or(defaults.stream_audio),
@@ -249,6 +252,7 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
         portrait_blur: Some(settings.portrait_blur),
         portrait_blur_intensity: Some(settings.portrait_blur_intensity),
         auto_framing: Some(settings.auto_framing),
+        hand_gestures: Some(settings.hand_gestures),
         auto_connect_usb: Some(settings.auto_connect_usb),
         minimize_to_tray: Some(settings.minimize_to_tray),
         stream_audio: Some(settings.stream_audio),

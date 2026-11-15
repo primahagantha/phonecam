@@ -382,6 +382,7 @@ class H264Encoder(
                 )
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                setInteger(MediaFormat.KEY_CAPTURE_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
         }
@@ -402,6 +403,7 @@ class H264Encoder(
                 )
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                setInteger(MediaFormat.KEY_CAPTURE_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
                 // Disallow B-frames to prevent reordering latency (API 29+)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

@@ -849,6 +849,22 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
             }))
             .on_change(|val, _window, _cx| push_effect(SideEffect::SetMinimizeToTray(val)))
             .into_element(),
+            Toggle::new("Center Stage Auto-Framing", state.settings.auto_framing)
+                .detail(Some(if state.settings.auto_framing {
+                    "PTZ Face Tracking"
+                } else {
+                    "Off"
+                }))
+                .on_change(|val, _window, _cx| push_effect(SideEffect::SetAutoFraming(val)))
+                .into_element(),
+            Toggle::new("OBSBOT Hand Gestures", state.settings.hand_gestures)
+                .detail(Some(if state.settings.hand_gestures {
+                    "✋ Lock • ✌ Zoom"
+                } else {
+                    "Disabled"
+                }))
+                .on_change(|val, _window, _cx| push_effect(SideEffect::SetHandGestures(val)))
+                .into_element(),
             Toggle::new("Stream Audio from Phone", state.settings.stream_audio)
                 .detail(Some(if state.settings.stream_audio {
                     "Mic Streaming"
@@ -858,7 +874,7 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
                 .on_change(|val, _window, _cx| push_effect(SideEffect::SetAudioStream(val)))
                 .into_element(),
             prose(
-                "Enables hands-free tethering, background camera persistence, and optional microphone streaming.",
+                "Enables hands-free tethering, background persistence, AI face tracking, gestures, and microphone streaming.",
             ),
         ],
     ));
@@ -1267,6 +1283,38 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
 /* Capture                                                             */
 /* ------------------------------------------------------------------ */
 
+/// Real-time multi-segment visual audio level meter (green/amber/red thresholds).
+pub fn audio_vu_meter(audio_level: f32, audio_enabled: bool) -> AnyElement {
+    let num_segments = 16;
+    let mut meter = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(2.0))
+        .w_full()
+        .h(px(8.0))
+        .p(px(2.0))
+        .rounded(px(Radius::SM))
+        .bg(SHELL.recessed)
+        .border_1()
+        .border_color(SHELL.border.alpha(0.6));
+
+    for i in 0..num_segments {
+        let threshold = (i as f32 + 0.5) / (num_segments as f32);
+        let active = audio_enabled && audio_level >= threshold;
+        let (lit_color, dim_color) = if i >= 13 {
+            (Tone::Danger.dot(), Tone::Danger.dot().alpha(0.15))
+        } else if i >= 10 {
+            (Tone::Warn.dot(), Tone::Warn.dot().alpha(0.15))
+        } else {
+            (Tone::Ok.dot(), Tone::Ok.dot().alpha(0.15))
+        };
+        let seg_color = if active { lit_color } else { dim_color };
+        meter = meter.child(div().flex_1().h_full().rounded(px(1.0)).bg(seg_color));
+    }
+    meter.into_any_element()
+}
+
 /// What the phone captures.
 pub fn capture_panel(state: &AppState) -> AnyElement {
     let streaming = state.is_streaming();
@@ -1389,11 +1437,61 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             .unwrap_or(&[]),
         &state.settings.resolution,
     );
+    let res_detail: Option<SharedString> = if let Some(cam) = selected_cam {
+        let max_fps = cam.fps.iter().copied().max().unwrap_or(60);
+        let mut caps_str = Vec::new();
+        for r in &cam.resolutions {
+            let lbl = resolution_label_of(r);
+            let fps_cap = if lbl == "4K" || lbl == "2160p" {
+                30
+            } else {
+                max_fps
+            };
+            let entry = format!("{lbl}@{fps_cap}");
+            if !caps_str.contains(&entry) {
+                caps_str.push(entry);
+            }
+        }
+        if !caps_str.is_empty() {
+            Some(format!("Supported on connected camera: {}", caps_str.join(" • ")).into())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let res_hint: SharedString = phone
         .map(|p| p.actual_resolution.clone())
         .filter(|s| !s.is_empty())
-        .map(|actual| SharedString::from(format!("{} ({actual})", resolution_label_of(&actual))))
-        .unwrap_or_else(|| SharedString::from(resolution_label_of(&state.settings.resolution)));
+        .map(|actual| {
+            let actual_fps = phone.map(|p| p.actual_fps).unwrap_or(0);
+            if actual_fps > 0 {
+                SharedString::from(format!(
+                    "{}@{actual_fps} ({actual})",
+                    resolution_label_of(&actual)
+                ))
+            } else {
+                SharedString::from(format!("{} ({actual})", resolution_label_of(&actual)))
+            }
+        })
+        .unwrap_or_else(|| {
+            if let Some(cam) = selected_cam {
+                let base = resolution_label_of(&state.settings.resolution);
+                if base == "Auto" {
+                    SharedString::from("Auto (Dynamic)")
+                } else {
+                    let max_fps = if base == "4K" || base == "2160p" {
+                        30
+                    } else {
+                        cam.fps.iter().copied().max().unwrap_or(60)
+                    };
+                    SharedString::from(format!("{base}@{max_fps}"))
+                }
+            } else {
+                SharedString::from(resolution_label_of(&state.settings.resolution))
+            }
+        });
 
     let fps_options = fps_presets(
         selected_cam.map(|c| c.fps.as_slice()).unwrap_or(&[]),
@@ -1524,7 +1622,17 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                         let label = if res == "auto" {
                             "Auto".to_string()
                         } else {
-                            resolution_label_of(&res)
+                            let base_label = resolution_label_of(&res);
+                            if let Some(cam) = selected_cam {
+                                let max_fps = if base_label == "4K" || base_label == "2160p" {
+                                    30
+                                } else {
+                                    cam.fps.iter().copied().max().unwrap_or(60)
+                                };
+                                format!("{base_label}@{max_fps}")
+                            } else {
+                                base_label
+                            }
                         };
                         let id = format!("res-{res}");
                         pill_button(id, label, active, false, move |_window, _cx| {
@@ -1532,7 +1640,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                         })
                     }))
                     .into_any_element(),
-                None,
+                res_detail,
             ),
             crate::views::widgets::field(
                 "Frame rate",
@@ -2109,10 +2217,14 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
 
     let auto_framing_enabled = state.settings.auto_framing;
     let auto_framing_element = crate::views::widgets::field(
-        "Auto-Framing",
+        "Auto-Framing Face Tracking",
         Some(
             if auto_framing_enabled {
-                "Active"
+                if state.tracking_locked {
+                    "Tracking Locked (✋)"
+                } else {
+                    "Active"
+                }
             } else {
                 "Off"
             }
@@ -2123,9 +2235,13 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             .flex_col()
             .gap(px(Space::XS))
             .child(
-                Toggle::new("Center Stage Auto-Framing", auto_framing_enabled)
+                Toggle::new("Center Stage Face Tracking", auto_framing_enabled)
                     .detail(Some(if auto_framing_enabled {
-                        "Tracking Active"
+                        if state.tracking_locked {
+                            "Locked (✋ Palm to unlock)"
+                        } else {
+                            "Smooth PTZ Face Tracking"
+                        }
                     } else {
                         "Off"
                     }))
@@ -2136,7 +2252,50 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             )
             .into_any_element(),
         Some(
-            "Dynamically tracks your position in the frame with smooth pan and zoom transitions."
+            "Dynamically tracks your face position in the frame with smooth pan and zoom transitions."
+                .into(),
+        ),
+    );
+
+    let hand_gestures_enabled = state.settings.hand_gestures;
+    let hand_gestures_element = crate::views::widgets::field(
+        "OBSBOT Hand Gestures",
+        Some(
+            if hand_gestures_enabled {
+                if let Some(gesture) = state.active_gesture {
+                    match gesture {
+                        phonecam_media::HandGesture::OpenPalm => "✋ Open Palm Detected",
+                        phonecam_media::HandGesture::PeaceV => "✌ V-Sign Detected",
+                        phonecam_media::HandGesture::ThumbsUp => "👍 Thumbs Up Detected",
+                        phonecam_media::HandGesture::None => "Active",
+                    }
+                } else {
+                    "Active"
+                }
+            } else {
+                "Off"
+            }
+            .into(),
+        ),
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(Space::XS))
+            .child(
+                Toggle::new("Hand Gesture Controls", hand_gestures_enabled)
+                    .detail(Some(if hand_gestures_enabled {
+                        "✋ Open Palm (Lock) • ✌ V-Sign (Zoom)"
+                    } else {
+                        "Disabled"
+                    }))
+                    .on_change(|enabled, _window, _cx| {
+                        push_effect(SideEffect::SetHandGestures(enabled))
+                    })
+                    .into_element(),
+            )
+            .into_any_element(),
+        Some(
+            "Hands-free camera controls: ✋ Open Palm toggles tracking lock, ✌ V-Sign toggles 2x zoom."
                 .into(),
         ),
     );
@@ -2156,34 +2315,6 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
 
     if audio_stream_enabled {
         let pct = (audio_level * 100.0).round() as u32;
-        let num_segments = 16;
-        let mut meter = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(2.0))
-            .w_full()
-            .h(px(8.0))
-            .p(px(2.0))
-            .rounded(px(Radius::SM))
-            .bg(SHELL.recessed)
-            .border_1()
-            .border_color(SHELL.border.alpha(0.6));
-
-        for i in 0..num_segments {
-            let threshold = (i as f32 + 0.5) / (num_segments as f32);
-            let active = audio_level >= threshold;
-            let (lit_color, dim_color) = if i >= 13 {
-                (Tone::Danger.dot(), Tone::Danger.dot().alpha(0.15))
-            } else if i >= 10 {
-                (Tone::Warn.dot(), Tone::Warn.dot().alpha(0.15))
-            } else {
-                (Tone::Ok.dot(), Tone::Ok.dot().alpha(0.15))
-            };
-            let seg_color = if active { lit_color } else { dim_color };
-            meter = meter.child(div().flex_1().h_full().rounded(px(1.0)).bg(seg_color));
-        }
-
         let vu_container = div()
             .flex()
             .flex_col()
@@ -2215,7 +2346,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                             .child(format!("{pct}%")),
                     ),
             )
-            .child(meter);
+            .child(audio_vu_meter(audio_level, audio_stream_enabled));
 
         audio_content = audio_content.child(vu_container);
     }
@@ -2391,6 +2522,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             lut_selector,
             blur_element,
             auto_framing_element,
+            hand_gestures_element,
             audio_element,
         ],
     ));
@@ -3024,6 +3156,69 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         vec![info_card_from_rows(output_rows)],
     ));
 
+    // Card: "Audio & Microphone Stream"
+    let diag_audio_level = state.audio_level.clamp(0.0, 1.0);
+    let diag_audio_enabled = state.settings.stream_audio;
+    let diag_audio_pct = (diag_audio_level * 100.0).round() as u32;
+    let (audio_status_text, audio_tone) = if !state.status.connected {
+        ("Offline", Tone::Neutral)
+    } else if diag_audio_enabled {
+        ("Streaming (Mic Active)", Tone::Ok)
+    } else {
+        ("Muted / Off", Tone::Neutral)
+    };
+
+    let audio_level_widget = div()
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .w_full()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .font_family(Fonts::SANS)
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(Text::MUTED)
+                        .child("Live Microphone Volume"),
+                )
+                .child(
+                    div()
+                        .font_family(Fonts::SANS)
+                        .font(numeric_font(Fonts::SANS))
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(if diag_audio_level > 0.05 {
+                            Text::PRIMARY
+                        } else {
+                            Text::MUTED
+                        })
+                        .child(format!("{diag_audio_pct}%")),
+                ),
+        )
+        .child(audio_vu_meter(diag_audio_level, diag_audio_enabled))
+        .into_any_element();
+
+    let audio_diag_rows = vec![
+        ("Audio stream".into(), chip(audio_status_text, audio_tone)),
+        ("Input level".into(), audio_level_widget),
+        (
+            "Audio codec".into(),
+            card_text_val("PCM 16-bit 48 kHz Mono", true),
+        ),
+        (
+            "Transport channel".into(),
+            card_text_val("TCP Role 3 (Low Latency)", true),
+        ),
+    ];
+    children.push(section(
+        "Audio & microphone stream",
+        vec![info_card_from_rows(audio_diag_rows)],
+    ));
+
     // Card C: "Network & Endpoints"
     let service_endpoint = format!("127.0.0.1:{}", phonecam_protocol::SERVICE_PORT);
     let wifi_endpoint = state
@@ -3538,6 +3733,26 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
             }))
             .on_change(|val, _window, _cx| push_effect(SideEffect::SetMinimizeToTray(val)))
             .into_element(),
+        )
+        .child(
+            Toggle::new("Center Stage Auto-Framing", state.settings.auto_framing)
+                .detail(Some(if state.settings.auto_framing {
+                    "PTZ Face Tracking"
+                } else {
+                    "Off"
+                }))
+                .on_change(|val, _window, _cx| push_effect(SideEffect::SetAutoFraming(val)))
+                .into_element(),
+        )
+        .child(
+            Toggle::new("OBSBOT Hand Gestures", state.settings.hand_gestures)
+                .detail(Some(if state.settings.hand_gestures {
+                    "✋ Lock • ✌ Zoom"
+                } else {
+                    "Disabled"
+                }))
+                .on_change(|val, _window, _cx| push_effect(SideEffect::SetHandGestures(val)))
+                .into_element(),
         )
         .child(
             Toggle::new("Stream Audio from Phone", state.settings.stream_audio)
@@ -4364,5 +4579,54 @@ mod tests {
             ..Default::default()
         });
         let _panel = paired_phone_panel(&state);
+    }
+
+    #[test]
+    fn audio_vu_meter_renders_active_and_muted_states() {
+        let _active = audio_vu_meter(0.75, true);
+        let _muted = audio_vu_meter(0.0, false);
+    }
+
+    #[test]
+    fn capture_panel_renders_dynamic_capabilities_and_all_pro_toggles() {
+        let mut state = AppState::default();
+        state.status.connected = true;
+        state.settings.auto_framing = true;
+        state.settings.hand_gestures = true;
+        state.settings.stream_audio = true;
+        state.audio_level = 0.50;
+        state.tracking_locked = true;
+        state.active_gesture = Some(phonecam_media::HandGesture::OpenPalm);
+
+        state.capabilities = Some(phonecam_protocol::CapabilitiesPayload {
+            device: phonecam_protocol::DeviceCapabilities {
+                model: "Pixel 8 Pro".into(),
+                android_version: 34,
+                app_version: "1.2.1".into(),
+            },
+            cameras: vec![phonecam_protocol::CameraCapability {
+                id: "0".into(),
+                facing: phonecam_protocol::CameraFacing::Back,
+                resolutions: vec![
+                    "3840x2160".into(),
+                    "1920x1080".into(),
+                    "1280x720".into(),
+                    "854x480".into(),
+                ],
+                fps: vec![24, 30, 60],
+                torch: true,
+                focus: true,
+                zoom: true,
+                exposure: true,
+                white_balance: true,
+                min_zoom: 1.0,
+                max_zoom: 10.0,
+                orientation_degrees: 90,
+            }],
+        });
+
+        let _el = capture_panel(&state);
+        let _diag = diagnostics_panel(&state);
+        let _pref = preferences_panel(&state);
     }
 }

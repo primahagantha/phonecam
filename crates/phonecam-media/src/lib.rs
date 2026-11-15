@@ -24,14 +24,18 @@
 )]
 
 pub mod effects;
+pub mod face_detect;
 pub mod flicker;
+pub mod gesture;
 pub mod pacer;
 pub mod sps;
 
 pub use effects::{
     apply_lut, apply_portrait_blur, AutoFramingTracker, BlurIntensity, CropRect, LutPreset,
 };
+pub use face_detect::{detect_face, FaceDetector, FaceRect};
 pub use flicker::{FlickerDetector, FlickerEvent, LUMA_JUMP_THRESHOLD};
+pub use gesture::{detect_gesture, GestureDetector, GestureEvent, HandGesture};
 pub use pacer::{FramePacer, PaceAction, TARGET_FPS, TARGET_FRAME_DURATION_US};
 pub use sps::{parse_avc_dimensions, Dimensions};
 

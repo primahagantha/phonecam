@@ -261,6 +261,7 @@ impl Render for AppView {
                     .bg(gpui::rgb(0x000000))
                     .overflow_hidden()
                     .child(picture)
+                    .child(preview::stage_gesture_feedback(&self.state))
                     .child(preview::telemetry(
                         self.state.device_name(),
                         self.state.has_notice(FailureCode::DecoderFailed)

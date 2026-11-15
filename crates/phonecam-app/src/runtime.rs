@@ -80,6 +80,10 @@ pub struct PublishScratch {
     pub last_size: Option<(u32, u32)>,
     /// Temporal auto-framing tracker (zoom 1.25, smoothing 0.12).
     pub tracker: phonecam_media::AutoFramingTracker,
+    /// Fast zero-allocation face detector for Center Stage face tracking.
+    pub face_detector: phonecam_media::FaceDetector,
+    /// OBSBOT-style hand gesture detector (Open Palm & Peace/V-Sign).
+    pub gesture_detector: phonecam_media::GestureDetector,
 }
 
 impl Default for PublishScratch {
@@ -92,6 +96,8 @@ impl Default for PublishScratch {
             spare: Vec::new(),
             last_size: None,
             tracker: phonecam_media::AutoFramingTracker::new(1.25, 0.12),
+            face_detector: phonecam_media::FaceDetector::new(),
+            gesture_detector: phonecam_media::GestureDetector::new(),
         }
     }
 }
@@ -1387,15 +1393,93 @@ impl Runtime {
             return;
         }
 
-        let (lut_preset, portrait_blur, blur_amt, auto_framing) = {
+        let (lut_preset, portrait_blur, blur_amt, auto_framing, hand_gestures) = {
             let state = self.state.lock();
             (
                 state.settings.lut_preset,
                 state.settings.portrait_blur,
                 state.settings.portrait_blur_intensity,
                 state.settings.auto_framing,
+                state.settings.hand_gestures,
             )
         };
+
+        let face = if auto_framing || hand_gestures {
+            scratch.tracker.process_frame(
+                &mut scratch.face_detector,
+                &scratch.bgra,
+                planes.width as usize,
+                planes.height as usize,
+            )
+        } else {
+            None
+        };
+
+        if hand_gestures {
+            let gesture_event = scratch.gesture_detector.detect(
+                &scratch.bgra,
+                planes.width as usize,
+                planes.height as usize,
+                face,
+            );
+            if gesture_event.triggered {
+                if let Some(action) = scratch.tracker.handle_gesture(&gesture_event) {
+                    let msg = match gesture_event.gesture {
+                        phonecam_media::HandGesture::OpenPalm => {
+                            if scratch.tracker.is_tracking_locked() {
+                                "✋ Open Palm: Tracking Locked"
+                            } else {
+                                "✋ Open Palm: Tracking Unlocked"
+                            }
+                        }
+                        phonecam_media::HandGesture::PeaceV
+                        | phonecam_media::HandGesture::ThumbsUp => {
+                            if scratch.tracker.zoom > 1.5 {
+                                "✌ V-Sign: 2.0x Zoom"
+                            } else {
+                                "✌ V-Sign: 1.0x Zoom"
+                            }
+                        }
+                        _ => action,
+                    };
+                    {
+                        let mut state = self.state.lock();
+                        state.set_toast(msg, 2500);
+                        state.active_gesture = Some(gesture_event.gesture);
+                        state.gesture_action = Some(msg.to_string());
+                        state.tracking_locked = scratch.tracker.is_tracking_locked();
+                    }
+                    self.bump_state_version();
+                }
+            } else if gesture_event.gesture != phonecam_media::HandGesture::None {
+                let state_needs_update = {
+                    let mut state = self.state.lock();
+                    if state.active_gesture != Some(gesture_event.gesture) {
+                        state.active_gesture = Some(gesture_event.gesture);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if state_needs_update {
+                    self.bump_state_version();
+                }
+            } else {
+                let state_needs_update = {
+                    let mut state = self.state.lock();
+                    if state.active_gesture.is_some() {
+                        state.active_gesture = None;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if state_needs_update {
+                    self.bump_state_version();
+                }
+            }
+        }
+
         if auto_framing {
             scratch.tracker.step();
             let crop = scratch.tracker.compute_crop(planes.width, planes.height);
@@ -1657,6 +1741,9 @@ impl Runtime {
         self.queue_command(DesktopToPhone::SetAntiFlicker {
             mode: settings.anti_flicker,
         });
+        self.queue_command(DesktopToPhone::SetAudioStream {
+            enabled: settings.stream_audio,
+        });
         self.queue_command(DesktopToPhone::StartStream);
     }
 
@@ -1854,6 +1941,20 @@ impl Runtime {
         {
             let mut state = self.state.lock();
             state.settings.auto_framing = enabled;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.broadcast_state();
+    }
+
+    /// Configures OBSBOT hand gesture recognition.
+    pub fn set_hand_gestures(&self, enabled: bool) {
+        {
+            let mut state = self.state.lock();
+            state.settings.hand_gestures = enabled;
+            if !enabled {
+                state.active_gesture = None;
+                state.gesture_action = None;
+            }
             let _ = crate::settings::save(&state.settings);
         }
         self.broadcast_state();

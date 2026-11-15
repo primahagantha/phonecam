@@ -95,4 +95,91 @@ class ProCameraControlsTest {
         assertTrue(focusAutoMsg is DesktopMessage.SetFocus)
         assertNull((focusAutoMsg as DesktopMessage.SetFocus).distance)
     }
+
+    @Test
+    fun `desktop control messages for audio stream and anti flicker decode properly`() {
+        val audioOnPayload = """{"t":"set_audio_stream","enabled":true}""".toByteArray(Charsets.UTF_8)
+        val audioOnMsg = ControlCodec.decodeDesktop(audioOnPayload)
+        assertNotNull(audioOnMsg)
+        assertTrue(audioOnMsg is DesktopMessage.SetAudioStream)
+        assertTrue((audioOnMsg as DesktopMessage.SetAudioStream).enabled)
+
+        val audioOffPayload = """{"t":"set_audio_stream","enabled":false}""".toByteArray(Charsets.UTF_8)
+        val audioOffMsg = ControlCodec.decodeDesktop(audioOffPayload)
+        assertNotNull(audioOffMsg)
+        assertTrue(audioOffMsg is DesktopMessage.SetAudioStream)
+        assertEquals(false, (audioOffMsg as DesktopMessage.SetAudioStream).enabled)
+
+        val antiFlickerPayload = """{"t":"set_anti_flicker","mode":"60hz"}""".toByteArray(Charsets.UTF_8)
+        val antiFlickerMsg = ControlCodec.decodeDesktop(antiFlickerPayload)
+        assertNotNull(antiFlickerMsg)
+        assertTrue(antiFlickerMsg is DesktopMessage.SetAntiFlicker)
+        assertEquals("60hz", (antiFlickerMsg as DesktopMessage.SetAntiFlicker).mode)
+    }
+
+    @Test
+    fun `selectFpsRangeFromPairs selects range with upper == 60 when 60 fps is requested`() {
+        // Device with [60, 60] and [30, 60]
+        val rangesWithBoth = listOf(
+            15 to 30,
+            30 to 30,
+            30 to 60,
+            60 to 60,
+        )
+        val selected60 = CameraController.selectFpsRangeFromPairs(rangesWithBoth, 60)
+        assertEquals(60, selected60.second)
+        assertEquals(60, selected60.first)
+
+        // Device with only [30, 60]
+        val rangesWith3060 = listOf(
+            15 to 30,
+            30 to 30,
+            30 to 60,
+        )
+        val selected3060 = CameraController.selectFpsRangeFromPairs(rangesWith3060, 60)
+        assertEquals(60, selected3060.second)
+        assertEquals(30, selected3060.first)
+
+        // Device with 30fps max
+        val ranges30Max = listOf(
+            15 to 30,
+            30 to 30,
+        )
+        val selected30 = CameraController.selectFpsRangeFromPairs(ranges30Max, 30)
+        assertEquals(30, selected30.second)
+    }
+
+    @Test
+    fun `resolveAntibandingModeFallback maps modes correctly`() {
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ,
+            CameraController.resolveAntibandingModeFallback("50hz"),
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ,
+            CameraController.resolveAntibandingModeFallback("50"),
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ,
+            CameraController.resolveAntibandingModeFallback("60hz"),
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ,
+            CameraController.resolveAntibandingModeFallback("60"),
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF,
+            CameraController.resolveAntibandingModeFallback("off"),
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO,
+            CameraController.resolveAntibandingModeFallback("auto"),
+        )
+    }
+
+    @Test
+    fun `camera controller max video dimensions support 4K`() {
+        assertTrue(CameraController.MAX_VIDEO_WIDTH >= 3840)
+        assertTrue(CameraController.MAX_VIDEO_HEIGHT >= 2160)
+    }
 }

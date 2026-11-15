@@ -305,8 +305,17 @@ class CameraStreamService : Service() {
         // A camera-typed foreground service requires the camera permission. Without
         // it the slot is still claimed, untyped, so the contract is satisfied and
         // the service can shut itself down cleanly.
-        val type = if (cameraGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        val audioGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.RECORD_AUDIO,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            var flags = 0
+            if (cameraGranted) flags = flags or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            if (audioGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                flags = flags or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            flags
         } else {
             0
         }

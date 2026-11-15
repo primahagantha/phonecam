@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class AudioStreamer(
     private val identity: IdentityStore,
+    private val context: android.content.Context? = null,
 ) {
     private val running = AtomicBoolean(false)
     private var workerThread: Thread? = null
@@ -71,6 +72,16 @@ class AudioStreamer(
 
     @SuppressLint("MissingPermission")
     private fun runAudioLoop(host: String, port: Int) {
+        if (context != null && androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.RECORD_AUDIO,
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "AudioStreamer: android.permission.RECORD_AUDIO not granted; aborting")
+            running.set(false)
+            return
+        }
+
         Log.i(TAG, "Connecting audio channel to $host:$port (role=AUDIO)...")
         val dialResult = PeerConnection.dialAsKnownDevice(
             identity = identity,

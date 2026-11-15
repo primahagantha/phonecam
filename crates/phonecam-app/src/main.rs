@@ -464,6 +464,7 @@ fn apply_effect(
             runtime.set_portrait_blur(enabled, intensity)
         }
         SideEffect::SetAutoFraming(enabled) => runtime.set_auto_framing(enabled),
+        SideEffect::SetHandGestures(enabled) => runtime.set_hand_gestures(enabled),
         SideEffect::SetAutoConnectUsb(enabled) => runtime.set_auto_connect_usb(enabled),
         SideEffect::SetMinimizeToTray(enabled) => runtime.set_minimize_to_tray(enabled),
         SideEffect::SetAudioStream(enabled) => runtime.set_audio_stream(enabled),

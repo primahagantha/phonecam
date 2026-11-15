@@ -392,7 +392,7 @@ class StreamSession(
 
     private val camera = CameraController(context)
     private val health = DeviceHealth(context)
-    private val audioStreamer = AudioStreamer(identity)
+    private val audioStreamer = AudioStreamer(identity, context)
 
     private val discovery = DiscoveryClient(
         context = context,
@@ -1699,6 +1699,7 @@ class StreamSession(
                     onStarted = { applied: ResolvedVideoConfig ->
                         scope.launch {
                             cameraStartFailures = 0
+                            camera.setAntibandingMode(_state.value.antiFlicker)
                             val appliedRes = "${applied.width}x${applied.height}"
                             val subNotice = if (wasSubstituted && applied.notice == null) {
                                 "Using ${encWidth}x${encHeight} (hardware encoder limit)."

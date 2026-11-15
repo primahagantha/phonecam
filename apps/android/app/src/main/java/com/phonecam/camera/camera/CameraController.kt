@@ -200,12 +200,14 @@ class CameraController(private val context: Context) {
             map.getHighSpeedVideoFpsRangesFor(size)?.any { it.upper >= fps } == true
         }
     }
-    /** Output sizes for encoder surfaces, with a metadata fallback for devices that
-     * omit the generic Surface class but advertise the same outputs as a texture. */
+    /** Output sizes for encoder surfaces, with fallbacks across MediaRecorder,
+     * generic Surface, and SurfaceTexture classes to capture actual supported sizes (including 4K). */
     private fun outputSizes(map: android.hardware.camera2.params.StreamConfigurationMap): Array<Size> {
-        val surfaceSizes = map.getOutputSizes(Surface::class.java)
-        if (!surfaceSizes.isNullOrEmpty()) return surfaceSizes
-        return map.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray()
+        val recorderSizes = map.getOutputSizes(android.media.MediaRecorder::class.java) ?: emptyArray()
+        val surfaceSizes = map.getOutputSizes(Surface::class.java) ?: emptyArray()
+        val textureSizes = map.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray()
+        val all = (recorderSizes + surfaceSizes + textureSizes).distinctBy { it.width to it.height }
+        return if (all.isNotEmpty()) all.toTypedArray() else (map.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray())
     }
 
     /** Output sizes this camera can stream, largest first, landscape-normalised. */
@@ -365,26 +367,11 @@ class CameraController(private val context: Context) {
      * rate for exposure only when it must, the same choice a phone camera makes
      * for video.
      */
-    private fun selectFpsRange(characteristics: CameraCharacteristics, targetFps: Int): Range<Int> {
+    internal fun selectFpsRange(characteristics: CameraCharacteristics, targetFps: Int): Range<Int> {
         val ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
-
-        val matchingUpper = ranges.filter { it.upper == targetFps }
-        if (matchingUpper.isNotEmpty()) {
-            val withHeadroom = matchingUpper.filter { it.lower >= targetFps / 2 }
-            return withHeadroom.minByOrNull { it.lower } ?: matchingUpper.minByOrNull { it.lower }!!
-        }
-
-        val containing = ranges.filter { it.contains(targetFps) }
-        if (containing.isNotEmpty()) {
-            return containing.minByOrNull { it.upper - it.lower }!!
-        }
-
-        val highest = ranges.maxByOrNull { it.upper }
-        if (highest != null && highest.upper < targetFps) {
-            return highest
-        }
-
-        return Range(targetFps, targetFps)
+        val pairs = ranges.map { (it.lower ?: 0) to (it.upper ?: 0) }
+        val chosen = selectFpsRangeFromPairs(pairs, targetFps)
+        return Range(chosen.first, chosen.second)
     }
 
     /**
@@ -445,7 +432,7 @@ class CameraController(private val context: Context) {
      * Resolves antibanding mode based on user preference and hardware support.
      * AUTO dynamically detects 50 Hz vs 60 Hz flicker, while 50 Hz and 60 Hz lock to AC mains frequency.
      */
-    private fun resolveAntibandingMode(characteristics: CameraCharacteristics, requested: String): Int {
+    internal fun resolveAntibandingMode(characteristics: CameraCharacteristics, requested: String): Int {
         val modes = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES) ?: intArrayOf()
         return when (requested.lowercase()) {
             "50hz", "50" -> if (modes.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ)) {
@@ -470,6 +457,7 @@ class CameraController(private val context: Context) {
             }
         }
     }
+
 
     /**
      * Safely selects autofocus mode based on camera capabilities.
@@ -502,18 +490,19 @@ class CameraController(private val context: Context) {
 
             val characteristics = getCharacteristics(camera.id)
             val afMode = characteristics?.let { selectAfMode(it) } ?: CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-            val antibandingMode = characteristics?.let { resolveAntibandingMode(it, configuredAntibanding) } ?: CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
+            val antibandingMode = characteristics?.let { resolveAntibandingMode(it, configuredAntibanding) }
+                ?: resolveAntibandingModeFallback(configuredAntibanding)
             val hasValidPreview = previewSurface != null && previewSurface.isValid
 
-            // 60 fps and above is a *constrained high speed* session on Camera2. It
-            // has its own creation call, its own repeating-burst API, and its own
-            // frame rate ranges; the AE ranges used by a normal session are
-            // rejected outright. The encoder surface is already sized to the
-            // resolved config, which the resolver snapped to a high speed size.
+            // Query AE target FPS ranges. When the camera supports 60 FPS in its AE ranges
+            // (e.g. [60, 60] or [30, 60]), use standard session configuration with
+            // CONTROL_AE_TARGET_FPS_RANGE rather than constrained high speed.
             val streamMap = characteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            val highSpeed = resolved.fps >= 60 && streamMap?.highSpeedVideoSizes?.any { size ->
+            val aeRanges = characteristics?.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
+            val hasAe60 = aeRanges.any { it.upper >= 60 }
+            val highSpeed = !hasAe60 && resolved.fps >= 60 && streamMap?.highSpeedVideoSizes?.any { size ->
                 size.width == targetSize.width && size.height == targetSize.height
-            } == true
+            } == true && previewSurface == null
             val fpsRange = when {
                 highSpeed -> selectHighSpeedRange(characteristics!!, targetSize)
                 characteristics != null -> selectFpsRange(characteristics, resolved.fps)
@@ -958,12 +947,24 @@ class CameraController(private val context: Context) {
         val currentDevice = device
         if (currentDevice != null && currentDevice.id == lens.id) {
             setZoom(lens.id, lens.zoomFactor)
+            // Re-apply antibanding on repeating requests for the lens switch
+            val builder = requestBuilder
+            val chars = getCharacteristics(lens.id)
+            if (builder != null && chars != null) {
+                val targetMode = resolveAntibandingMode(chars, configuredAntibanding)
+                runCatching {
+                    builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, targetMode)
+                    applyRequest(builder)
+                    Log.i(TAG, "Re-applied antibanding mode on same-device lens switch: $configuredAntibanding ($targetMode)")
+                }
+            }
             activeConfig?.let { onStarted?.invoke(it) }
             return
         }
 
         val req = sessionRequest
         if (req != null) {
+            val savedAntibanding = configuredAntibanding
             start(
                 cameraId = lens.id,
                 targetSurface = req.targetSurface,
@@ -971,9 +972,11 @@ class CameraController(private val context: Context) {
                 requestedFps = req.resolved.fps,
                 requestedBitrate = req.resolved.bitrate,
                 onStarted = { config ->
+                    currentLens = lens
                     if (lens.zoomFactor != 1.0f) {
                         setZoom(lens.id, lens.zoomFactor)
                     }
+                    setAntibandingMode(savedAntibanding)
                     onStarted?.invoke(config)
                 },
                 onError = { err ->
@@ -1118,9 +1121,31 @@ class CameraController(private val context: Context) {
         handler = null
     }
 
+    /**
+     * Inspects StreamConfigurationMap and AE ranges for the max FPS achievable
+     * at [width]x[height] for [cameraId] (e.g. 60 or 30).
+     */
+    fun maxFpsForSize(cameraId: String, width: Int, height: Int): Int {
+        val characteristics = getCharacteristics(cameraId) ?: return 30
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return 30
+        val size = Size(width, height)
+        val durationNs = map.getOutputMinFrameDuration(SurfaceTexture::class.java, size)
+            .takeIf { it > 0 }
+            ?: map.getOutputMinFrameDuration(android.media.MediaRecorder::class.java, size)
+        val fpsFromDuration = if (durationNs > 0) (1_000_000_000L / durationNs).toInt() else 30
+
+        val aeRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        val aeMax = aeRanges?.maxOfOrNull { it.upper } ?: 30
+
+        val hsRanges = runCatching { map.getHighSpeedVideoFpsRangesFor(size) }.getOrNull()
+        val hsMax = hsRanges?.maxOfOrNull { it.upper } ?: 0
+
+        return maxOf(minOf(fpsFromDuration, aeMax), hsMax, if (aeMax >= 60) 60 else 30)
+    }
+
     companion object {
-        const val MAX_VIDEO_WIDTH = 1920
-        const val MAX_VIDEO_HEIGHT = 1080
+        const val MAX_VIDEO_WIDTH = 3840
+        const val MAX_VIDEO_HEIGHT = 2160
         const val TAG = "CameraController"
 
         fun kelvinToColorGains(kelvin: Int): ColorGains {
@@ -1140,5 +1165,42 @@ class CameraController(private val context: Context) {
         }
 
         fun kelvinToRggb(kelvin: Int): RggbChannelVector = kelvinToColorGains(kelvin).toRggbVector()
+
+        fun selectFpsRangeFromPairs(ranges: List<Pair<Int, Int>>, targetFps: Int): Pair<Int, Int> {
+            if (targetFps >= 60) {
+                val matching60 = ranges.filter { it.second == 60 }
+                if (matching60.isNotEmpty()) {
+                    val preferred = matching60.firstOrNull { it.first == 60 }
+                        ?: matching60.firstOrNull { it.first == 30 }
+                        ?: matching60.first()
+                    return preferred
+                }
+            }
+
+            val matchingUpper = ranges.filter { it.second == targetFps }
+            if (matchingUpper.isNotEmpty()) {
+                val withHeadroom = matchingUpper.filter { it.first >= targetFps / 2 }
+                return withHeadroom.minByOrNull { it.first } ?: matchingUpper.minByOrNull { it.first }!!
+            }
+
+            val containing = ranges.filter { targetFps in it.first..it.second }
+            if (containing.isNotEmpty()) {
+                return containing.minByOrNull { it.second - it.first }!!
+            }
+
+            val highest = ranges.maxByOrNull { it.second }
+            if (highest != null && highest.second < targetFps) {
+                return highest
+            }
+
+            return targetFps to targetFps
+        }
+
+        fun resolveAntibandingModeFallback(requested: String): Int = when (requested.lowercase()) {
+            "50hz", "50" -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
+            "60hz", "60" -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ
+            "off" -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
+            else -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+        }
     }
 }

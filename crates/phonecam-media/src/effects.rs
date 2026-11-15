@@ -298,6 +298,14 @@ pub struct AutoFramingTracker {
     pub current_center_y: f32,
     pub zoom: f32,
     pub smoothing: f32,
+    #[serde(default)]
+    pub target_zoom: f32,
+    #[serde(default)]
+    pub tracking_locked: bool,
+    #[serde(default)]
+    pub face_detected: bool,
+    #[serde(default)]
+    pub last_face: Option<crate::face_detect::FaceRect>,
 }
 
 impl Default for AutoFramingTracker {
@@ -308,26 +316,133 @@ impl Default for AutoFramingTracker {
 
 impl AutoFramingTracker {
     pub fn new(zoom: f32, smoothing: f32) -> Self {
+        let z = zoom.clamp(1.0, 2.5);
         Self {
             target_center_x: 0.50,
             target_center_y: 0.50,
             current_center_x: 0.50,
             current_center_y: 0.50,
-            zoom: zoom.clamp(1.0, 2.5),
+            zoom: z,
+            target_zoom: z,
             smoothing: smoothing.clamp(0.01, 1.0),
+            tracking_locked: false,
+            face_detected: false,
+            last_face: None,
         }
     }
 
     /// Sets the target center normalized coordinates (0.0 to 1.0).
     pub fn set_target(&mut self, x: f32, y: f32) {
+        if self.tracking_locked {
+            return;
+        }
         self.target_center_x = x.clamp(0.15, 0.85);
         self.target_center_y = y.clamp(0.15, 0.85);
     }
 
-    /// Advances the smoothing interpolation toward the target center.
+    /// Connects a detected face to the auto-framing target.
+    ///
+    /// When tracking is unlocked and a face is detected, updates `target_center_x`
+    /// and `target_center_y` with deadband hysteresis to provide smooth, professional
+    /// PTZ tracking without jitter.
+    pub fn update_face(&mut self, face: Option<crate::face_detect::FaceRect>) {
+        if let Some(f) = face {
+            self.face_detected = true;
+            self.last_face = Some(f);
+            if !self.tracking_locked {
+                // Apply 1.5% deadband to eliminate micro-jitter
+                let dx = (f.center_x - self.target_center_x).abs();
+                let dy = (f.center_y - self.target_center_y).abs();
+                if dx > 0.015 || dy > 0.015 {
+                    self.set_target(f.center_x, f.center_y);
+                }
+            }
+        } else {
+            self.face_detected = false;
+        }
+    }
+
+    /// Toggles the tracking lock (pause/resume face tracking).
+    pub fn toggle_tracking_lock(&mut self) -> bool {
+        self.tracking_locked = !self.tracking_locked;
+        self.tracking_locked
+    }
+
+    /// Sets the tracking lock state.
+    pub fn set_tracking_locked(&mut self, locked: bool) {
+        self.tracking_locked = locked;
+    }
+
+    /// Returns true if face tracking is locked.
+    pub fn is_tracking_locked(&self) -> bool {
+        self.tracking_locked
+    }
+
+    /// Sets the target zoom factor (1.0 to 2.5).
+    pub fn set_zoom(&mut self, zoom: f32) {
+        self.target_zoom = zoom.clamp(1.0, 2.5);
+    }
+
+    /// Toggles zoom between two levels (e.g. 1.0x and 2.0x).
+    pub fn toggle_zoom(&mut self, low: f32, high: f32) -> f32 {
+        let low = low.clamp(1.0, 2.5);
+        let high = high.clamp(1.0, 2.5);
+        if (self.zoom - low).abs() < (self.zoom - high).abs() {
+            self.set_zoom(high);
+            high
+        } else {
+            self.set_zoom(low);
+            low
+        }
+    }
+
+    /// Handles a detected hand gesture event, toggling tracking lock on Open Palm
+    /// or toggling zoom on Peace/V-Sign or Thumbs Up.
+    ///
+    /// Returns an optional action description string for UI feedback.
+    pub fn handle_gesture(&mut self, event: &crate::gesture::GestureEvent) -> Option<&'static str> {
+        if !event.triggered {
+            return None;
+        }
+        match event.gesture {
+            crate::gesture::HandGesture::OpenPalm => {
+                let locked = self.toggle_tracking_lock();
+                if locked {
+                    Some("Tracking Locked")
+                } else {
+                    Some("Tracking Unlocked")
+                }
+            }
+            crate::gesture::HandGesture::PeaceV | crate::gesture::HandGesture::ThumbsUp => {
+                self.toggle_zoom(1.0, 2.0);
+                Some("Zoom Toggled")
+            }
+            crate::gesture::HandGesture::None => None,
+        }
+    }
+
+    /// Processes a video frame with face detection and updates the target tracking center.
+    pub fn process_frame(
+        &mut self,
+        detector: &mut crate::face_detect::FaceDetector,
+        bgra: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Option<crate::face_detect::FaceRect> {
+        let face = detector.detect(bgra, width, height);
+        self.update_face(face);
+        face
+    }
+
+    /// Advances the smoothing interpolation toward the target center and target zoom.
     pub fn step(&mut self) {
-        self.current_center_x += (self.target_center_x - self.current_center_x) * self.smoothing;
-        self.current_center_y += (self.target_center_y - self.current_center_y) * self.smoothing;
+        if !self.tracking_locked {
+            self.current_center_x +=
+                (self.target_center_x - self.current_center_x) * self.smoothing;
+            self.current_center_y +=
+                (self.target_center_y - self.current_center_y) * self.smoothing;
+        }
+        self.zoom += (self.target_zoom - self.zoom) * self.smoothing;
     }
 
     /// Computes the cropped sub-rectangle matching the original aspect ratio.
@@ -511,5 +626,73 @@ mod tests {
         let mut dst = vec![0u8; 2 * 2 * 4];
         AutoFramingTracker::crop_bgra(&src, src_w, src_h, &crop, &mut dst, 2, 2);
         assert_eq!(dst.len(), 16);
+    }
+
+    #[test]
+    fn auto_framing_tracks_face_and_respects_lock() {
+        let mut tracker = AutoFramingTracker::new(1.50, 0.50);
+        let face = crate::face_detect::FaceRect::new(0.65, 0.40, 0.15, 0.20, 0.85);
+
+        // Update with detected face
+        tracker.update_face(Some(face));
+        assert!(tracker.face_detected);
+        assert_eq!(tracker.last_face, Some(face));
+        assert!((tracker.target_center_x - face.center_x).abs() < 0.001);
+
+        tracker.step();
+        assert!(tracker.current_center_x > 0.50);
+
+        // Lock tracking
+        tracker.toggle_tracking_lock();
+        assert!(tracker.is_tracking_locked());
+
+        let new_face = crate::face_detect::FaceRect::new(0.20, 0.20, 0.15, 0.20, 0.85);
+        tracker.update_face(Some(new_face));
+        // Center should not change because tracking is locked
+        assert_eq!(tracker.target_center_x, face.center_x);
+
+        // Unlock tracking
+        tracker.toggle_tracking_lock();
+        tracker.update_face(Some(new_face));
+        assert_eq!(tracker.target_center_x, new_face.center_x);
+    }
+
+    #[test]
+    fn auto_framing_handles_gestures() {
+        let mut tracker = AutoFramingTracker::new(1.0, 0.50);
+
+        // Trigger Open Palm gesture -> toggles tracking lock
+        let palm_event = crate::gesture::GestureEvent {
+            gesture: crate::gesture::HandGesture::OpenPalm,
+            confidence: 0.9,
+            center_x: 0.5,
+            center_y: 0.5,
+            triggered: true,
+        };
+        let res = tracker.handle_gesture(&palm_event);
+        assert_eq!(res, Some("Tracking Locked"));
+        assert!(tracker.is_tracking_locked());
+
+        // Trigger again -> unlocks
+        let res2 = tracker.handle_gesture(&palm_event);
+        assert_eq!(res2, Some("Tracking Unlocked"));
+        assert!(!tracker.is_tracking_locked());
+
+        // Trigger Peace V gesture -> toggles zoom
+        let peace_event = crate::gesture::GestureEvent {
+            gesture: crate::gesture::HandGesture::PeaceV,
+            confidence: 0.9,
+            center_x: 0.5,
+            center_y: 0.5,
+            triggered: true,
+        };
+        let zoom_res = tracker.handle_gesture(&peace_event);
+        assert_eq!(zoom_res, Some("Zoom Toggled"));
+        assert_eq!(tracker.target_zoom, 2.0);
+
+        // Untriggered event should do nothing
+        let mut inactive = peace_event;
+        inactive.triggered = false;
+        assert_eq!(tracker.handle_gesture(&inactive), None);
     }
 }
