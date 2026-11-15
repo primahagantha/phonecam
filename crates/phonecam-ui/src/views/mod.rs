@@ -36,7 +36,11 @@ pub struct AppView {
     /// allocation, and the shipped app's equivalent rule was "exactly one
     /// canvas, never remounted".
     pub preview_image: Option<std::sync::Arc<gpui::RenderImage>>,
+    /// Double-buffered preview handle held for one extra frame so the GPU texture
+    /// atlas eviction can safely drop the frame from 2 frames ago without flickering.
+    pub previous_preview_image: Option<std::sync::Arc<gpui::RenderImage>>,
     preview_capacity: usize,
+    previous_preview_capacity: usize,
     /// The pairing code, regenerated only when its payload changes.
     pub qr_image: Option<std::sync::Arc<gpui::RenderImage>>,
     qr_payload_cached: Option<String>,
@@ -52,7 +56,9 @@ impl AppView {
             focus_preview: false,
             pairing_network: 0,
             preview_image: None,
+            previous_preview_image: None,
             preview_capacity: 0,
+            previous_preview_capacity: 0,
             qr_image: None,
             qr_payload_cached: None,
             focus_handle: None,
@@ -108,21 +114,33 @@ impl AppView {
         self.set_preview_in(pixels, width, height, None)
     }
 
-    /// Installs a decoded picture into the preview slot. Reclaims the previous
-    /// frame's buffer for recycling without forcefully dropping the GPU texture
-    /// mid-stream (which causes D3D11 texture atlas eviction flickering).
+    /// Installs a decoded picture into the preview slot. Reclaims the frame from
+    /// 2 frames ago and drops its texture from the GPU atlas to eliminate VRAM leak.
     pub fn set_preview_in(
         &mut self,
         pixels: Vec<u8>,
         width: u32,
         height: u32,
-        _window: Option<&mut Window>,
+        mut window: Option<&mut Window>,
     ) -> Option<Vec<u8>> {
-        // Pass None for window drop during per-frame stream updates so GPUI replaces
-        // textures smoothly without blanking or atlas churn.
-        let recycled =
-            recycle_preview_image(&mut self.preview_image, &mut self.preview_capacity, None);
+        // If self.previous_preview_image has a frame from 2 frames ago:
+        let recycled = if let Some(frame_2_ago) = self.previous_preview_image.take() {
+            if let Some(w) = window.as_mut() {
+                let _ = w.drop_image(frame_2_ago.clone());
+            }
+            reclaim_render_image_buffer(
+                frame_2_ago,
+                std::mem::take(&mut self.previous_preview_capacity),
+            )
+        } else {
+            None
+        };
 
+        // Move self.previous_preview_image = self.preview_image.take().
+        self.previous_preview_image = self.preview_image.take();
+        self.previous_preview_capacity = self.preview_capacity;
+
+        // Install new frame into self.preview_image.
         let cap = pixels.capacity();
         if let Some(buffer) = image::RgbaImage::from_raw(width, height, pixels) {
             self.preview_capacity = cap;
@@ -138,9 +156,27 @@ impl AppView {
         self.clear_preview_in(None)
     }
 
-    /// Clears the active preview image and drops its GPU texture from `window`.
-    pub fn clear_preview_in(&mut self, window: Option<&mut Window>) -> Option<Vec<u8>> {
-        recycle_preview_image(&mut self.preview_image, &mut self.preview_capacity, window)
+    /// Clears both active and previous preview images, dropping GPU textures from `window`.
+    pub fn clear_preview_in(&mut self, mut window: Option<&mut Window>) -> Option<Vec<u8>> {
+        let recycled_prev = if let Some(prev) = self.previous_preview_image.take() {
+            if let Some(w) = window.as_mut() {
+                let _ = w.drop_image(prev.clone());
+            }
+            reclaim_render_image_buffer(prev, std::mem::take(&mut self.previous_preview_capacity))
+        } else {
+            None
+        };
+
+        let recycled_curr = if let Some(curr) = self.preview_image.take() {
+            if let Some(w) = window.as_mut() {
+                let _ = w.drop_image(curr.clone());
+            }
+            reclaim_render_image_buffer(curr, std::mem::take(&mut self.preview_capacity))
+        } else {
+            None
+        };
+
+        recycled_curr.or(recycled_prev)
     }
 
     /// Renders the pairing code once per payload, not once per frame.
@@ -331,17 +367,11 @@ impl Render for AppView {
     }
 }
 
-/// Drops the GPU texture and reclaims the backing BGRA allocation with its original capacity.
-fn recycle_preview_image(
-    slot: &mut Option<std::sync::Arc<gpui::RenderImage>>,
-    stored_cap: &mut usize,
-    window: Option<&mut Window>,
+/// Reclaims the backing BGRA allocation with its original capacity.
+fn reclaim_render_image_buffer(
+    arc_img: std::sync::Arc<gpui::RenderImage>,
+    stored_cap: usize,
 ) -> Option<Vec<u8>> {
-    let old_cap = std::mem::take(stored_cap);
-    let arc_img = slot.take()?;
-    if let Some(w) = window {
-        let _ = w.drop_image(arc_img.clone());
-    }
     std::sync::Arc::try_unwrap(arc_img)
         .ok()
         .and_then(|render_img| {
@@ -351,7 +381,10 @@ fn recycle_preview_image(
                 return None;
             };
             std::mem::forget(render_img);
-            let cap = old_cap.max(len);
+            let cap = stored_cap.max(len);
+            // SAFETY: The memory was originally allocated via Vec<u8> (when RgbaImage was created)
+            // with capacity at least `cap`. `render_img` has been forgotten via std::mem::forget,
+            // ensuring exclusive ownership and preventing double-free.
             Some(unsafe { Vec::from_raw_parts(ptr, len, cap) })
         })
 }
@@ -470,16 +503,20 @@ mod tests {
 
         let buf2 = vec![99u8; 100];
         let r2 = view.set_preview(buf2, 5, 5);
-        assert!(r2.is_some());
-        let recycled = r2.unwrap();
+        assert!(r2.is_none());
+
+        let buf3 = vec![77u8; 100];
+        let r3 = view.set_preview(buf3, 5, 5);
+        assert!(r3.is_some());
+        let recycled = r3.unwrap();
         assert_eq!(recycled.len(), 100);
         assert_eq!(recycled[0], 42);
 
-        let r3 = view.clear_preview();
-        assert!(r3.is_some());
-        let recycled3 = r3.unwrap();
-        assert_eq!(recycled3.len(), 100);
-        assert_eq!(recycled3[0], 99);
+        let r4 = view.clear_preview();
+        assert!(r4.is_some());
+        let recycled4 = r4.unwrap();
+        assert_eq!(recycled4.len(), 100);
+        assert_eq!(recycled4[0], 77);
     }
 
     #[test]
@@ -490,8 +527,12 @@ mod tests {
         assert!(view.set_preview(buf1, 5, 5).is_none());
 
         let buf2 = vec![1u8; 100];
-        let recycled = view.set_preview(buf2, 5, 5).expect("buffer should recycle");
+        assert!(view.set_preview(buf2, 5, 5).is_none());
+
+        let buf3 = vec![2u8; 100];
+        let recycled = view.set_preview(buf3, 5, 5).expect("buffer should recycle");
         assert_eq!(recycled.len(), 100);
+        assert_eq!(recycled[0], 7);
         assert!(
             recycled.capacity() >= 256,
             "capacity should be preserved, got {}",

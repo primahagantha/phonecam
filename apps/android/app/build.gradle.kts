@@ -15,8 +15,8 @@ android {
         applicationId = "com.phonecam.camera"
         minSdk = 26
         targetSdk = 34
-        versionCode = 111
-        versionName = "1.1.1"
+        versionCode = 10200
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }

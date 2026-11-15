@@ -504,6 +504,8 @@ pub fn key_value(
 /// A recessed well for data that is not a control.
 pub fn well(children: Vec<AnyElement>) -> AnyElement {
     div()
+        .w_full()
+        .min_w(px(0.0))
         .flex()
         .flex_col()
         .rounded(px(Radius::MD))
@@ -518,6 +520,8 @@ pub fn well(children: Vec<AnyElement>) -> AnyElement {
 /// A notice or informational box, tinted with its tone.
 pub fn tinted_box(tone: Tone, children: Vec<AnyElement>) -> AnyElement {
     div()
+        .w_full()
+        .min_w(px(0.0))
         .flex()
         .flex_col()
         .rounded(px(Radius::MD))

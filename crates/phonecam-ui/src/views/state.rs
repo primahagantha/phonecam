@@ -378,6 +378,8 @@ pub struct AppState {
     pub pending_camera_id: Option<String>,
     /// The primary local Wi-Fi / LAN IP address for phone connection.
     pub local_ip: Option<String>,
+    /// Live microphone volume level normalized between 0.0 and 1.0.
+    pub audio_level: f32,
 }
 
 impl AppState {

@@ -231,6 +231,11 @@ class ProtoTest {
         assertTrue(decodedFlicker is DesktopMessage.SetAntiFlicker)
         assertEquals("50hz", (decodedFlicker as DesktopMessage.SetAntiFlicker).mode)
 
+        val setAudio = """{"t":"set_audio_stream","enabled":true}"""
+        val decodedAudio = ControlCodec.decodeDesktop(setAudio.toByteArray())
+        assertTrue(decodedAudio is DesktopMessage.SetAudioStream)
+        assertTrue((decodedAudio as DesktopMessage.SetAudioStream).enabled)
+
         // Forward compatibility: a newer desktop may send a command this build
         // does not know, which must be ignored rather than throwing (docs §6).
         val unknown = """{"t":"a_command_from_the_future","payload":{"x":1}}"""
@@ -310,6 +315,13 @@ class ProtoTest {
         assertArrayEquals(bytes, "000fa9ff".hexToBytes())
         assertNull("abc".hexToBytesOrNull())
         assertNull("zz".hexToBytesOrNull())
+    }
+
+    @Test
+    fun `channel role enum matches protocol wire values`() {
+        assertEquals(1, ChannelRole.CONTROL.wire)
+        assertEquals(2, ChannelRole.VIDEO.wire)
+        assertEquals(3, ChannelRole.AUDIO.wire)
     }
 
     /** Builds a well-formed 40-byte greeting. */

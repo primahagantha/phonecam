@@ -46,6 +46,7 @@ object Proto {
 enum class ChannelRole(val wire: Int) {
     CONTROL(1),
     VIDEO(2),
+    AUDIO(3),
 }
 
 enum class AuthMode(val wire: Int) {

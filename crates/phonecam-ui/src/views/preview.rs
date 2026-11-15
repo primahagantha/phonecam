@@ -20,8 +20,9 @@ use gpui::prelude::*;
 use gpui::{div, px, AnyElement, IntoElement};
 
 use crate::theme::{Fonts, Radius, Space, Status, Text, Tone, Type, EMPTY_VALUE, SHELL};
+use crate::views::effects::{push_effect, SideEffect};
 use crate::views::state::AppState;
-use crate::views::widgets::chip;
+use crate::views::widgets::{chip, Button};
 
 /// What the stage should draw.
 #[derive(Debug, Clone, PartialEq)]
@@ -735,6 +736,12 @@ pub fn preview_waiting_card(device_name: Option<&str>) -> AnyElement {
                             "Connected to {}. Receiving initial camera frames...",
                             device_name.unwrap_or("phone camera")
                         )),
+                )
+                .child(
+                    div().mt(px(Space::XL)).child(
+                        Button::danger("Cancel / Stop Camera")
+                            .on_click(|_window, _cx| push_effect(SideEffect::StopStream)),
+                    ),
                 ),
         )
         .into_any_element()
@@ -925,5 +932,11 @@ mod tests {
         let pairing = stage_content(&pairing_state, 0);
         assert!(matches!(pairing, StageContent::Pairing { .. }));
         let _pel = pairing_stage(&pairing, None);
+    }
+
+    #[test]
+    fn preview_waiting_card_renders_with_device_and_cancel_button() {
+        let _card_with_name = preview_waiting_card(Some("Pixel 8"));
+        let _card_fallback = preview_waiting_card(None);
     }
 }

@@ -65,18 +65,35 @@ pub fn output_size_for(
 /// Buffers reused across frames so the publish path allocates nothing.
 ///
 /// Owned by the video thread, because that is the only thread that touches them.
-#[derive(Default)]
 pub struct PublishScratch {
     /// I420/NV12 at the decoded size, for the scale path.
-    source: Vec<u8>,
+    pub source: Vec<u8>,
     /// The BGRA buffer being filled.
-    bgra: Vec<u8>,
+    pub bgra: Vec<u8>,
     /// Reusable BGRA staging buffer when rotation or mirror transforms are active.
-    transformed: Vec<u8>,
+    pub transformed: Vec<u8>,
+    /// Reusable BGRA scratch buffer for auto-framing crop & rescale.
+    pub auto_framing_scratch: Vec<u8>,
     /// A recycled BGRA buffer, swapped with the mailbox's previous one.
-    spare: Vec<u8>,
+    pub spare: Vec<u8>,
     /// The last size published, so the state lock is not taken per frame.
-    last_size: Option<(u32, u32)>,
+    pub last_size: Option<(u32, u32)>,
+    /// Temporal auto-framing tracker (zoom 1.25, smoothing 0.12).
+    pub tracker: phonecam_media::AutoFramingTracker,
+}
+
+impl Default for PublishScratch {
+    fn default() -> Self {
+        Self {
+            source: Vec::new(),
+            bgra: Vec::new(),
+            transformed: Vec::new(),
+            auto_framing_scratch: Vec::new(),
+            spare: Vec::new(),
+            last_size: None,
+            tracker: phonecam_media::AutoFramingTracker::new(1.25, 0.12),
+        }
+    }
 }
 
 /// Everything the threads share.
@@ -1132,22 +1149,97 @@ impl Runtime {
         tracing::info!("video channel closed");
     }
 
-    /// The audio channel: reads incoming AAC / PCM / OPUS audio payloads.
+    /// The audio channel: reads incoming PCM 16-bit audio payloads and calculates live levels.
     fn run_audio(self: &Arc<Self>, conn: Connection) {
         conn.set_read_timeout(Some(std::time::Duration::from_millis(500)))
             .ok();
         tracing::info!("audio channel opened");
         self.log_info("audio channel connected");
         let mut buf = vec![0u8; 4096];
+        let mut leftover: Option<u8> = None;
+        let mut last_report_ms = 0i64;
+
         while self.running.load(Ordering::Relaxed) {
             match conn.read_some(&mut buf) {
                 ReadResult::Ok(n) => {
                     self.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
+                    let slice = &buf[..n];
+                    if slice.is_empty() {
+                        continue;
+                    }
+
+                    let mut sum_sq: f64 = 0.0;
+                    let mut sample_count = 0usize;
+                    let mut peak: f32 = 0.0;
+
+                    let mut i = 0;
+                    if let Some(prev) = leftover.take() {
+                        let sample = i16::from_le_bytes([prev, slice[0]]);
+                        let norm = (sample as f32).abs() / 32768.0;
+                        if norm > peak {
+                            peak = norm;
+                        }
+                        sum_sq += (sample as f64) * (sample as f64);
+                        sample_count += 1;
+                        i = 1;
+                    }
+
+                    while i + 1 < slice.len() {
+                        let sample = i16::from_le_bytes([slice[i], slice[i + 1]]);
+                        let norm = (sample as f32).abs() / 32768.0;
+                        if norm > peak {
+                            peak = norm;
+                        }
+                        sum_sq += (sample as f64) * (sample as f64);
+                        sample_count += 1;
+                        i += 2;
+                    }
+
+                    if i < slice.len() {
+                        leftover = Some(slice[i]);
+                    }
+
+                    if sample_count > 0 {
+                        let rms = ((sum_sq / sample_count as f64).sqrt() / 32768.0) as f32;
+                        let level = (peak * 0.7 + rms * 0.3).clamp(0.0, 1.0);
+                        let now = now_ms();
+                        if now.saturating_sub(last_report_ms) >= 30 {
+                            last_report_ms = now;
+                            {
+                                let mut state = self.state.lock();
+                                state.audio_level = level;
+                            }
+                            self.bump_state_version();
+                        }
+                    }
                 }
-                ReadResult::Timeout => continue,
+                ReadResult::Timeout => {
+                    let decayed = {
+                        let mut state = self.state.lock();
+                        if state.audio_level > 0.0 {
+                            state.audio_level = (state.audio_level * 0.8).max(0.0);
+                            if state.audio_level < 0.01 {
+                                state.audio_level = 0.0;
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if decayed {
+                        self.bump_state_version();
+                    }
+                    continue;
+                }
                 ReadResult::Closed => break,
             }
         }
+
+        {
+            let mut state = self.state.lock();
+            state.audio_level = 0.0;
+        }
+        self.bump_state_version();
         tracing::info!("audio channel closed");
         self.log_info("audio channel closed");
     }
@@ -1256,14 +1348,37 @@ impl Runtime {
             return;
         }
 
-        let (lut_preset, portrait_blur, blur_amt) = {
+        let (lut_preset, portrait_blur, blur_amt, auto_framing) = {
             let state = self.state.lock();
             (
                 state.settings.lut_preset,
                 state.settings.portrait_blur,
                 state.settings.portrait_blur_intensity,
+                state.settings.auto_framing,
             )
         };
+        if auto_framing {
+            scratch.tracker.step();
+            let crop = scratch.tracker.compute_crop(planes.width, planes.height);
+            if scratch.auto_framing_scratch.capacity() < needed {
+                if let Some(buf) = self.take_spare_buffer(needed) {
+                    scratch.auto_framing_scratch = buf;
+                } else {
+                    scratch.auto_framing_scratch = Vec::with_capacity(needed);
+                }
+            }
+            scratch.auto_framing_scratch.resize(needed, 0);
+            phonecam_media::AutoFramingTracker::crop_bgra(
+                &scratch.bgra,
+                planes.width as usize,
+                planes.height as usize,
+                &crop,
+                &mut scratch.auto_framing_scratch,
+                planes.width as usize,
+                planes.height as usize,
+            );
+            std::mem::swap(&mut scratch.bgra, &mut scratch.auto_framing_scratch);
+        }
         if portrait_blur {
             phonecam_media::apply_portrait_blur(
                 &mut scratch.bgra,
@@ -1665,6 +1780,9 @@ impl Runtime {
         {
             let mut state = self.state.lock();
             state.settings.stream_audio = enabled;
+            if !enabled {
+                state.audio_level = 0.0;
+            }
             let _ = crate::settings::save(&state.settings);
         }
         self.send_to_phone(DesktopToPhone::SetAudioStream { enabled });
@@ -3665,6 +3783,37 @@ mod tests {
     }
 
     #[test]
+    fn auto_framing_wires_into_publish_planes_and_zero_allocates() {
+        let mut settings = phonecam_ui::views::state::Settings::default();
+        settings.vcam_enabled = false;
+        settings.preview_enabled = true;
+        settings.auto_framing = true;
+        let runtime = Runtime::new(&settings);
+
+        let mut scratch = PublishScratch::default();
+        assert_eq!(scratch.tracker.zoom, 1.25);
+        assert_eq!(scratch.tracker.smoothing, 0.12);
+
+        // Frame with dimensions 16x16 (I420 size: 16*16 + 16*16/2 = 384 bytes)
+        let frame = phonecam_media::DecodedFrame::new(16, 16, vec![128; 384], 1_000);
+        runtime.publish(frame.clone(), &mut scratch);
+
+        let guard = runtime.frames.lock();
+        let published = guard.as_ref().expect("frame should be published");
+        assert_eq!((published.width, published.height), (16, 16));
+        assert_eq!(published.bgra.len(), 16 * 16 * 4);
+
+        // Verify scratch buffer was allocated to fit frame
+        assert!(scratch.auto_framing_scratch.capacity() >= 16 * 16 * 4);
+        let cap_before = scratch.auto_framing_scratch.capacity();
+
+        // Publish a second frame: must reuse scratch without reallocation
+        drop(guard);
+        runtime.publish(frame, &mut scratch);
+        assert_eq!(scratch.auto_framing_scratch.capacity(), cap_before);
+    }
+
+    #[test]
     fn broadcast_state_preserves_usb_adb_available_after_sync_usb_state() {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -3915,5 +4064,22 @@ mod tests {
             runtime.frames.lock().is_none(),
             "hidden/minimized window must skip preview BGRA mailbox"
         );
+    }
+
+    #[test]
+    fn audio_stream_toggling_resets_level_and_updates_settings() {
+        let runtime = Runtime::new(&phonecam_ui::views::state::Settings::default());
+        runtime.set_audio_stream(true);
+        assert!(runtime.state.lock().settings.stream_audio);
+
+        {
+            let mut state = runtime.state.lock();
+            state.audio_level = 0.85;
+        }
+        assert_eq!(runtime.state.lock().audio_level, 0.85);
+
+        runtime.set_audio_stream(false);
+        assert!(!runtime.state.lock().settings.stream_audio);
+        assert_eq!(runtime.state.lock().audio_level, 0.0);
     }
 }

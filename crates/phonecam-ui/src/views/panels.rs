@@ -17,7 +17,8 @@ use crate::views::state::{
     AppState, LogSource, NoticeAction,
 };
 use crate::views::widgets::{
-    chip, key_value, numeric_font, prose, section, status_dot, tinted_box, Button, Panel, Toggle,
+    chip, key_value, numeric_font, prose, section, status_dot, tinted_box, well, Button, Panel,
+    Toggle,
 };
 
 /// Maps a status tone onto a widget tone.
@@ -611,6 +612,8 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
     if pairing_open {
         children.push(
             div()
+                .w_full()
+                .min_w(px(0.0))
                 .mt(px(Space::LG))
                 .rounded(px(Radius::MD))
                 .border_1()
@@ -653,6 +656,8 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
         "Connect via Wi-Fi",
         vec![
             div()
+                .w_full()
+                .min_w(px(0.0))
                 .flex()
                 .flex_col()
                 .gap(px(Space::SM))
@@ -870,6 +875,20 @@ pub enum UsbDeviceAction {
     OfflineHint,
 }
 
+/// Formats a device model string into a clean, human-readable name.
+pub fn clean_device_model(raw_model: &str) -> String {
+    let trimmed = raw_model.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let cleaned = trimmed.replace('_', " ");
+    match cleaned.as_str() {
+        "2201117TG" => "Redmi Note 11 (2201117TG)".to_string(),
+        "2201117TI" | "2201117TY" | "2201117TL" => format!("Redmi Note 11 ({cleaned})"),
+        _ => cleaned,
+    }
+}
+
 /// Maps an ADB device `state` string to whether it is ready to connect.
 pub fn usb_device_action(state: &str) -> UsbDeviceAction {
     match state {
@@ -918,6 +937,8 @@ fn usb_list(state: &AppState) -> AnyElement {
         let mut column = div()
             .flex()
             .flex_col()
+            .w_full()
+            .min_w(px(0.0))
             .mb(px(Space::MD))
             .font_family(Fonts::SANS)
             .text_size(px(Type::XS))
@@ -925,16 +946,29 @@ fn usb_list(state: &AppState) -> AnyElement {
             .child(usb_list_summary(&devices, forwarding));
 
         for device in devices {
-            let label = if device.model.is_empty() {
-                device.serial.clone()
+            let model_clean = clean_device_model(&device.model);
+            let model_label = if model_clean.is_empty() {
+                format!("Android Device ({})", device.serial)
             } else {
-                device.model.clone()
+                model_clean
             };
             let serial_for_connect = device.serial.clone();
-            let id_for_btn = device.serial.clone();
             let action = usb_device_action(&device.state);
+            let mode_label = if forwarding {
+                "USB Tunnel Active"
+            } else {
+                match action {
+                    UsbDeviceAction::UsePhone => "Cable Ready",
+                    UsbDeviceAction::AuthorizeHint => "Authorize on phone",
+                    UsbDeviceAction::OfflineHint => "Offline",
+                }
+            };
+            let serial_detail = format!("serial {} • {}", device.serial, mode_label);
+
             column = column.child(
                 div()
+                    .w_full()
+                    .min_w(px(0.0))
                     .mt(px(Space::MD))
                     .flex()
                     .flex_row()
@@ -949,50 +983,54 @@ fn usb_list(state: &AppState) -> AnyElement {
                     .py(px(Space::MD))
                     .child(
                         div()
+                            .flex_1()
+                            .min_w(px(0.0))
                             .flex()
                             .flex_col()
-                            .min_w(px(0.0))
                             .child(
                                 div()
                                     .min_w(px(0.0))
                                     .font_family(Fonts::SANS)
                                     .text_size(px(Type::TWO_SM))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(Text::HEADING)
-                                    .child(label),
+                                    .text_color(Text::PRIMARY)
+                                    .child(model_label),
                             )
                             .child(
                                 div()
                                     .min_w(px(0.0))
+                                    .mt(px(2.0))
                                     .font_family(Fonts::MONO)
                                     .text_size(px(Type::TWO_XS))
                                     .text_color(Text::MUTED)
-                                    .child(format!("serial {}", device.serial)),
+                                    .child(serial_detail),
                             ),
                     )
-                    .child(match (forwarding, action) {
-                        (true, _) => Button::danger("Close tunnel")
-                            .on_click(|_window, _cx| push_effect(SideEffect::DisconnectUsb))
-                            .into_any_element(),
-                        (false, UsbDeviceAction::UsePhone) => {
-                            // Not primary: the cable is the fallback path.
-                            pill_button(
-                                format!("usb-use-{id_for_btn}"),
-                                "Use this phone",
-                                false,
-                                false,
-                                move |_window, _cx| {
-                                    push_effect(SideEffect::ConnectUsb(Some(
-                                        serial_for_connect.clone(),
-                                    )))
-                                },
-                            )
-                        }
-                        (false, UsbDeviceAction::AuthorizeHint) => {
-                            chip("Approve on phone", Tone::Warn)
-                        }
-                        (false, UsbDeviceAction::OfflineHint) => chip("Offline", Tone::Neutral),
-                    }),
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .child(match (forwarding, action) {
+                                (true, _) => Button::danger("Close tunnel")
+                                    .on_click(|_window, _cx| push_effect(SideEffect::DisconnectUsb))
+                                    .into_any_element(),
+                                (false, UsbDeviceAction::UsePhone) => Button::new("Use this phone")
+                                    .on_click(move |_window, _cx| {
+                                        push_effect(SideEffect::ConnectUsb(Some(
+                                            serial_for_connect.clone(),
+                                        )))
+                                    })
+                                    .into_any_element(),
+                                (false, UsbDeviceAction::AuthorizeHint) => {
+                                    chip("Approve on phone", Tone::Warn)
+                                }
+                                (false, UsbDeviceAction::OfflineHint) => {
+                                    chip("Offline", Tone::Neutral)
+                                }
+                            }),
+                    ),
             );
         }
 
@@ -1068,6 +1106,8 @@ fn usb_list(state: &AppState) -> AnyElement {
     }
 
     div()
+        .w_full()
+        .min_w(px(0.0))
         .flex()
         .flex_col()
         .rounded(px(Radius::MD))
@@ -1076,6 +1116,7 @@ fn usb_list(state: &AppState) -> AnyElement {
         .py(px(Space::MD))
         .child(
             div()
+                .w_full()
                 .flex()
                 .flex_row()
                 .items_center()
@@ -1165,12 +1206,14 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
     ));
 
     let mut children: Vec<AnyElement> = Vec::new();
+    let mut kv_items: Vec<AnyElement> = Vec::new();
+
     if let Some(device) = device {
         if let Some(model) = facts.model {
-            children.push(key_value("Model", model, false));
+            kv_items.push(key_value("Model", clean_device_model(&model), false));
         }
         if let Some(version) = facts.android_version {
-            children.push(key_value("Android", version.to_string(), false));
+            kv_items.push(key_value("Android", version.to_string(), false));
         }
         if let Some(batt) = state
             .core
@@ -1178,15 +1221,20 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
             .and_then(|c| c.phone.as_ref())
             .and_then(|p| format_battery(p.battery, p.charging))
         {
-            children.push(key_value("Battery", batt, false));
+            kv_items.push(key_value("Battery", batt, false));
         }
-        children.push(key_value("Device id", device.device_id.clone(), true));
+        kv_items.push(key_value("Device id", device.device_id.clone(), true));
     } else if let Some(id) = stored_id {
-        children.push(key_value("Device id", id, true));
+        kv_items.push(key_value("Device id", id, true));
+    }
+
+    if !kv_items.is_empty() {
+        children.push(well(kv_items));
     }
 
     children.push(
         div()
+            .w_full()
             .mt(px(Space::PAD))
             .rounded(px(Radius::MD))
             .border_1()
@@ -1223,10 +1271,19 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
 /// What the phone captures.
 pub fn capture_panel(state: &AppState) -> AnyElement {
     let streaming = state.is_streaming();
-    let panel = Panel::new("Phone camera").action(chip(
-        if streaming { "Streaming" } else { "Idle" },
-        if streaming { Tone::Ok } else { Tone::Neutral },
-    ));
+    let has_device = state.has_device();
+    let action_control = if streaming {
+        Button::danger("Stop Camera")
+            .on_click(|_window, _cx| push_effect(SideEffect::StopStream))
+            .into_any_element()
+    } else if has_device {
+        Button::primary("Start Camera")
+            .on_click(|_window, _cx| push_effect(SideEffect::StartStream))
+            .into_any_element()
+    } else {
+        chip("No phone", Tone::Neutral)
+    };
+    let panel = Panel::new("Phone camera").action(action_control);
 
     let not_connected = !state.status.connected || !state.has_device();
     let probed_cameras = state
@@ -2086,6 +2143,84 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
     );
 
     let audio_stream_enabled = state.settings.stream_audio;
+    let audio_level = state.audio_level.clamp(0.0, 1.0);
+    let mut audio_content = div().flex().flex_col().gap(px(Space::XS)).child(
+        Toggle::new("Stream Audio from Phone", audio_stream_enabled)
+            .detail(Some(if audio_stream_enabled {
+                "Mic Streaming"
+            } else {
+                "Muted / Off"
+            }))
+            .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetAudioStream(enabled)))
+            .into_element(),
+    );
+
+    if audio_stream_enabled {
+        let pct = (audio_level * 100.0).round() as u32;
+        let num_segments = 16;
+        let mut meter = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.0))
+            .w_full()
+            .h(px(8.0))
+            .p(px(2.0))
+            .rounded(px(Radius::SM))
+            .bg(SHELL.recessed)
+            .border_1()
+            .border_color(SHELL.border.alpha(0.6));
+
+        for i in 0..num_segments {
+            let threshold = (i as f32 + 0.5) / (num_segments as f32);
+            let active = audio_level >= threshold;
+            let (lit_color, dim_color) = if i >= 13 {
+                (Tone::Danger.dot(), Tone::Danger.dot().alpha(0.15))
+            } else if i >= 10 {
+                (Tone::Warn.dot(), Tone::Warn.dot().alpha(0.15))
+            } else {
+                (Tone::Ok.dot(), Tone::Ok.dot().alpha(0.15))
+            };
+            let seg_color = if active { lit_color } else { dim_color };
+            meter = meter.child(div().flex_1().h_full().rounded(px(1.0)).bg(seg_color));
+        }
+
+        let vu_container = div()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .mt(px(Space::XS))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .text_color(Text::MUTED)
+                            .child("Input Level"),
+                    )
+                    .child(
+                        div()
+                            .font_family(Fonts::SANS)
+                            .font(numeric_font(Fonts::SANS))
+                            .text_size(px(Type::TWO_XS))
+                            .text_color(if audio_level > 0.05 {
+                                Text::PRIMARY
+                            } else {
+                                Text::MUTED
+                            })
+                            .child(format!("{pct}%")),
+                    ),
+            )
+            .child(meter);
+
+        audio_content = audio_content.child(vu_container);
+    }
+
     let audio_element = crate::views::widgets::field(
         "Audio Streaming",
         Some(
@@ -2096,23 +2231,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             }
             .into(),
         ),
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(Space::XS))
-            .child(
-                Toggle::new("Stream Audio from Phone", audio_stream_enabled)
-                    .detail(Some(if audio_stream_enabled {
-                        "Mic Streaming"
-                    } else {
-                        "Muted / Off"
-                    }))
-                    .on_change(|enabled, _window, _cx| {
-                        push_effect(SideEffect::SetAudioStream(enabled))
-                    })
-                    .into_element(),
-            )
-            .into_any_element(),
+        audio_content.into_any_element(),
         Some(
             "Streams low-latency microphone audio from the phone to your PC virtual audio input."
                 .into(),
@@ -4129,6 +4248,7 @@ mod tests {
         state.settings.portrait_blur = true;
         state.settings.portrait_blur_intensity = 0.70;
         state.settings.stream_audio = true;
+        state.audio_level = 0.65;
         state.settings.lut_preset = phonecam_media::LutPreset::WarmStudio;
         state.settings.screen_mode = phonecam_protocol::ScreenMode::Black;
         state.settings.auto_connect_usb = true;
@@ -4162,5 +4282,88 @@ mod tests {
             let _rail = rail(&state, tab, false, &scroll_handle);
             let _narrow = rail(&state, tab, true, &scroll_handle);
         }
+    }
+
+    #[test]
+    fn clean_device_model_formats_known_codes_and_cleans_underscores() {
+        assert_eq!(clean_device_model(""), "");
+        assert_eq!(clean_device_model("   "), "");
+        assert_eq!(clean_device_model("2201117TG"), "Redmi Note 11 (2201117TG)");
+        assert_eq!(clean_device_model("2201117TI"), "Redmi Note 11 (2201117TI)");
+        assert_eq!(clean_device_model("Pixel_8_Pro"), "Pixel 8 Pro");
+        assert_eq!(clean_device_model("Galaxy S24"), "Galaxy S24");
+    }
+
+    #[test]
+    fn usb_list_renders_device_row_with_tunnel_active_and_use_phone() {
+        let mut state = AppState::default();
+        let mut usb = phonecam_protocol::UsbStatus {
+            adb_available: true,
+            available: true,
+            authorized: true,
+            forwarding: false,
+            error: None,
+            devices: vec![phonecam_protocol::AdbDevice {
+                serial: "s123".into(),
+                state: "device".into(),
+                model: "2201117TG".into(),
+            }],
+        };
+        state.core = Some(phonecam_protocol::CoreState {
+            usb: usb.clone(),
+            ..Default::default()
+        });
+        let _unforwarded = usb_list(&state);
+
+        usb.forwarding = true;
+        state.core = Some(phonecam_protocol::CoreState {
+            usb,
+            ..Default::default()
+        });
+        let _forwarded = usb_list(&state);
+    }
+
+    #[test]
+    fn capture_panel_renders_active_controls_for_streaming_and_idle() {
+        let mut state = AppState::default();
+        // Disconnected: chip("No phone", Tone::Neutral)
+        let _disconnected = capture_panel(&state);
+
+        // Connected, idle: Button::primary("Start Camera")
+        state.status.connected = true;
+        state.core = Some(phonecam_protocol::CoreState {
+            phase: phonecam_protocol::StreamPhase::Connected,
+            device: Some(phonecam_protocol::DeviceIdentity {
+                device_id: "dev-1".into(),
+                name: "Test Phone".into(),
+                model: "2201117TG".into(),
+                android_version: 33,
+            }),
+            ..Default::default()
+        });
+        let _idle = capture_panel(&state);
+
+        // Streaming: Button::danger("Stop Camera")
+        if let Some(core) = &mut state.core {
+            core.phase = phonecam_protocol::StreamPhase::Streaming;
+        }
+        let _streaming = capture_panel(&state);
+    }
+
+    #[test]
+    fn paired_phone_panel_renders_with_well_and_clean_model() {
+        let mut state = AppState::default();
+        state.status.connected = true;
+        state.core = Some(phonecam_protocol::CoreState {
+            phase: phonecam_protocol::StreamPhase::Connected,
+            device: Some(phonecam_protocol::DeviceIdentity {
+                device_id: "dev-1".into(),
+                name: "Test Phone".into(),
+                model: "2201117TG".into(),
+                android_version: 33,
+            }),
+            ..Default::default()
+        });
+        let _panel = paired_phone_panel(&state);
     }
 }

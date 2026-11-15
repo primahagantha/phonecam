@@ -21,7 +21,9 @@
     <!-- Foreground camera service. Android 14+ requires the typed permission. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
@@ -63,7 +65,7 @@
         <service
             android:name=".service.CameraStreamService"
             android:exported="true"
-            android:foregroundServiceType="camera"
+            android:foregroundServiceType="camera|microphone"
             android:stopWithTask="false" />
 
         <receiver

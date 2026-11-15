@@ -188,6 +188,10 @@ sealed class DesktopMessage {
     data class SetFocus(val distance: Float? = null) : DesktopMessage()
 
     @Serializable
+    @SerialName("set_audio_stream")
+    data class SetAudioStream(val enabled: Boolean) : DesktopMessage()
+
+    @Serializable
     @SerialName("set_anti_flicker")
     data class SetAntiFlicker(val mode: String) : DesktopMessage()
 

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import com.phonecam.camera.BuildConfig
 import com.phonecam.camera.camera.CameraCapabilityProbe
+import com.phonecam.camera.audio.AudioStreamer
 import com.phonecam.camera.camera.CameraController
 import com.phonecam.camera.camera.EncodedFrame
 import com.phonecam.camera.camera.H264Encoder
@@ -391,6 +392,7 @@ class StreamSession(
 
     private val camera = CameraController(context)
     private val health = DeviceHealth(context)
+    private val audioStreamer = AudioStreamer(identity)
 
     private val discovery = DiscoveryClient(
         context = context,
@@ -573,6 +575,7 @@ class StreamSession(
     }
 
     fun stop() {
+        audioStreamer.stop()
         stopStreaming(notifyPeer = false)
         stopStatsLoop()
         stopReconnecting()
@@ -606,6 +609,7 @@ class StreamSession(
     }
 
     fun disconnect(notifyPeer: Boolean = true) {
+        audioStreamer.stop()
         stopStreaming(notifyPeer = false, keepVideoChannel = false)
         // Every teardown path stops the loops it owns, not just the socket: the
         // stats tick otherwise kept reading the battery and re-posting the
@@ -1192,6 +1196,19 @@ class StreamSession(
                 sendState()
             }
 
+            is DesktopMessage.SetAudioStream -> {
+                Log.i("desktop set_audio_stream: enabled=${message.enabled}")
+                if (message.enabled) {
+                    val host = _state.value.host
+                    val port = _state.value.port
+                    if (host != null && port != null) {
+                        audioStreamer.start(host, port)
+                    }
+                } else {
+                    audioStreamer.stop()
+                }
+            }
+
             DesktopMessage.StartStream -> startStreaming(force = true)
             DesktopMessage.StopStream -> stopStreaming(notifyPeer = false)
 
@@ -1443,6 +1460,7 @@ class StreamSession(
         // exactly the point.
         stopControlReader()
         stopStreaming(notifyPeer = false)
+        audioStreamer.stop()
         // The socket is gone, so the stats tick has nothing to report to and the
         // reconnect timer is about to be re-armed; stop both before deciding.
         stopStatsLoop()
