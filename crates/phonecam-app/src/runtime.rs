@@ -830,6 +830,7 @@ impl Runtime {
         match outcome.role {
             phonecam_protocol::ChannelRole::Video => self.run_video(conn),
             phonecam_protocol::ChannelRole::Control => self.run_control(conn),
+            phonecam_protocol::ChannelRole::Audio => self.run_audio(conn),
         }
     }
 
@@ -1125,6 +1126,26 @@ impl Runtime {
         tracing::info!("video channel closed");
     }
 
+    /// The audio channel: reads incoming AAC / PCM / OPUS audio payloads.
+    fn run_audio(self: &Arc<Self>, conn: Connection) {
+        conn.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .ok();
+        tracing::info!("audio channel opened");
+        self.log_info("audio channel connected");
+        let mut buf = vec![0u8; 4096];
+        while self.running.load(Ordering::Relaxed) {
+            match conn.read_some(&mut buf) {
+                ReadResult::Ok(n) => {
+                    self.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                ReadResult::Timeout => continue,
+                ReadResult::Closed => break,
+            }
+        }
+        tracing::info!("audio channel closed");
+        self.log_info("audio channel closed");
+    }
+
     #[cfg(test)]
     fn publish(&self, frame: phonecam_media::DecodedFrame, scratch: &mut PublishScratch) {
         if let Some(planes) = frame.as_planes() {
@@ -1227,6 +1248,27 @@ impl Runtime {
         scratch.bgra.resize(needed, 0);
         if !phonecam_media::write_planes_bgra(&planes, &mut scratch.bgra, planes.width as usize) {
             return;
+        }
+
+        let (lut_preset, portrait_blur, blur_amt) = {
+            let state = self.state.lock();
+            (
+                state.settings.lut_preset,
+                state.settings.portrait_blur,
+                state.settings.portrait_blur_intensity,
+            )
+        };
+        if portrait_blur {
+            phonecam_media::apply_portrait_blur(
+                &mut scratch.bgra,
+                planes.width as usize,
+                planes.height as usize,
+                phonecam_media::BlurIntensity::Studio,
+                blur_amt,
+            );
+        }
+        if lut_preset != phonecam_media::LutPreset::Natural {
+            phonecam_media::apply_lut(&mut scratch.bgra, lut_preset);
         }
 
         let needs_transform = mirror || rotation != 0;
@@ -1574,6 +1616,101 @@ impl Runtime {
             let _ = crate::settings::save(&state.settings);
         }
         crate::logging::set_level(level);
+        self.broadcast_state();
+    }
+
+    /// Sets camera exposure compensation in EV steps.
+    pub fn set_exposure(&self, compensation: i32) {
+        {
+            let mut state = self.state.lock();
+            state.settings.exposure = compensation;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.send_to_phone(DesktopToPhone::SetExposure { compensation });
+        self.broadcast_state();
+    }
+
+    /// Sets camera white balance color temperature in Kelvin (or None for auto).
+    pub fn set_white_balance(&self, kelvin: Option<u32>) {
+        {
+            let mut state = self.state.lock();
+            state.settings.white_balance_kelvin = kelvin;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.send_to_phone(DesktopToPhone::SetWhiteBalance { kelvin });
+        self.broadcast_state();
+    }
+
+    /// Sets manual lens focus distance in diopters (or None for continuous autofocus).
+    pub fn set_focus(&self, distance: Option<f32>) {
+        {
+            let mut state = self.state.lock();
+            state.settings.focus_distance = distance;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.send_to_phone(DesktopToPhone::SetFocus { distance });
+        self.broadcast_state();
+    }
+
+    /// Enables or disables phone audio stream channel.
+    pub fn set_audio_stream(&self, enabled: bool) {
+        {
+            let mut state = self.state.lock();
+            state.settings.stream_audio = enabled;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.send_to_phone(DesktopToPhone::SetAudioStream { enabled });
+        self.broadcast_state();
+    }
+
+    /// Sets the color grading LUT filter preset.
+    pub fn set_lut_filter(&self, preset: phonecam_media::LutPreset) {
+        {
+            let mut state = self.state.lock();
+            state.settings.lut_preset = preset;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.broadcast_state();
+    }
+
+    /// Configures portrait bokeh background blur.
+    pub fn set_portrait_blur(&self, enabled: bool, intensity: f32) {
+        {
+            let mut state = self.state.lock();
+            state.settings.portrait_blur = enabled;
+            state.settings.portrait_blur_intensity = intensity;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.broadcast_state();
+    }
+
+    /// Configures digital pan/crop auto-framing.
+    pub fn set_auto_framing(&self, enabled: bool) {
+        {
+            let mut state = self.state.lock();
+            state.settings.auto_framing = enabled;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.broadcast_state();
+    }
+
+    /// Configures automatic USB ADB connection upon device plug-in.
+    pub fn set_auto_connect_usb(&self, enabled: bool) {
+        {
+            let mut state = self.state.lock();
+            state.settings.auto_connect_usb = enabled;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.broadcast_state();
+    }
+
+    /// Configures minimize to system tray behavior on window close.
+    pub fn set_minimize_to_tray(&self, enabled: bool) {
+        {
+            let mut state = self.state.lock();
+            state.settings.minimize_to_tray = enabled;
+            let _ = crate::settings::save(&state.settings);
+        }
         self.broadcast_state();
     }
 

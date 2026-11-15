@@ -24,16 +24,27 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Output
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Troubleshoot
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.delay
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -458,6 +469,19 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
             }
         }
 
+        if (state.phase == SessionState.Phase.STREAMING && screenMode == ScreenMode.BLACK && blackoutPeeked) {
+            // When peeked, tapping outside the controls returns back to black ambient mode
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { blackoutPeeked = false },
+                    ),
+            )
+        }
+
         if (state.phase == SessionState.Phase.STREAMING) {
             // What the user sees when the phone is face-down next to the
             // keyboard: proof the stream is alive, and a way to end it.
@@ -469,10 +493,9 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
         }
 
         if (state.phase == SessionState.Phase.STREAMING && screenMode == ScreenMode.BLACK && !blackoutPeeked) {
-            // Covers the whole UI while capture continues. Tapping reveals the
-            // overlay again without telling the desktop anything: the user is
-            // looking at the phone, not changing what the camera is doing.
-            BlackoutSurface(onTap = { blackoutPeeked = true })
+            // OLED Pure-Black Ambient Mode: true-black #000000 with minimal dim clock,
+            // anti-burn-in offset, battery, and live badge. Tapping reveals controls.
+            BlackoutSurface(state = state, onTap = { blackoutPeeked = true })
         }
     }
 }
@@ -819,24 +842,108 @@ private fun DiagnosticsScreen(
 }
 
 /**
- * The black panel shown in `screen_black`.
+ * OLED Pure-Black Ambient Mode.
  *
- * At minimum brightness the screen still glows in a dark room and can put a
- * colour cast on the subject, so this draws actual black over the UI. Capture is
- * unaffected — only the display changes.
+ * Draws true-black #000000 (100% OLED off) to completely eliminate screen glow
+ * and color casting in dark environments. Displays a dim, minimal digital clock
+ * (20% opacity) with subtle minute-by-minute offset for OLED anti-burn-in
+ * protection, current battery percentage with icon, and a discrete live status badge.
+ * Tapping uncovers controls; tapping again returns to black ambient.
  */
 @Composable
-private fun BlackoutSurface(onTap: () -> Unit) {
+private fun BlackoutSurface(state: SessionState, onTap: () -> Unit) {
+    var currentTime by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000L)
+            currentTime = System.currentTimeMillis()
+        }
+    }
+
+    val calendar = remember(currentTime) {
+        Calendar.getInstance().apply { timeInMillis = currentTime }
+    }
+    val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val formattedTime = remember(currentTime) { timeFormat.format(Date(currentTime)) }
+
+    // Subtle minute-based offset shifting coordinates slightly every minute to prevent OLED burn-in
+    val minute = calendar.get(Calendar.MINUTE)
+    val burnInOffsetX = (((minute % 10) - 5) * 3).dp
+    val burnInOffsetY = ((((minute / 10) % 6) - 3) * 3).dp
+
+    val ambientColor = Color(0x33FFFFFF) // 20% white opacity
+    val liveDotColor = Color(0x66FF3B30) // subtle dim live red
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(Color(0xFF000000))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onTap,
             ),
-    )
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier.offset(x = burnInOffsetX, y = burnInOffsetY),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = formattedTime,
+                style = MaterialTheme.typography.displayMedium,
+                color = ambientColor,
+                fontWeight = FontWeight.Light,
+                letterSpacing = 2.sp,
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                // ● Live status badge
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(liveDotColor),
+                    )
+                    Text(
+                        text = "LIVE",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ambientColor,
+                        letterSpacing = 1.2.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+
+                // Battery percentage with icon
+                if (state.batteryPercent >= 0) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (state.charging) Icons.Default.BatteryChargingFull else Icons.Default.BatteryFull,
+                            contentDescription = null,
+                            modifier = Modifier.size(13.dp),
+                            tint = ambientColor,
+                        )
+                        Text(
+                            text = "${state.batteryPercent}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ambientColor,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**

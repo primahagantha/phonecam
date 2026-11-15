@@ -816,6 +816,27 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
         ],
     ));
 
+    children.push(section(
+        "Automation & Audio",
+        vec![
+            Toggle::new("Auto-Connect on USB Plug", state.settings.auto_connect_usb)
+                .on_change(|val, _window, _cx| push_effect(SideEffect::SetAutoConnectUsb(val)))
+                .into_element(),
+            Toggle::new(
+                "Minimize to Tray on Window Close",
+                state.settings.minimize_to_tray,
+            )
+            .on_change(|val, _window, _cx| push_effect(SideEffect::SetMinimizeToTray(val)))
+            .into_element(),
+            Toggle::new("Stream Audio from Phone", state.settings.stream_audio)
+                .on_change(|val, _window, _cx| push_effect(SideEffect::SetAudioStream(val)))
+                .into_element(),
+            prose(
+                "Enables hands-free tethering, background camera persistence, and optional microphone streaming.",
+            ),
+        ],
+    ));
+
     panel.children(children).into_element()
 }
 
@@ -1859,6 +1880,317 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                     .into_any_element(),
                 Some("The phone screen is not part of the stream. Turning it off saves battery on a long session.".into()),
             ),
+        ],
+    ));
+
+    // --- Pro Controls Section: Lenses, Bokeh Blur, Auto-Framing, Color LUT, and Pro Exposure/WB/Focus
+    let active_zoom = phone.map(|p| p.zoom).unwrap_or(1.0);
+    let is_front = selected_cam
+        .map(|c| c.facing == phonecam_protocol::CameraFacing::Front)
+        .unwrap_or(false);
+
+    let lens_selector = crate::views::widgets::field(
+        "Lens & Focal Length",
+        Some(
+            if is_front {
+                "Front Selfie Lens"
+            } else {
+                "Rear Multi-Lens"
+            }
+            .into(),
+        ),
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(Space::SM))
+            .child(pill_button(
+                "lens-ultra-wide",
+                "0.5x Ultra-Wide",
+                !is_front && (active_zoom - 0.5).abs() < 0.25,
+                false,
+                move |_window, _cx| {
+                    push_effect(SideEffect::SetCamera("0".into()));
+                    push_effect(SideEffect::SetZoom(0.5));
+                },
+            ))
+            .child(pill_button(
+                "lens-main-wide",
+                "1.0x Main Wide",
+                !is_front && (active_zoom - 1.0).abs() < 0.25,
+                false,
+                move |_window, _cx| {
+                    push_effect(SideEffect::SetCamera("0".into()));
+                    push_effect(SideEffect::SetZoom(1.0));
+                },
+            ))
+            .child(pill_button(
+                "lens-telephoto",
+                "3.0x Telephoto",
+                !is_front && (active_zoom - 3.0).abs() < 0.35,
+                false,
+                move |_window, _cx| {
+                    push_effect(SideEffect::SetCamera("0".into()));
+                    push_effect(SideEffect::SetZoom(3.0));
+                },
+            ))
+            .child(pill_button(
+                "lens-front",
+                "Front Camera",
+                is_front,
+                false,
+                move |_window, _cx| {
+                    push_effect(SideEffect::SetCamera("1".into()));
+                },
+            ))
+            .into_any_element(),
+        Some(
+            "Switch physical lenses or digital crops cleanly without interrupting the stream."
+                .into(),
+        ),
+    );
+
+    let current_lut = state.settings.lut_preset;
+    let lut_selector = crate::views::widgets::field(
+        "Color LUT Filter",
+        Some(current_lut.display_name().into()),
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(Space::SM))
+            .children(phonecam_media::LutPreset::all().iter().map(|&preset| {
+                let active = current_lut == preset;
+                pill_button(
+                    format!("lut-{}", preset.display_name()),
+                    preset.display_name(),
+                    active,
+                    false,
+                    move |_window, _cx| push_effect(SideEffect::SetLutFilter(preset)),
+                )
+            }))
+            .into_any_element(),
+        Some("Hardware-accelerated color grading applied with zero latency.".into()),
+    );
+
+    let blur_enabled = state.settings.portrait_blur;
+    let blur_intensity = state.settings.portrait_blur_intensity;
+    let blur_control = div()
+        .flex()
+        .flex_col()
+        .gap(px(Space::SM))
+        .child(
+            Toggle::new("Enable Portrait Bokeh Blur", blur_enabled)
+                .on_change(move |enabled, _window, _cx| {
+                    push_effect(SideEffect::SetPortraitBlur(enabled, blur_intensity))
+                })
+                .into_element(),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(Space::SM))
+                .child(pill_button(
+                    "blur-soft",
+                    "Soft (30%)",
+                    (blur_intensity - 0.40).abs() < 0.15,
+                    !blur_enabled,
+                    move |_window, _cx| push_effect(SideEffect::SetPortraitBlur(true, 0.40)),
+                ))
+                .child(pill_button(
+                    "blur-studio",
+                    "Studio (70%)",
+                    (blur_intensity - 0.70).abs() < 0.15,
+                    !blur_enabled,
+                    move |_window, _cx| push_effect(SideEffect::SetPortraitBlur(true, 0.70)),
+                ))
+                .child(pill_button(
+                    "blur-dreamy",
+                    "Dreamy (100%)",
+                    (blur_intensity - 1.00).abs() < 0.15,
+                    !blur_enabled,
+                    move |_window, _cx| push_effect(SideEffect::SetPortraitBlur(true, 1.00)),
+                )),
+        )
+        .into_any_element();
+
+    let blur_element = crate::views::widgets::field(
+        "Portrait Bokeh",
+        Some(if blur_enabled { "Active" } else { "Off" }.into()),
+        blur_control,
+        Some("Keeps you in focus while softly blurring background distractions.".into()),
+    );
+
+    let auto_framing_enabled = state.settings.auto_framing;
+    let auto_framing_element = div()
+        .flex()
+        .flex_col()
+        .gap(px(Space::XS))
+        .child(
+            Toggle::new("Center Stage Auto-Framing", auto_framing_enabled)
+                .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetAutoFraming(enabled)))
+                .into_element(),
+        )
+        .child(prose(
+            "Dynamically tracks your position in the frame with smooth pan and zoom transitions.",
+        ))
+        .into_any_element();
+
+    let exp_val = state.settings.exposure;
+    let exp_control = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(Space::SM))
+        .children([-2, -1, 0, 1, 2].into_iter().map(|step| {
+            let label = if step > 0 {
+                format!("+{step} EV")
+            } else if step == 0 {
+                "0 EV (Auto)".to_string()
+            } else {
+                format!("{step} EV")
+            };
+            let active = exp_val == step;
+            pill_button(
+                format!("exp-{step}"),
+                label,
+                active,
+                false,
+                move |_window, _cx| push_effect(SideEffect::SetExposure(step)),
+            )
+        }))
+        .into_any_element();
+
+    let exposure_element = crate::views::widgets::field(
+        "Exposure Compensation",
+        Some(format!("{exp_val:+} EV").into()),
+        exp_control,
+        Some("Brighten dark environments or prevent blown-out window highlights.".into()),
+    );
+
+    let current_wb = state.settings.white_balance_kelvin;
+    let wb_control = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(Space::SM))
+        .child(pill_button(
+            "wb-auto",
+            "Auto AWB",
+            current_wb.is_none(),
+            false,
+            |_window, _cx| push_effect(SideEffect::SetWhiteBalance(None)),
+        ))
+        .child(pill_button(
+            "wb-3200",
+            "3200K Tungsten",
+            current_wb == Some(3200),
+            false,
+            |_window, _cx| push_effect(SideEffect::SetWhiteBalance(Some(3200))),
+        ))
+        .child(pill_button(
+            "wb-4000",
+            "4000K Fluorescent",
+            current_wb == Some(4000),
+            false,
+            |_window, _cx| push_effect(SideEffect::SetWhiteBalance(Some(4000))),
+        ))
+        .child(pill_button(
+            "wb-5500",
+            "5500K Daylight",
+            current_wb == Some(5500),
+            false,
+            |_window, _cx| push_effect(SideEffect::SetWhiteBalance(Some(5500))),
+        ))
+        .child(pill_button(
+            "wb-6500",
+            "6500K Cloudy",
+            current_wb == Some(6500),
+            false,
+            |_window, _cx| push_effect(SideEffect::SetWhiteBalance(Some(6500))),
+        ))
+        .into_any_element();
+
+    let wb_element = crate::views::widgets::field(
+        "White Balance",
+        Some(
+            current_wb
+                .map(|k| format!("{k}K"))
+                .unwrap_or_else(|| "Auto".to_string())
+                .into(),
+        ),
+        wb_control,
+        Some(
+            "Lock color temperature to match your room lighting and prevent skin-tone shifting."
+                .into(),
+        ),
+    );
+
+    let current_focus = state.settings.focus_distance;
+    let focus_control = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(Space::SM))
+        .child(pill_button(
+            "focus-auto",
+            "Continuous AF",
+            current_focus.is_none(),
+            false,
+            |_window, _cx| push_effect(SideEffect::SetFocus(None)),
+        ))
+        .child(pill_button(
+            "focus-macro",
+            "Macro (0.1m)",
+            current_focus
+                .map(|d| (d - 10.0).abs() < 0.5)
+                .unwrap_or(false),
+            false,
+            |_window, _cx| push_effect(SideEffect::SetFocus(Some(10.0))),
+        ))
+        .child(pill_button(
+            "focus-mid",
+            "Desk (0.5m)",
+            current_focus
+                .map(|d| (d - 2.0).abs() < 0.5)
+                .unwrap_or(false),
+            false,
+            |_window, _cx| push_effect(SideEffect::SetFocus(Some(2.0))),
+        ))
+        .child(pill_button(
+            "focus-inf",
+            "Infinity (∞)",
+            current_focus.map(|d| d.abs() < 0.1).unwrap_or(false),
+            false,
+            |_window, _cx| push_effect(SideEffect::SetFocus(Some(0.0))),
+        ))
+        .into_any_element();
+
+    let focus_element = crate::views::widgets::field(
+        "Focus Distance",
+        Some(
+            if current_focus.is_none() {
+                "Auto AF"
+            } else {
+                "Manual"
+            }
+            .into(),
+        ),
+        focus_control,
+        Some("Lock focal distance to stop annoying camera hunting and autofocus breathing.".into()),
+    );
+
+    children.push(section(
+        "Pro Camera Controls",
+        vec![
+            lens_selector,
+            exposure_element,
+            wb_element,
+            focus_element,
+            lut_selector,
+            blur_element,
+            auto_framing_element,
         ],
     ));
 
@@ -2968,6 +3300,24 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
             .detail(Some("Off keeps virtual camera running"))
             .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetPreviewEnabled(enabled)))
             .into_element(),
+        )
+        .child(
+            Toggle::new("Auto-Connect on USB Plug", state.settings.auto_connect_usb)
+                .on_change(|val, _window, _cx| push_effect(SideEffect::SetAutoConnectUsb(val)))
+                .into_element(),
+        )
+        .child(
+            Toggle::new(
+                "Minimize to Tray on Window Close",
+                state.settings.minimize_to_tray,
+            )
+            .on_change(|val, _window, _cx| push_effect(SideEffect::SetMinimizeToTray(val)))
+            .into_element(),
+        )
+        .child(
+            Toggle::new("Stream Audio from Phone", state.settings.stream_audio)
+                .on_change(|val, _window, _cx| push_effect(SideEffect::SetAudioStream(val)))
+                .into_element(),
         )
         .child(
             div()

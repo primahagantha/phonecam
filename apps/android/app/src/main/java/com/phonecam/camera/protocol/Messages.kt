@@ -176,6 +176,18 @@ sealed class DesktopMessage {
     data class SetTorch(val enabled: Boolean) : DesktopMessage()
 
     @Serializable
+    @SerialName("set_exposure")
+    data class SetExposure(val compensation: Int) : DesktopMessage()
+
+    @Serializable
+    @SerialName("set_white_balance")
+    data class SetWhiteBalance(val kelvin: Int? = null) : DesktopMessage()
+
+    @Serializable
+    @SerialName("set_focus")
+    data class SetFocus(val distance: Float? = null) : DesktopMessage()
+
+    @Serializable
     @SerialName("set_anti_flicker")
     data class SetAntiFlicker(val mode: String) : DesktopMessage()
 

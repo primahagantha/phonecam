@@ -10,6 +10,7 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.SessionConfiguration
 import android.os.Build
 import android.os.Handler
@@ -21,6 +22,34 @@ import android.util.Size
 import android.view.Surface
 import android.graphics.SurfaceTexture
 import java.util.concurrent.ConcurrentHashMap
+
+/** Physical lens classification for rear multi-camera systems. */
+enum class LensType(val displayName: String, val defaultZoom: Float) {
+    ULTRA_WIDE("Ultra-Wide", 0.5f),
+    WIDE("Main Wide", 1.0f),
+    TELEPHOTO("Telephoto", 2.0f),
+    FRONT("Front", 1.0f);
+}
+
+/** Describes an individual physical lens identified on the device. */
+data class PhysicalLens(
+    val id: String,
+    val type: LensType,
+    val focalLengthMm: Float?,
+    val focalLength35mmEquiv: Float?,
+    val zoomFactor: Float = type.defaultZoom,
+    val isFront: Boolean = type == LensType.FRONT,
+)
+
+/** Describes RGB channel gains for manual white balance. */
+data class ColorGains(
+    val red: Float,
+    val greenEven: Float,
+    val greenOdd: Float,
+    val blue: Float,
+) {
+    fun toRggbVector(): RggbChannelVector = RggbChannelVector(red, greenEven, greenOdd, blue)
+}
 
 /**
  * Camera2 capture into a Surface.
@@ -105,6 +134,26 @@ class CameraController(private val context: Context) {
     private var torchEnabled = false
     @Volatile
     private var zoom = 1f
+    @Volatile
+    private var exposureCompensation = 0
+    @Volatile
+    private var whiteBalanceKelvin: Int? = null
+    @Volatile
+    private var manualFocusDistance: Float? = null
+    @Volatile
+    private var currentLens: PhysicalLens? = null
+
+    val currentExposure: Int
+        get() = exposureCompensation
+
+    val currentWhiteBalance: Int?
+        get() = whiteBalanceKelvin
+
+    val currentFocusDistance: Float?
+        get() = manualFocusDistance
+
+    val activeLens: PhysicalLens?
+        get() = currentLens
 
     @Volatile
     private var activeConfig: ResolvedVideoConfig? = null
@@ -457,8 +506,7 @@ class CameraController(private val context: Context) {
                 size.width == targetSize.width && size.height == targetSize.height
             } == true
             val fpsRange = when {
-                highSpeed && characteristics != null ->
-                    selectHighSpeedRange(characteristics, targetSize)
+                highSpeed -> selectHighSpeedRange(characteristics!!, targetSize)
                 characteristics != null -> selectFpsRange(characteristics, resolved.fps)
                 else -> Range(resolved.fps, resolved.fps)
             }
@@ -471,10 +519,14 @@ class CameraController(private val context: Context) {
                 // exactly what the PC receives, with no extra camera open.
                 if (hasValidPreview) previewSurface?.let { addTarget(it) }
                 set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                set(
-                    CaptureRequest.CONTROL_AF_MODE,
-                    afMode,
-                )
+                if (manualFocusDistance != null) {
+                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                    val maxFocus = characteristics?.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 10f
+                    val clamped = manualFocusDistance!!.coerceIn(0f, maxFocus)
+                    set(CaptureRequest.LENS_FOCUS_DISTANCE, clamped)
+                } else {
+                    set(CaptureRequest.CONTROL_AF_MODE, afMode)
+                }
                 set(
                     CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                     // A floor below the target, not a lock at it.
@@ -496,6 +548,11 @@ class CameraController(private val context: Context) {
                     fpsRange,
                 )
                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                if (exposureCompensation != 0) {
+                    val expRange = characteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+                    val clamped = if (expRange != null) exposureCompensation.coerceIn(expRange.lower, expRange.upper) else exposureCompensation
+                    set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, clamped)
+                }
                 // Anti-banding at 50 Hz: the mains frequency here is 50 Hz, and
                 // without this the camera's exposure beats against the lamps.
                 // The visible symptom is a band rolling through the picture, and
@@ -506,7 +563,13 @@ class CameraController(private val context: Context) {
                     CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
                     antibandingMode,
                 )
-                set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+                if (whiteBalanceKelvin != null) {
+                    set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+                    set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+                    set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToRggb(whiteBalanceKelvin!!))
+                } else {
+                    set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+                }
                 set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
                 if (torchEnabled) {
                     set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
@@ -696,10 +759,241 @@ class CameraController(private val context: Context) {
                 }
             }
 
+            if (maxZoom <= 1.0f && zoomFactor >= 1.0f) {
+                zoom = 1f
+                return
+            }
+
             val crop = computeCropRect(characteristics, zoomFactor) ?: return
             builder.set(CaptureRequest.SCALER_CROP_REGION, crop)
             applyRequest(builder)
         }.onFailure { Log.d(TAG, "zoom not supported: ${it.javaClass.simpleName}") }
+    }
+
+    /**
+     * Sets exposure compensation in EV index steps.
+     * Clamped to [CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE].
+     */
+    fun setExposure(compensation: Int) {
+        exposureCompensation = compensation
+        val builder = requestBuilder ?: return
+        val characteristics = device?.id?.let { getCharacteristics(it) }
+        val range = characteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+        val clamped = if (range != null) compensation.coerceIn(range.lower, range.upper) else compensation
+        runCatching {
+            builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, clamped)
+            applyRequest(builder)
+            Log.i(TAG, "Applied exposure compensation: $clamped (requested $compensation)")
+        }.onFailure { Log.d(TAG, "setExposure failed: ${it.javaClass.simpleName}") }
+    }
+
+    /**
+     * Sets manual or auto white balance.
+     * When [kelvin] is provided (e.g. 2000K..10000K), sets CONTROL_AWB_MODE to OFF
+     * and applies custom color gains via COLOR_CORRECTION_GAINS.
+     * When [kelvin] is null, returns CONTROL_AWB_MODE to AUTO.
+     */
+    fun setWhiteBalance(kelvin: Int?) {
+        whiteBalanceKelvin = kelvin
+        val builder = requestBuilder ?: return
+        runCatching {
+            if (kelvin == null) {
+                builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+            } else {
+                builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+                builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+                builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToRggb(kelvin))
+            }
+            applyRequest(builder)
+            Log.i(TAG, "Applied white balance: ${kelvin?.let { "${it}K" } ?: "AUTO"}")
+        }.onFailure { Log.d(TAG, "setWhiteBalance failed: ${it.javaClass.simpleName}") }
+    }
+
+    /**
+     * Sets manual focus distance in diopters (1 / distance in meters; 0.0f = infinity).
+     * When [diopters] is provided, sets CONTROL_AF_MODE to OFF and applies LENS_FOCUS_DISTANCE.
+     * When [diopters] is null, returns CONTROL_AF_MODE to CONTINUOUS_VIDEO.
+     */
+    fun setFocusDistance(diopters: Float?) {
+        manualFocusDistance = diopters
+        val builder = requestBuilder ?: return
+        val characteristics = device?.id?.let { getCharacteristics(it) }
+        val defaultAfMode = characteristics?.let { selectAfMode(it) } ?: CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+        runCatching {
+            if (diopters == null) {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, defaultAfMode)
+            } else {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                val maxFocus = characteristics?.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 10f
+                val clamped = diopters.coerceIn(0f, maxFocus)
+                builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, clamped)
+            }
+            applyRequest(builder)
+            Log.i(TAG, "Applied focus distance: ${diopters?.let { "${it} diopters" } ?: "AUTO"}")
+        }.onFailure { Log.d(TAG, "setFocusDistance failed: ${it.javaClass.simpleName}") }
+    }
+
+    /**
+     * Detects physical camera lenses for multi-camera setups:
+     * - Ultra-Wide (focal length < 24mm equiv / zoom 0.5x)
+     * - Main Wide (1.0x)
+     * - Telephoto (> 50mm equiv / zoom 2x-5x)
+     * - Front camera
+     */
+    fun detectLenses(): List<PhysicalLens> {
+        val lenses = mutableListOf<PhysicalLens>()
+        val cameraIds = runCatching { cameraManager.cameraIdList }.getOrDefault(emptyArray())
+
+        for (id in cameraIds) {
+            val characteristics = getCharacteristics(id) ?: continue
+            val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+
+            if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                val focal = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
+                val equiv = compute35mmEquiv(characteristics, focal)
+                lenses.add(PhysicalLens(id, LensType.FRONT, focal, equiv, 1.0f, isFront = true))
+                continue
+            }
+
+            if (facing == CameraCharacteristics.LENS_FACING_BACK) {
+                var foundPhysical = false
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val physicalIds = characteristics.physicalCameraIds
+                    if (physicalIds.isNotEmpty()) {
+                        for (physId in physicalIds) {
+                            val physChars = runCatching { cameraManager.getCameraCharacteristics(physId) }.getOrNull() ?: continue
+                            val focal = physChars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
+                            val equiv = compute35mmEquiv(physChars, focal)
+                            val type = classifyLens(equiv)
+                            lenses.add(PhysicalLens(physId, type, focal, equiv, type.defaultZoom, isFront = false))
+                            foundPhysical = true
+                        }
+                    }
+                }
+
+                if (!foundPhysical) {
+                    val focal = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
+                    val equiv = compute35mmEquiv(characteristics, focal)
+                    val type = classifyLens(equiv)
+                    lenses.add(PhysicalLens(id, type, focal, equiv, type.defaultZoom, isFront = false))
+                }
+            }
+        }
+
+        // Logical multi-camera zoom ratio fallback (e.g. 0.5x ultra-wide, 2x-5x telephoto)
+        val hasRearUltraWide = lenses.any { it.type == LensType.ULTRA_WIDE }
+        val hasRearTelephoto = lenses.any { it.type == LensType.TELEPHOTO }
+        val backMain = lenses.firstOrNull { it.type == LensType.WIDE && !it.isFront }
+            ?: lenses.firstOrNull { !it.isFront }
+
+        if (backMain != null) {
+            val characteristics = getCharacteristics(backMain.id)
+            if (characteristics != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val zoomRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                if (zoomRange != null) {
+                    if (!hasRearUltraWide && zoomRange.lower <= 0.6f) {
+                        lenses.add(
+                            PhysicalLens(
+                                id = backMain.id,
+                                type = LensType.ULTRA_WIDE,
+                                focalLengthMm = null,
+                                focalLength35mmEquiv = 14f,
+                                zoomFactor = zoomRange.lower.coerceAtLeast(0.5f),
+                                isFront = false,
+                            ),
+                        )
+                    }
+                    if (!hasRearTelephoto && zoomRange.upper >= 2.0f) {
+                        lenses.add(
+                            PhysicalLens(
+                                id = backMain.id,
+                                type = LensType.TELEPHOTO,
+                                focalLengthMm = null,
+                                focalLength35mmEquiv = 56f,
+                                zoomFactor = 2.0f.coerceAtMost(zoomRange.upper),
+                                isFront = false,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+
+        return lenses.distinctBy { it.type to it.id }.sortedWith(
+            compareBy(
+                {
+                    when (it.type) {
+                        LensType.ULTRA_WIDE -> 0
+                        LensType.WIDE -> 1
+                        LensType.TELEPHOTO -> 2
+                        LensType.FRONT -> 3
+                    }
+                },
+                { it.id },
+            ),
+        )
+    }
+
+    /**
+     * Switches to [lens] cleanly without stopping the stream session.
+     * If the lens is on the currently active camera device (e.g. logical zoom),
+     * applies the zoom ratio directly. If on a different camera device, reopens
+     * the new camera onto the existing encoder surface.
+     */
+    fun switchLens(
+        lens: PhysicalLens,
+        onStarted: ((ResolvedVideoConfig) -> Unit)? = null,
+        onError: ((String) -> Unit)? = null,
+    ) {
+        currentLens = lens
+        val currentDevice = device
+        if (currentDevice != null && currentDevice.id == lens.id) {
+            setZoom(lens.id, lens.zoomFactor)
+            activeConfig?.let { onStarted?.invoke(it) }
+            return
+        }
+
+        val req = sessionRequest
+        if (req != null) {
+            start(
+                cameraId = lens.id,
+                targetSurface = req.targetSurface,
+                requestedResolution = "${req.resolved.width}x${req.resolved.height}",
+                requestedFps = req.resolved.fps,
+                requestedBitrate = req.resolved.bitrate,
+                onStarted = { config ->
+                    if (lens.zoomFactor != 1.0f) {
+                        setZoom(lens.id, lens.zoomFactor)
+                    }
+                    onStarted?.invoke(config)
+                },
+                onError = { err ->
+                    onError?.invoke(err)
+                },
+                previewSurface = previewSurface,
+                keepThread = true,
+            )
+        } else {
+            zoom = lens.zoomFactor
+        }
+    }
+
+    private fun compute35mmEquiv(characteristics: CameraCharacteristics, focalLengthMm: Float?): Float? {
+        val focal = focalLengthMm ?: return null
+        val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: return null
+        if (sensorSize.width <= 0f || sensorSize.height <= 0f) return null
+        val sensorDiag = Math.hypot(sensorSize.width.toDouble(), sensorSize.height.toDouble()).toFloat()
+        if (sensorDiag <= 0f) return null
+        return (focal * (43.27f / sensorDiag))
+    }
+
+    private fun classifyLens(focalLength35mmEquiv: Float?): LensType {
+        val equiv = focalLength35mmEquiv ?: return LensType.WIDE
+        return when {
+            equiv < 24f -> LensType.ULTRA_WIDE
+            equiv > 50f -> LensType.TELEPHOTO
+            else -> LensType.WIDE
+        }
     }
 
     /** Re-applies the requested frame rate without tearing down the session. */
@@ -776,6 +1070,10 @@ class CameraController(private val context: Context) {
         sessionRequest = null
         torchEnabled = false
         zoom = 1f
+        exposureCompensation = 0
+        whiteBalanceKelvin = null
+        manualFocusDistance = null
+        currentLens = null
     }
 
     val torchState: Boolean
@@ -807,9 +1105,27 @@ class CameraController(private val context: Context) {
         handler = null
     }
 
-    private companion object {
+    companion object {
         const val MAX_VIDEO_WIDTH = 1920
         const val MAX_VIDEO_HEIGHT = 1080
         const val TAG = "CameraController"
+
+        fun kelvinToColorGains(kelvin: Int): ColorGains {
+            val k = kelvin.coerceIn(2000, 10000).toFloat()
+            val rGain: Float
+            val bGain: Float
+            if (k < 5000f) {
+                val t = (k - 2000f) / 3000f
+                rGain = 1.0f + 0.3f * t
+                bGain = 2.8f - 1.2f * t
+            } else {
+                val t = (k - 5000f) / 5000f
+                rGain = 1.3f + 1.2f * t
+                bGain = 1.6f - 0.6f * t
+            }
+            return ColorGains(rGain.coerceIn(0.5f, 4.0f), 1.0f, 1.0f, bGain.coerceIn(0.5f, 4.0f))
+        }
+
+        fun kelvinToRggb(kelvin: Int): RggbChannelVector = kelvinToColorGains(kelvin).toRggbVector()
     }
 }

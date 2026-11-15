@@ -67,6 +67,26 @@ struct SettingsFile {
     preview_enabled: Option<bool>,
     #[serde(default)]
     last_device_id: Option<String>,
+    #[serde(default)]
+    exposure: Option<i32>,
+    #[serde(default)]
+    white_balance_kelvin: Option<u32>,
+    #[serde(default)]
+    focus_distance: Option<f32>,
+    #[serde(default)]
+    lut_preset: Option<phonecam_media::LutPreset>,
+    #[serde(default)]
+    portrait_blur: Option<bool>,
+    #[serde(default)]
+    portrait_blur_intensity: Option<f32>,
+    #[serde(default)]
+    auto_framing: Option<bool>,
+    #[serde(default)]
+    auto_connect_usb: Option<bool>,
+    #[serde(default)]
+    minimize_to_tray: Option<bool>,
+    #[serde(default)]
+    stream_audio: Option<bool>,
 }
 
 /// Loads the settings, falling back to defaults per field.
@@ -169,6 +189,18 @@ fn coerce(file: SettingsFile) -> Settings {
         window_maximized: file.window_maximized.unwrap_or(defaults.window_maximized),
         preview_enabled: file.preview_enabled.unwrap_or(defaults.preview_enabled),
         last_device_id: file.last_device_id.filter(|id| !id.is_empty()),
+        exposure: file.exposure.unwrap_or(defaults.exposure),
+        white_balance_kelvin: file.white_balance_kelvin.or(defaults.white_balance_kelvin),
+        focus_distance: file.focus_distance.or(defaults.focus_distance),
+        lut_preset: file.lut_preset.unwrap_or(defaults.lut_preset),
+        portrait_blur: file.portrait_blur.unwrap_or(defaults.portrait_blur),
+        portrait_blur_intensity: file
+            .portrait_blur_intensity
+            .unwrap_or(defaults.portrait_blur_intensity),
+        auto_framing: file.auto_framing.unwrap_or(defaults.auto_framing),
+        auto_connect_usb: file.auto_connect_usb.unwrap_or(defaults.auto_connect_usb),
+        minimize_to_tray: file.minimize_to_tray.unwrap_or(defaults.minimize_to_tray),
+        stream_audio: file.stream_audio.unwrap_or(defaults.stream_audio),
     }
 }
 
@@ -210,6 +242,16 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
         window_maximized: Some(settings.window_maximized),
         preview_enabled: Some(settings.preview_enabled),
         last_device_id: settings.last_device_id.clone(),
+        exposure: Some(settings.exposure),
+        white_balance_kelvin: settings.white_balance_kelvin,
+        focus_distance: settings.focus_distance,
+        lut_preset: Some(settings.lut_preset),
+        portrait_blur: Some(settings.portrait_blur),
+        portrait_blur_intensity: Some(settings.portrait_blur_intensity),
+        auto_framing: Some(settings.auto_framing),
+        auto_connect_usb: Some(settings.auto_connect_usb),
+        minimize_to_tray: Some(settings.minimize_to_tray),
+        stream_audio: Some(settings.stream_audio),
     };
 
     let text = serde_json::to_string_pretty(&file)?;

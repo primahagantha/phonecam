@@ -23,10 +23,14 @@
     clippy::needless_range_loop
 )]
 
+pub mod effects;
 pub mod flicker;
 pub mod pacer;
 pub mod sps;
 
+pub use effects::{
+    apply_lut, apply_portrait_blur, AutoFramingTracker, BlurIntensity, CropRect, LutPreset,
+};
 pub use flicker::{FlickerDetector, FlickerEvent, LUMA_JUMP_THRESHOLD};
 pub use pacer::{FramePacer, PaceAction, TARGET_FPS, TARGET_FRAME_DURATION_US};
 pub use sps::{parse_avc_dimensions, Dimensions};

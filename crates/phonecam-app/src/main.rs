@@ -456,6 +456,17 @@ fn apply_effect(
         SideEffect::SetAntiFlicker(mode) => runtime.set_anti_flicker(mode),
         SideEffect::SetTorch(enabled) => runtime.set_torch(enabled),
         SideEffect::SetZoom(zoom) => runtime.set_zoom(zoom),
+        SideEffect::SetExposure(compensation) => runtime.set_exposure(compensation),
+        SideEffect::SetWhiteBalance(kelvin) => runtime.set_white_balance(kelvin),
+        SideEffect::SetFocus(distance) => runtime.set_focus(distance),
+        SideEffect::SetLutFilter(preset) => runtime.set_lut_filter(preset),
+        SideEffect::SetPortraitBlur(enabled, intensity) => {
+            runtime.set_portrait_blur(enabled, intensity)
+        }
+        SideEffect::SetAutoFraming(enabled) => runtime.set_auto_framing(enabled),
+        SideEffect::SetAutoConnectUsb(enabled) => runtime.set_auto_connect_usb(enabled),
+        SideEffect::SetMinimizeToTray(enabled) => runtime.set_minimize_to_tray(enabled),
+        SideEffect::SetAudioStream(enabled) => runtime.set_audio_stream(enabled),
         SideEffect::SetLogLevel(level) => {
             logging::set_level(level);
             runtime.set_log_level(level);

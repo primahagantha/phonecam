@@ -1175,6 +1175,9 @@ class StreamSession(
             is DesktopMessage.SetVideo -> applyVideoRequest(message)
             is DesktopMessage.SetImage -> applyImageRequest(message)
             is DesktopMessage.SetTorch -> applyTorch(message.enabled)
+            is DesktopMessage.SetExposure -> camera.setExposure(message.compensation)
+            is DesktopMessage.SetWhiteBalance -> camera.setWhiteBalance(message.kelvin)
+            is DesktopMessage.SetFocus -> camera.setFocusDistance(message.distance)
             is DesktopMessage.SetAntiFlicker -> {
                 camera.setAntibandingMode(message.mode)
                 _state.value = _state.value.copy(antiFlicker = message.mode)
@@ -1914,6 +1917,12 @@ class StreamSession(
     /** Short correlator for diagnostics; never the secret itself (PRD §63). */
     fun secretFingerprint(): String? =
         identity.deviceSecretHex?.let { Auth.secretFingerprint(it) }
+
+    fun setExposure(compensation: Int) = camera.setExposure(compensation)
+    fun setWhiteBalance(kelvin: Int?) = camera.setWhiteBalance(kelvin)
+    fun setFocusDistance(diopters: Float?) = camera.setFocusDistance(diopters)
+    fun detectLenses() = camera.detectLenses()
+    fun switchLens(lens: com.phonecam.camera.camera.PhysicalLens) = camera.switchLens(lens)
 
     private fun kotlinx.serialization.json.JsonPrimitive.contentOrNullSafe(): String? =
         runCatching { content }.getOrNull()

@@ -3927,6 +3927,7 @@ dependencies = [
  "openh264",
  "phonecam-framebus",
  "phonecam-protocol",
+ "serde",
  "thiserror 2.0.21",
  "tracing",
 ]

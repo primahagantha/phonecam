@@ -280,6 +280,16 @@ pub struct Settings {
     /// Whether a phone has been paired here before, **not** whether one is here
     /// now. It decides whether the empty state says "pair one" or "wake yours".
     pub last_device_id: Option<String>,
+    pub exposure: i32,
+    pub white_balance_kelvin: Option<u32>,
+    pub focus_distance: Option<f32>,
+    pub lut_preset: phonecam_media::LutPreset,
+    pub portrait_blur: bool,
+    pub portrait_blur_intensity: f32,
+    pub auto_framing: bool,
+    pub auto_connect_usb: bool,
+    pub minimize_to_tray: bool,
+    pub stream_audio: bool,
 }
 
 impl Default for Settings {
@@ -307,6 +317,16 @@ impl Default for Settings {
             window_maximized: false,
             preview_enabled: true,
             last_device_id: None,
+            exposure: 0,
+            white_balance_kelvin: None,
+            focus_distance: None,
+            lut_preset: phonecam_media::LutPreset::Natural,
+            portrait_blur: false,
+            portrait_blur_intensity: 0.70,
+            auto_framing: false,
+            auto_connect_usb: true,
+            minimize_to_tray: true,
+            stream_audio: false,
         }
     }
 }

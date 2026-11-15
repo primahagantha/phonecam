@@ -16,12 +16,14 @@ use serde::{Deserialize, Serialize};
 pub enum ChannelRole {
     Control = 1,
     Video = 2,
+    Audio = 3,
 }
 
 impl ChannelRole {
     pub fn from_wire(value: u8) -> Self {
         match value {
             2 => Self::Video,
+            3 => Self::Audio,
             _ => Self::Control,
         }
     }
@@ -551,6 +553,14 @@ pub enum DesktopToPhone {
     },
     #[serde(rename = "set_torch")]
     SetTorch { enabled: bool },
+    #[serde(rename = "set_exposure")]
+    SetExposure { compensation: i32 },
+    #[serde(rename = "set_white_balance")]
+    SetWhiteBalance { kelvin: Option<u32> },
+    #[serde(rename = "set_focus")]
+    SetFocus { distance: Option<f32> },
+    #[serde(rename = "set_audio_stream")]
+    SetAudioStream { enabled: bool },
     #[serde(rename = "set_anti_flicker")]
     SetAntiFlicker { mode: AntiFlickerMode },
     #[serde(rename = "set_screen")]
@@ -710,6 +720,14 @@ pub enum DesktopToCore {
     },
     #[serde(rename = "set_torch")]
     SetTorch { enabled: bool },
+    #[serde(rename = "set_exposure")]
+    SetExposure { compensation: i32 },
+    #[serde(rename = "set_white_balance")]
+    SetWhiteBalance { kelvin: Option<u32> },
+    #[serde(rename = "set_focus")]
+    SetFocus { distance: Option<f32> },
+    #[serde(rename = "set_audio_stream")]
+    SetAudioStream { enabled: bool },
     #[serde(rename = "set_anti_flicker")]
     SetAntiFlicker { mode: AntiFlickerMode },
     #[serde(rename = "set_screen")]
@@ -1157,5 +1175,36 @@ mod tests {
         };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["mode"], "keepOn");
+    }
+
+    #[test]
+    fn channel_role_audio_wire_conversion() {
+        assert_eq!(ChannelRole::Audio as u8, 3);
+        assert_eq!(ChannelRole::from_wire(3), ChannelRole::Audio);
+    }
+
+    #[test]
+    fn pro_controls_serialization() {
+        let exp = DesktopToPhone::SetExposure { compensation: -2 };
+        let v = serde_json::to_value(&exp).unwrap();
+        assert_eq!(v["t"], "set_exposure");
+        assert_eq!(v["compensation"], -2);
+
+        let wb = DesktopToPhone::SetWhiteBalance { kelvin: Some(5500) };
+        let v = serde_json::to_value(&wb).unwrap();
+        assert_eq!(v["t"], "set_white_balance");
+        assert_eq!(v["kelvin"], 5500);
+
+        let focus = DesktopToPhone::SetFocus {
+            distance: Some(2.5),
+        };
+        let v = serde_json::to_value(&focus).unwrap();
+        assert_eq!(v["t"], "set_focus");
+        assert_eq!(v["distance"], 2.5);
+
+        let audio = DesktopToPhone::SetAudioStream { enabled: true };
+        let v = serde_json::to_value(&audio).unwrap();
+        assert_eq!(v["t"], "set_audio_stream");
+        assert_eq!(v["enabled"], true);
     }
 }
