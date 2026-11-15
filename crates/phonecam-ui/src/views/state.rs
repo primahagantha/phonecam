@@ -627,9 +627,14 @@ pub fn format_log_time(ts_ms: i64) -> String {
     )
 }
 
-/// A resolution's label, e.g. `1920x1080` → `1080p`.
+/// A resolution's label, e.g. `1920x1080` → `1080p`, `3840x2160` → `4K`.
 pub fn resolution_label_of(value: &str) -> String {
-    phonecam_protocol::resolution_label(value)
+    let lbl = phonecam_protocol::resolution_label(value);
+    if lbl == "2160p" {
+        "4K".to_string()
+    } else {
+        lbl
+    }
 }
 
 /// Formats phone battery percentage and charging state when reported (`>= 0`).

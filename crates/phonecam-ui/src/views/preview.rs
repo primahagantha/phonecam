@@ -693,6 +693,53 @@ pub fn preview_off_card() -> AnyElement {
         .into_any_element()
 }
 
+/// Shown when the stream is active or starting but the first decoded GPU frame has not yet arrived.
+/// This prevents a jarring pitch-black void on the stage.
+pub fn preview_waiting_card(device_name: Option<&str>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h(px(0.0))
+        .items_center()
+        .justify_center()
+        .px(px(32.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .max_w(px(416.0))
+                .rounded(px(Radius::LG))
+                .border_1()
+                .border_color(SHELL.border.alpha(0.6))
+                .bg(SHELL.recessed)
+                .px(px(24.0))
+                .py(px(20.0))
+                .child(
+                    div()
+                        .font_family(Fonts::DISPLAY)
+                        .text_size(px(Type::DISPLAY))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(Text::PRIMARY)
+                        .child("Waiting for video feed..."),
+                )
+                .child(
+                    div()
+                        .mt(px(Space::MD))
+                        .font_family(Fonts::SANS)
+                        .text_size(px(Type::TWO_SM))
+                        .text_color(Text::MUTED)
+                        .text_center()
+                        .child(format!(
+                            "Connected to {}. Receiving initial camera frames...",
+                            device_name.unwrap_or("phone camera")
+                        )),
+                ),
+        )
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

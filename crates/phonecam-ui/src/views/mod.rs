@@ -41,6 +41,7 @@ pub struct AppView {
     pub qr_image: Option<std::sync::Arc<gpui::RenderImage>>,
     qr_payload_cached: Option<String>,
     pub focus_handle: Option<gpui::FocusHandle>,
+    pub scroll_handle: gpui::ScrollHandle,
 }
 
 impl AppView {
@@ -55,6 +56,7 @@ impl AppView {
             qr_image: None,
             qr_payload_cached: None,
             focus_handle: None,
+            scroll_handle: gpui::ScrollHandle::new(),
         }
     }
 
@@ -201,7 +203,7 @@ impl Render for AppView {
                                     .object_fit(gpui::ObjectFit::Contain),
                             )
                             .into_any_element(),
-                        None => div().flex_1().into_any_element(),
+                        None => preview::preview_waiting_card(self.state.device_name().as_deref()),
                     }
                 };
                 div()
@@ -241,13 +243,20 @@ impl Render for AppView {
             .flex()
             .flex_row()
             .flex_1()
+            .h_full()
             .min_h(px(0.0))
+            .overflow_hidden()
             .gap(px(Space::XL))
             .p(px(Space::XL))
             .child(stage);
 
         if !self.focus_preview {
-            content_row = content_row.child(panels::rail(&self.state, self.tab, narrow));
+            content_row = content_row.child(panels::rail(
+                &self.state,
+                self.tab,
+                narrow,
+                &self.scroll_handle,
+            ));
         }
 
         let mut root = div()
@@ -300,6 +309,7 @@ impl Render for AppView {
             .flex()
             .flex_col()
             .size_full()
+            .overflow_hidden()
             .bg(SHELL.base)
             .font_family(Fonts::SANS)
             .text_size(px(Type::TWO_SM))
@@ -487,5 +497,19 @@ mod tests {
             "capacity should be preserved, got {}",
             recycled.capacity()
         );
+    }
+
+    #[test]
+    fn app_view_has_valid_scroll_handle_and_rail_renders_across_all_tabs() {
+        let view = AppView::new();
+        let offset = view.scroll_handle.offset();
+        assert_eq!(offset.x, px(0.0));
+        assert_eq!(offset.y, px(0.0));
+
+        let state = AppState::default();
+        for tab in Tab::ALL {
+            let _rail = panels::rail(&state, tab, false, &view.scroll_handle);
+            let _narrow_rail = panels::rail(&state, tab, true, &view.scroll_handle);
+        }
     }
 }

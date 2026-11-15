@@ -1262,9 +1262,6 @@ class StreamSession(
         // its decoder. Tearing the encoder down and starting another one is what
         // used to cost a quarter second of deliberate delay plus a codec start,
         // and is what the camera switch used to look like on the PC: a freeze.
-        val liveSurface = encoder?.surface?.takeIf { it.isValid }
-        val swapInPlace = wasStreaming && liveSurface != null && switchingKeepsConfiguration(target.id)
-
         _state.value = _state.value.copy(
             selectedCameraId = target.id,
             error = null,
@@ -1277,61 +1274,14 @@ class StreamSession(
 
         if (!wasStreaming) return
 
-        if (swapInPlace) {
-            val surface = liveSurface!!
-            Log.i("switching to camera ${target.id} in place; the encoder and the video channel stay up")
-            val requestedResolution = _state.value.requestedResolution
-            val requestedFps = _state.value.requestedFps
-            val requestedBitrate = _state.value.requestedBitrate
-            val preview = if (_state.value.previewEnabled && previewSurface?.isValid == true) previewSurface else null
-            val targetId = target.id
-            // Off the control channel's reader thread: closing the old camera
-            // device blocks for a couple of hundred milliseconds, and while that
-            // thread is blocked the phone cannot answer the desktop's pings —
-            // which reads on the PC as exactly the freeze the switch is trying
-            // to avoid.
-            scope.launch {
-                camera.start(
-                    cameraId = targetId,
-                    targetSurface = surface,
-                    requestedResolution = requestedResolution,
-                    requestedFps = requestedFps,
-                    requestedBitrate = requestedBitrate,
-                    onStarted = { applied: ResolvedVideoConfig ->
-                        scope.launch {
-                            cameraStartFailures = 0
-                            val appliedRes = "${applied.width}x${applied.height}"
-                            _state.value = _state.value.copy(
-                                phase = SessionState.Phase.STREAMING,
-                                actualResolution = appliedRes,
-                                actualFps = applied.fps,
-                                bitrate = applied.bitrate,
-                                notice = applied.notice,
-                                noticeKind = NoticeKind.Substitution,
-                            )
-                            sendState()
-                            // The new sensor starts on a delta frame by default; an IDR
-                            // here gives the desktop a clean reference immediately.
-                            encoder?.requestKeyframe()
-                        }
-                    },
-                    onError = { message ->
-                        scope.launch { retryCameraStart(message) }
-                    },
-                    previewSurface = preview,
-                    // The encoder and the channel are staying up; so does the camera
-                    // thread, otherwise the switch pays a thread teardown it does not
-                    // need before it can even open the other sensor.
-                    keepThread = true,
-                )
-            }
-            return
-        }
-
+        // Physical camera sensor switch (e.g. Back vs Front) requires a clean capture session
+        // and encoder re-initialization to prevent Qualcomm Camera2 HAL NULL payload crashes,
+        // orientation mismatch, and missing IDR reference frames. We keep the TCP video channel
+        // alive (keepVideoChannel = true) so the connection never drops.
         stopStreaming(notifyPeer = false, keepVideoChannel = true)
         restartJob = scope.launch {
-            delay(VIDEO_RESTART_DELAY_MS)
-            if (isActive) startStreaming()
+            delay(100L)
+            if (isActive) startStreaming(force = true)
         }
     }
 

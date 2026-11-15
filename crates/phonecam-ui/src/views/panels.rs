@@ -7,7 +7,7 @@
 //! four tabs, in the order the job happens.
 
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Hsla, SharedString};
+use gpui::{div, px, AnyElement, Hsla, ScrollHandle, SharedString};
 
 use crate::theme::rules;
 use crate::theme::{Accent, Fonts, Radius, Space, Status, Text, Tone, Type, SHELL};
@@ -485,7 +485,7 @@ pub fn pair_request_prompt(state: &AppState) -> AnyElement {
 ///
 /// The rail scrolls as one column so a long panel never pushes the picture out
 /// of shape.
-pub fn rail(state: &AppState, tab: Tab, narrow: bool) -> AnyElement {
+pub fn rail(state: &AppState, tab: Tab, narrow: bool, scroll_handle: &ScrollHandle) -> AnyElement {
     let width = if narrow {
         crate::theme::RAIL_WIDTH_NARROW
     } else {
@@ -545,6 +545,8 @@ pub fn rail(state: &AppState, tab: Tab, narrow: bool) -> AnyElement {
         .flex_col()
         .flex_shrink_0()
         .w(px(width))
+        .h_full()
+        .max_h_full()
         .overflow_hidden()
         .rounded(px(Radius::LG))
         .border_1()
@@ -553,12 +555,17 @@ pub fn rail(state: &AppState, tab: Tab, narrow: bool) -> AnyElement {
         .child(nav)
         .child(
             div()
-                .id(gpui::ElementId::Name(SharedString::from("rail-scroll")))
+                .id(gpui::ElementId::Name(SharedString::from(format!(
+                    "rail-scroll-{}",
+                    tab.index()
+                ))))
                 .flex()
                 .flex_col()
                 .flex_1()
+                .h_full()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
+                .track_scroll(scroll_handle)
                 .gap(px(Space::XL))
                 .p(px(Space::XL))
                 // The bottom padding is what stops the last panel being clipped
@@ -2270,7 +2277,12 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         ],
     ));
 
-    panel.children(children).into_element()
+    div()
+        .flex()
+        .flex_col()
+        .pb(px(Space::RAIL_BOTTOM))
+        .child(panel.children(children))
+        .into_any_element()
 }
 
 fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &str) -> AnyElement {
@@ -2314,7 +2326,7 @@ fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &s
         .flex()
         .flex_row()
         .flex_wrap()
-        .gap(px(Space::MD))
+        .gap(px(Space::SM))
         .children(list.iter().map(|camera| {
             let is_selected = camera.id == selected_id;
             let id = camera.id.clone();
@@ -2331,7 +2343,7 @@ fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &s
                     "camera-{id}"
                 ))))
                 .flex_1()
-                .min_w(px(140.0))
+                .min_w(px(120.0))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -2349,8 +2361,8 @@ fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &s
                 } else {
                     SHELL.control
                 })
-                .px(px(Space::PAD))
-                .py(px(Space::MD))
+                .px(px(Space::MD))
+                .py(px(Space::SM))
                 .cursor_pointer()
                 .hover(|s| s.border_color(Accent::HOVER).bg(SHELL.hover))
                 .child(
@@ -2385,8 +2397,8 @@ fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &s
                     div()
                         .rounded(px(Radius::FULL))
                         .bg(Accent::DEFAULT)
-                        .px(px(8.0))
-                        .py(px(3.0))
+                        .px(px(6.0))
+                        .py(px(2.0))
                         .font_family(Fonts::SANS)
                         .text_size(px(Type::TWO_XS))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -2398,8 +2410,8 @@ fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &s
                         .border_1()
                         .border_color(SHELL.border)
                         .bg(SHELL.base)
-                        .px(px(8.0))
-                        .py(px(3.0))
+                        .px(px(6.0))
+                        .py(px(2.0))
                         .font_family(Fonts::SANS)
                         .text_size(px(Type::TWO_XS))
                         .text_color(Text::MUTED)
@@ -3688,41 +3700,155 @@ fn zoom_presets_for(min_zoom: f32, max_zoom: f32) -> Vec<f32> {
 
 fn resolution_presets(camera_resolutions: &[String], current: &str) -> Vec<String> {
     let mut out = vec!["auto".to_string()];
-    let preferred = [
-        "3840x2160",
-        "2560x1440",
-        "1920x1080",
-        "1280x720",
-        "854x480",
-        "640x480",
-        "640x360",
-    ];
-    if camera_resolutions.is_empty() {
-        for res in [
-            "3840x2160",
-            "1920x1080",
-            "1280x720",
-            "854x480",
-            "640x480",
-            "640x360",
-        ] {
-            out.push(res.to_string());
-        }
+    let mut seen_labels = std::collections::HashSet::new();
+    seen_labels.insert("auto".to_string());
+
+    let current_label = if !current.is_empty() && current != "auto" {
+        Some(resolution_label_of(current))
     } else {
-        for res in preferred {
-            if camera_resolutions.iter().any(|r| r == res) {
-                out.push(res.to_string());
-            }
-        }
-        for res in camera_resolutions {
-            if !out.iter().any(|existing| existing == res) {
-                out.push(res.clone());
-            }
+        None
+    };
+
+    let supports = |res: &str| -> bool { camera_resolutions.iter().any(|r| r == res) };
+
+    let supports_label = |target_label: &str| -> bool {
+        camera_resolutions
+            .iter()
+            .any(|r| resolution_label_of(r) == target_label)
+    };
+
+    // 1. 4K (3840x2160) - included if supported by camera or active
+    let has_4k = supports("3840x2160")
+        || supports_label("4K")
+        || supports_label("2160p")
+        || current_label.as_deref() == Some("4K")
+        || current_label.as_deref() == Some("2160p");
+    if has_4k {
+        let res_4k = if current_label.as_deref() == Some("4K")
+            || current_label.as_deref() == Some("2160p")
+        {
+            current.to_string()
+        } else if supports("3840x2160") {
+            "3840x2160".to_string()
+        } else {
+            camera_resolutions
+                .iter()
+                .find(|r| {
+                    let l = resolution_label_of(r);
+                    l == "4K" || l == "2160p"
+                })
+                .cloned()
+                .unwrap_or_else(|| "3840x2160".to_string())
+        };
+        let lbl = resolution_label_of(&res_4k);
+        if seen_labels.insert(lbl) {
+            out.push(res_4k);
         }
     }
-    if !current.is_empty() && !out.iter().any(|existing| existing == current) {
-        out.push(current.to_string());
+
+    // 2. 1440p (2560x1440) - included if supported by camera or active
+    let has_1440p = supports("2560x1440")
+        || supports_label("1440p")
+        || current_label.as_deref() == Some("1440p");
+    if has_1440p {
+        let res_1440p = if current_label.as_deref() == Some("1440p") {
+            current.to_string()
+        } else if supports("2560x1440") {
+            "2560x1440".to_string()
+        } else {
+            camera_resolutions
+                .iter()
+                .find(|r| resolution_label_of(r) == "1440p")
+                .cloned()
+                .unwrap_or_else(|| "2560x1440".to_string())
+        };
+        let lbl = resolution_label_of(&res_1440p);
+        if seen_labels.insert(lbl) {
+            out.push(res_1440p);
+        }
     }
+
+    // 3. 1080p (1920x1080)
+    let res_1080p = if current_label.as_deref() == Some("1080p") {
+        current.to_string()
+    } else if supports("1920x1080") || camera_resolutions.is_empty() {
+        "1920x1080".to_string()
+    } else if let Some(r) = camera_resolutions
+        .iter()
+        .find(|r| resolution_label_of(r) == "1080p")
+    {
+        r.clone()
+    } else {
+        "1920x1080".to_string()
+    };
+    let lbl = resolution_label_of(&res_1080p);
+    if seen_labels.insert(lbl) {
+        out.push(res_1080p);
+    }
+
+    // 4. 720p (1280x720)
+    let res_720p = if current_label.as_deref() == Some("720p") {
+        current.to_string()
+    } else if supports("1280x720") || camera_resolutions.is_empty() {
+        "1280x720".to_string()
+    } else if let Some(r) = camera_resolutions
+        .iter()
+        .find(|r| resolution_label_of(r) == "720p")
+    {
+        r.clone()
+    } else {
+        "1280x720".to_string()
+    };
+    let lbl = resolution_label_of(&res_720p);
+    if seen_labels.insert(lbl) {
+        out.push(res_720p);
+    }
+
+    // 5. 480p (854x480 or 640x480)
+    let res_480p = if current_label.as_deref() == Some("480p") {
+        current.to_string()
+    } else if supports("854x480") || camera_resolutions.is_empty() {
+        "854x480".to_string()
+    } else if supports("640x480") {
+        "640x480".to_string()
+    } else if let Some(r) = camera_resolutions
+        .iter()
+        .find(|r| resolution_label_of(r) == "480p")
+    {
+        r.clone()
+    } else {
+        "854x480".to_string()
+    };
+    let lbl = resolution_label_of(&res_480p);
+    if seen_labels.insert(lbl) {
+        out.push(res_480p);
+    }
+
+    // 6. 360p (640x360)
+    let res_360p = if current_label.as_deref() == Some("360p") {
+        current.to_string()
+    } else if supports("640x360") || camera_resolutions.is_empty() {
+        "640x360".to_string()
+    } else if let Some(r) = camera_resolutions
+        .iter()
+        .find(|r| resolution_label_of(r) == "360p")
+    {
+        r.clone()
+    } else {
+        "640x360".to_string()
+    };
+    let lbl = resolution_label_of(&res_360p);
+    if seen_labels.insert(lbl) {
+        out.push(res_360p);
+    }
+
+    // 7. Active resolution if custom (non-standard label)
+    if let Some(lbl) = current_label {
+        if seen_labels.insert(lbl) {
+            out.push(current.to_string());
+        }
+    }
+
     out
 }
 
@@ -3777,6 +3903,8 @@ mod tests {
         assert_eq!(presets[0], "auto");
         assert!(presets.contains(&"1920x1080".to_string()));
         assert!(presets.contains(&"640x480".to_string()));
+        // Deduplication: 640x480 (active) replaces 854x480 as both share label '480p'
+        assert!(!presets.contains(&"854x480".to_string()));
     }
 
     #[test]
@@ -3866,12 +3994,14 @@ mod tests {
     }
 
     #[test]
-    fn resolution_presets_uncapped_and_includes_640_presets() {
+    fn resolution_presets_deduplicates_by_label_and_keeps_clean_row() {
         let caps: Vec<String> = vec![
             "3840x2160",
             "2560x1440",
             "1920x1080",
+            "1440x1080",
             "1280x720",
+            "960x720",
             "854x480",
             "640x480",
             "640x360",
@@ -3881,9 +4011,38 @@ mod tests {
         .map(String::from)
         .collect();
         let presets = resolution_presets(&caps, "auto");
-        assert_eq!(presets.len(), 9);
+        // Deduplicated: auto, 4K, 1440p, 1080p, 720p, 480p, 360p (7 total, 1 clean row)
+        assert_eq!(presets.len(), 7);
+        assert_eq!(presets[0], "auto");
+        assert!(presets.contains(&"3840x2160".to_string()));
+        assert!(presets.contains(&"2560x1440".to_string()));
+        assert!(presets.contains(&"1920x1080".to_string()));
+        assert!(!presets.contains(&"1440x1080".to_string())); // deduplicated duplicate 1080p
+        assert!(presets.contains(&"1280x720".to_string()));
+        assert!(!presets.contains(&"960x720".to_string())); // deduplicated duplicate 720p
+        assert!(presets.contains(&"854x480".to_string()));
+        assert!(!presets.contains(&"640x480".to_string())); // deduplicated duplicate 480p
         assert!(presets.contains(&"640x360".to_string()));
-        assert!(presets.contains(&"320x240".to_string()));
+
+        // Verify every resolution in presets maps to a distinct label (no duplicate pills)
+        let labels: Vec<String> = presets
+            .iter()
+            .map(|r| {
+                if r == "auto" {
+                    "Auto".to_string()
+                } else {
+                    resolution_label_of(r)
+                }
+            })
+            .collect();
+        let mut unique_labels = labels.clone();
+        unique_labels.sort();
+        unique_labels.dedup();
+        assert_eq!(labels.len(), unique_labels.len());
+
+        // And if a custom resolution is selected, it is preserved
+        let custom_presets = resolution_presets(&caps, "320x240");
+        assert!(custom_presets.contains(&"320x240".to_string()));
     }
 
     #[test]
@@ -3993,5 +4152,15 @@ mod tests {
 
         assert_eq!(phonecam_media::LutPreset::None.display_name(), "None / Off");
         assert_eq!(phonecam_media::LutPreset::Natural.display_name(), "Natural");
+    }
+
+    #[test]
+    fn rail_scroll_containers_render_with_distinct_ids_across_all_tabs() {
+        let state = AppState::default();
+        let scroll_handle = ScrollHandle::new();
+        for tab in Tab::ALL {
+            let _rail = rail(&state, tab, false, &scroll_handle);
+            let _narrow = rail(&state, tab, true, &scroll_handle);
+        }
     }
 }
