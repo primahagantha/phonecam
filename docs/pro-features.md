@@ -17,19 +17,21 @@ Every pro feature is engineered around our **single native process, zero-copy, s
 flowchart TD
     subgraph AndroidDevice["Android Phone (Camera2 + MediaCodec)"]
         Sensors["Physical Multi-Lens (0.5x, 1.0x, 3.0x, Front)"]
+        AE60["Unlocked 60 FPS AE Range Selection"]
+        AntiFlicker["Anti-Flicker Antibanding (50Hz / 60Hz / Auto)"]
         Manuals["Hardware AE / AWB / AF Controls"]
         OLED["Pure-Black OLED Ambient Display"]
-        AudioCap["Audio Record (PCM 48kHz / ChannelRole::Audio)"]
-        H264Enc["Hardware H.264 Encoder (Annex-B)"]
+        AudioCap["Audio Record (PCM 48kHz / ChannelRole::Audio = 3)"]
+        H264Enc["Hardware H.264 Encoder (Annex-B 60 FPS)"]
         
-        Sensors --> Manuals --> H264Enc
+        Sensors --> AE60 --> AntiFlicker --> Manuals --> H264Enc
         OLED -.->|"Power & Thermal Saver"| Sensors
     end
 
     subgraph Transport["Unified Link (USB ADB / Wi-Fi LAN)"]
         TCPStream["TCP 48721 Length-Prefixed Stream"]
-        H264Enc --> TCPStream
-        AudioCap --> TCPStream
+        H264Enc -->|"Video (Role 1)"| TCPStream
+        AudioCap -->|"Audio (Role 3)"| TCPStream
     end
 
     subgraph DesktopProcess["PhoneCam Desktop (Single In-Process Engine)"]
@@ -37,16 +39,17 @@ flowchart TD
         OpenH264["Single In-Process openh264 Decoder"]
         
         subgraph ProMediaPipeline["Pro Video Effects Engine (In-Place BGRA)"]
+            CVFace["CV Face Tracker (Zero Allocation)"]
+            CVGest["OBSBOT Hand Gestures (6 Gestures + HUD)"]
+            Blur["Portrait Bokeh Background Blur (Hermite Feather)"]
             LUT["5 Studio Color LUT Presets"]
-            Blur["Portrait Bokeh Background Blur (SIMD Box + Hermite Feather)"]
-            AutoFrame["AI Auto-Framing (Exponential Smoothing Pan/Zoom)"]
             
-            OpenH264 --> AutoFrame --> Blur --> LUT
+            OpenH264 --> CVFace --> CVGest --> Blur --> LUT
         end
         
-        AudioEngine["Low-Latency Audio Engine / Virtual Audio"]
+        AudioEngine["Low-Latency Audio Engine / 16-Segment LED VU"]
         Framebus["Windows Shared Memory (NV12 68B Seqlock)"]
-        GPUIPreview["GPUI DirectX 11 Preview Window"]
+        GPUIPreview["GPUI DirectX 11 Preview Window + Live HUD"]
         
         TCPStream --> TCPRx
         TCPRx --> OpenH264
@@ -69,41 +72,127 @@ flowchart TD
 
 ## 2. Feature Deep-Dive & Architecture
 
-### 2.1 AI Auto-Framing (Smart Center Stage)
+### 2.1 Real Computer Vision Face Detection & Smart Auto-Framing (Center Stage)
 
-**AI Auto-Framing** continuously keeps the human subject centered within the broadcast frame, providing an automated pan, tilt, and zoom experience without moving the physical camera.
+**Smart Auto-Framing** continuously keeps the human subject centered and composed within the broadcast frame, providing an automated pan, tilt, and zoom experience without moving the physical camera.
 
-- **Tracking & Geometry**:
-  - The tracking engine computes normalized subject center coordinates $(X_c, Y_c) \in [0.15, 0.85]$ and target framing rectangles.
-  - An aspect-ratio preserving crop rectangle `CropRect { x, y, width, height }` is computed with even-pixel boundary alignment (`& !1`) to maintain color sub-sampling fidelity.
-- **Dual-Axis Exponential Smoothing**:
-  - Rather than snapping immediately to new bounding boxes, the camera smoothly pans and zooms using temporal exponential smoothing:
+- **Pure Rust In-Process Computer Vision (`phonecam-media::face_detect`)**:
+  - Implemented entirely from scratch in native Rust without external machine learning dependencies (no ONNX runtime, libtorch, or Python wrappers).
+  - Operates on premultiplied BGRA buffers with zero dynamic heap allocations on the 60 FPS hot path, utilizing pre-allocated static scratch buffers (`MAX_GRID_W = 160`, `MAX_GRID_H = 120`, `MAX_GRID_CELLS = 19200`).
+- **Skin Chrominance & Geometric Verification Pipeline**:
+  1. **Color Segmentation**: Downscales the active frame into an internal grid, converting RGB pixels into normalized YCbCr space to evaluate human skin chrominance loci.
+  2. **Connected Component Clustering**: Floods contiguous skin pixels into candidate bounding boxes (`CandidateRegion`).
+  3. **Facial Geometry Filtering**: Discards non-face regions using aspect ratio thresholds ($0.65 \le \text{width}/\text{height} \le 1.35$) and minimum area criteria.
+  4. **Haar-Like Contrast Verification**: Computes luma contrast between upper eye-line regions and cheek zones, verifying facial feature polarity before confirming detection.
+- **Cinematic Pan-Tilt-Zoom (PTZ) Smoothing**:
+  - **Deadband Hysteresis**: A $1.5\%$ spatial deadband window is enforced around the current target center coordinate $(X_c, Y_c) \in [0.15, 0.85]$. Micro-movements from breathing or slight head shifts do not trigger panning adjustments, preventing jittery motion.
+  - **Temporal Exponential Moving Average**:
     $$\vec{C}_{t} = \vec{C}_{t-1} + (\vec{T}_{t} - \vec{C}_{t-1}) \cdot \alpha$$
-    where default smoothing factor $\alpha = 0.12$ and default zoom factor is $1.20\times$ (user-configurable between $1.0\times$ and $2.5\times$).
-  - Clamping prevents the crop window from exceeding frame boundaries under rapid subject movement.
+    where default smoothing factor $\alpha = 0.12$ and user-configurable zoom spans $1.0\times$ to $2.5\times$.
+  - **Aspect-Ratio Preserving Crop**: Computes `CropRect { x, y, width, height }` maintaining the source aspect ratio with even-pixel boundary alignment (`& !1`) to preserve color sub-sampling fidelity.
+- **Tracking Lock / Pause State**:
+  - Toggling tracking lock freezes the current PTZ crop in place immediately. Presenters can step away to write on a whiteboard without the camera chasing them across the room.
+  - Triggerable via the ✋ Open Palm hand gesture or the UI lock toggle.
 - **Toggle Control**:
-  - Controlled via dedicated on/off toggle switch in the desktop UI Capture tab (`SideEffect::SetAutoFraming(bool)`). State is persisted to `desktop-settings.json`.
+  - Controlled via dedicated on/off toggle switch in the desktop UI Capture tab (`SideEffect::SetAutoFraming(bool)`). State is persisted to `%APPDATA%\PhoneCam\desktop-settings.json`.
 
 ---
 
-### 2.2 Low-Latency Audio Streaming
+### 2.2 OBSBOT-Style Hand Gesture Recognition (Touchless PTZ Controls)
 
-PhoneCam Pro streams crystal-clear audio from the Android smartphone's onboard microphone array directly to your PC, eliminating the need for an external USB desk microphone.
+PhoneCam Pro introduces real-time touchless hand gesture recognition (`phonecam-media::gesture`), enabling full camera tracking and zoom management from across the room without touching your phone or keyboard.
 
-- **Protocol Transport**:
-  - Transmitted over the unified TCP stream using `ChannelRole::Audio = 3` alongside the video stream (`ChannelRole::Video = 1`) and control messaging (`ChannelRole::Control = 2`).
-  - Framing uses standard length-prefixed protocol packets, maintaining strict synchronization with video timestamps (`timestamp_us`).
-- **Audio Specifications**:
-  - Format: High-fidelity uncompressed 16-bit PCM or Opus, 48 kHz sampling rate, mono or stereo.
-  - Jitter buffering maintains end-to-end audio/video lip-sync under varying network conditions.
+- **High-Precision Zero-Allocation Detection**:
+  - Evaluates segmented hand regions against the presenter's detected face position to ensure the hand is actively presented.
+  - Computes horizontal projection histograms `proj_x`, finger peak prominence, valley depth thresholds, and palm base solidity ratios with zero allocations during active streaming.
+- **Debounce Filter & Refractory Cooldown**:
+  - **Debounce**: A candidate gesture must persist across multiple consecutive frames (default: 4 frames) before generating a confirmed trigger, eliminating spurious noise triggers.
+  - **Cooldown**: Following a trigger, a refractory cooldown period (default: 30 frames / 0.5s) is enforced to prevent double-activation.
+- **Supported Hand Gesture Repertoire**:
+  | Gesture | Icon | Action Trigger | Behavior & Mathematical Trigger |
+  | :--- | :---: | :--- | :--- |
+  | **Open Palm** | ✋ | **Lock / Unlock Tracking** | Toggles `tracking_locked`. Freezes or resumes face tracking in place. |
+  | **Peace / V-Sign** | ✌ | **Toggle Zoom (1.0x $\leftrightarrow$ 2.0x)** | Dual-finger peak detection with deep central valley. Smoothly toggles zoom between 1.0x and 2.0x. |
+  | **Pointing Up (Index)** | ☝ | **Medium Zoom (1.5x)** | Single vertical finger peak. Smoothly interpolates zoom to 1.5x presentation scale. |
+  | **Shaka / Call** | 🤙 | **Reset Framing & Zoom** | Wide lateral peaks (thumb + pinky extended, center valley). Resets center to `(0.50, 0.50)` and zoom to 1.0x. |
+  | **Pinch / OK** | 🤏 | **Macro Focus / 2.2x Zoom** | Circular contour with index and thumb tips meeting. Sets zoom to 2.2x close-up macro scale. |
+  | **Thumbs Up** | 👍 | **Confirm / Toggle Zoom** | Vertical thumb with folded fingers. Serves as quick confirm or alternate zoom toggle. |
+- **Real-Time On-Screen HUD Gesture Chips**:
+  - When a gesture is confirmed, the GPUI preview stage renders a prominent, translucent HUD chip overlay directly on the video feed (e.g., `✋ Tracking Locked`, `✌ V-Sign: Zoom 2.0x`, `🤙 Shaka: Framing & Zoom Reset`, `☝ Index: 1.5x Zoom`, `🤏 Pinch: 2.2x Macro`).
+- **Interactive Guide & Customization Card**:
+  - Embedded in Capture and Preferences panels, providing visual illustrated reference cards, detailed instructions on how to hold each gesture, and a master on/off toggle (`SideEffect::SetGestureRecognition(bool)`).
+
+---
+
+### 2.3 Low-Latency Audio Streaming & 16-Segment LED VU Meter
+
+PhoneCam Pro streams studio-quality audio directly from your smartphone's onboard microphone array to your PC, turning your phone into an ultra-low latency wireless or USB studio microphone.
+
+- **Protocol Transport & Synchronization**:
+  - Transmitted over the unified TCP stream using `ChannelRole::Audio = 3` alongside video (`ChannelRole::Video = 1`) and control messaging (`ChannelRole::Control = 2`).
+  - Framing uses standard length-prefixed protocol packets, maintaining microsecond-accurate timestamp alignment (`timestamp_us`) with video frames to eliminate lip-sync drift.
+- **Audio Capture Specifications**:
+  - Format: Uncompressed 16-bit linear PCM recorded directly via Android `AudioRecord`.
+  - Sampling Rate: 48,000 Hz primary (with 16,000 Hz fallback).
+  - Chunk Size: 2,048-byte chunks (~21.3 ms duration) minimizing latency while avoiding buffer underruns.
+- **16-Segment Broadcast-Grade LED VU Meter**:
+  - The desktop UI features a real-time 16-segment dynamic LED audio VU level meter embedded in the Capture and Diagnostics panels.
+  - Dynamically calculates root-mean-square (RMS) energy and decibel levels (dBFS) relative to digital full scale:
+    - **10 Green LEDs (Segments 0–9)**: Safe nominal voice range ($-60\text{ dBFS}$ to $-12\text{ dBFS}$).
+    - **4 Amber LEDs (Segments 10–13)**: Broadcast headroom warning ($-12\text{ dBFS}$ to $-3\text{ dBFS}$).
+    - **2 Red LEDs (Segments 14–15)**: Digital clipping indicator ($> -3\text{ dBFS}$).
+  - Live numeric readouts display instant decibel values and active audio channel state.
 - **Desktop Routing**:
-  - Audio packets are fed into a low-latency ring buffer connected to Windows WASAPI / DirectSound audio rendering or a virtual audio cable for consumption in OBS, Zoom, or Discord.
+  - Audio packets feed into a low-latency ring buffer connected to Windows WASAPI / DirectSound audio rendering or virtual audio cables for consumption in OBS, Zoom, or Discord.
 - **Toggle Control**:
-  - Toggled via the "Stream Audio" switch under Capture and Setup tabs (`SideEffect::SetAudioStream(bool)`).
+  - Toggled via the dedicated "Stream Audio" switch under Capture and Setup tabs (`SideEffect::SetStreamAudio(bool)`).
 
 ---
 
-### 2.3 Portrait Bokeh Blur (Background Blur)
+### 2.4 Unlocked 60 FPS Camera2 & Robust Anti-Flicker
+
+PhoneCam Pro completely unlocks high-framerate 60 FPS streaming on modern Android devices and provides robust mains frequency anti-flicker protection:
+
+- **Unlocked 60 FPS AE Target Range Negotiation**:
+  - Standard Android Camera2 captures frequently default to 30 FPS even when the sensor and encoder support 60 FPS.
+  - PhoneCam inspects `CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` to find ranges with `upper == 60` (such as `[60, 60]` or `[30, 60]`).
+  - Sets `CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE` on repeating requests and sets both `MediaFormat.KEY_FRAME_RATE = 60` and `MediaFormat.KEY_CAPTURE_RATE = 60` on the hardware `MediaCodec` encoder.
+- **Mains Frequency Anti-Flicker (Anti-Banding)**:
+  - Dynamically inspects `CONTROL_AE_AVAILABLE_ANTIBANDING_MODES` and allows user selection between `Auto`, `50Hz` (Europe, Asia, Australia), `60Hz` (Americas, Japan), and `Off`.
+  - Prevents rolling horizontal light hum and dark bands caused by cyclical alternating-current room lighting.
+  - Seamlessly re-asserts antibanding configuration across physical lens switching or stream reconnects without tearing down the capture session.
+
+---
+
+### 2.5 Dynamic Resolution Capabilities
+
+Rather than hardcoding a static list of resolutions, PhoneCam Pro implements dynamic sensor capability discovery:
+
+- **Dynamic Capability Probing**:
+  - Android client queries `CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP` across `MediaRecorder`, `Surface`, and `CodecCapabilities`.
+  - Determines actual maximum video width, height, and FPS supported by the active camera sensor and hardware encoder (including 4K `3840x2160` @ 30 FPS, 1080p `1920x1080` @ 60 FPS, 720p @ 60 FPS, etc.).
+- **Dynamic UI Preset Cards & Chips**:
+  - The desktop companion formats supported resolutions into clean preset cards with aspect ratio badges and resolution detail chips (`res_detail`), adapting dynamically to each smartphone's physical capabilities.
+
+---
+
+### 2.6 Dedicated On/Off Toggles for All Pro Features
+
+Every advanced pro feature is modular and independent:
+
+- **Dedicated Switches**:
+  - Auto-Framing (Face Tracking) Toggle
+  - OBSBOT Hand Gesture Recognition Toggle
+  - Microphone Audio Streaming Toggle
+  - Portrait Bokeh Background Blur Toggle (+ Intensity presets & blend slider)
+  - Studio Color LUT Presets (+ None/Off bypass option)
+  - Pure-Black OLED Ambient Mode Selector
+- **Persistent Storage**:
+  - All user configurations are automatically saved to `%APPDATA%\PhoneCam\desktop-settings.json` and restored on application launch.
+
+---
+
+### 2.7 Portrait Bokeh Blur (Background Blur)
 
 The **Portrait Bokeh Blur** engine applies an artistic, shallow depth-of-field effect directly to the live webcam feed, softening distracting room backgrounds while keeping the presenter in crisp focus.
 
@@ -123,7 +212,7 @@ The **Portrait Bokeh Blur** engine applies an artistic, shallow depth-of-field e
 
 ---
 
-### 2.4 Studio Color LUT Presets
+### 2.8 Studio Color LUT Presets
 
 PhoneCam Pro includes 5 studio-tuned color grading Look-Up Table (LUT) presets applied directly to premultiplied BGRA buffers with zero dynamic memory allocation.
 
@@ -142,7 +231,7 @@ PhoneCam Pro includes 5 studio-tuned color grading Look-Up Table (LUT) presets a
 
 ---
 
-### 2.5 Pure-Black OLED Ambient Display Mode
+### 2.9 Pure-Black OLED Ambient Display Mode
 
 Streaming for hours with a phone screen turned on at full brightness leads to excessive thermal buildup, rapid battery depletion, and annoying screen glare reflecting off the user's face or monitors.
 
@@ -165,7 +254,7 @@ PhoneCam Pro introduces the **Pure-Black OLED Ambient Display Mode**:
 
 ---
 
-### 2.6 Multi-Lens Optical Camera Switching
+### 2.10 Multi-Lens Optical Camera Switching
 
 Modern Android phones feature advanced multi-camera arrays (Ultra-Wide, Wide, Telephoto, Front). PhoneCam Pro allows switching between these physical lenses on the fly without interrupting the active stream or disconnecting the virtual camera.
 
@@ -182,7 +271,7 @@ Modern Android phones feature advanced multi-camera arrays (Ultra-Wide, Wide, Te
 
 ---
 
-### 2.7 Pro Manual Camera Controls
+### 2.11 Pro Manual Camera Controls
 
 Take complete control over sensor exposure, color temperature, and focal plane with manual camera adjustments:
 
@@ -200,7 +289,7 @@ Take complete control over sensor exposure, color temperature, and focal plane w
 
 ---
 
-### 2.8 USB Auto-Connect & Background ADB Supervisor
+### 2.12 USB Auto-Connect & Background ADB Supervisor
 
 PhoneCam Pro makes tethered streaming frictionless:
 
@@ -242,7 +331,7 @@ The test suite and development scripts utilize standard environment variables fo
 
 | Environment Variable | Description | Default Fallback Behavior |
 | :--- | :--- | :--- |
-| `ANDROID_SERIAL` | Target Android device serial number (e.g. `export ANDROID_SERIAL=12345678`) | Auto-detects via `adb get-serialno` or first device in `adb devices`; skips gracefully if no device is connected. |
+| `ANDROID_SERIAL` | Target Android device serial number (e.g. `export ANDROID_SERIAL="your_device_serial"`) | Auto-detects via `adb get-serialno` or first device in `adb devices`; skips gracefully if no device is connected. |
 | `PHONECAM_ADB_PATH` | Path to the Android Debug Bridge executable | Checks `PATH` for `adb`, then falls back to relative `dist/unpacked/adb.exe`. |
 | `PHONECAM_ARTIFACT_DIR` | Destination directory for test screenshots and captured video frames | Defaults to `%TEMP%\phonecam-artifacts` (or `/tmp/phonecam-artifacts`). |
 | `PHONECAM_PORT` | Custom TCP/UDP service port for desktop listener | Defaults to `48721` (TCP) and `48720` (UDP). |

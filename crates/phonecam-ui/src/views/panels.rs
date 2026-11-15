@@ -859,7 +859,7 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
                 .into_element(),
             Toggle::new("OBSBOT Hand Gestures", state.settings.hand_gestures)
                 .detail(Some(if state.settings.hand_gestures {
-                    "✋ Lock • ✌ Zoom"
+                    "✋ Lock • ✌ Zoom • 🤙 Reset"
                 } else {
                     "Disabled"
                 }))
@@ -1313,6 +1313,343 @@ pub fn audio_vu_meter(audio_level: f32, audio_enabled: bool) -> AnyElement {
         meter = meter.child(div().flex_1().h_full().rounded(px(1.0)).bg(seg_color));
     }
     meter.into_any_element()
+}
+
+/// A dedicated visual reference guide & customization card for OBSBOT-style
+/// hand gesture controls in Capture and Preferences panels.
+pub fn hand_gesture_guide_card(state: &AppState) -> AnyElement {
+    let gestures_enabled = state.settings.hand_gestures;
+
+    // Active status detection
+    let active_status_chip = if gestures_enabled {
+        if let Some(gesture) = state.active_gesture {
+            match gesture {
+                phonecam_media::HandGesture::OpenPalm => chip("✋ Open Palm Detected", Tone::Ok),
+                phonecam_media::HandGesture::PeaceV => chip("✌ V-Sign Detected", Tone::Ok),
+                phonecam_media::HandGesture::IndexPoint => chip("☝ Pointing Up Detected", Tone::Ok),
+                phonecam_media::HandGesture::ShakaCall => chip("🤙 Shaka Detected", Tone::Ok),
+                phonecam_media::HandGesture::PinchOk => chip("🤏 Pinch/OK Detected", Tone::Ok),
+                phonecam_media::HandGesture::ThumbsUp => chip("👍 Thumbs Up Detected", Tone::Ok),
+                phonecam_media::HandGesture::None => chip("Active (6 Gestures)", Tone::Ok),
+            }
+        } else {
+            chip("Active (6 Gestures)", Tone::Ok)
+        }
+    } else {
+        chip("Disabled", Tone::Neutral)
+    };
+
+    // Header with title and status badge
+    let header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(Space::MD))
+        .w_full()
+        .min_w(px(0.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .min_w(px(0.0))
+                .flex_1()
+                .child(
+                    div()
+                        .font_family(Fonts::DISPLAY)
+                        .text_size(px(Type::TITLE))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(Text::HEADING)
+                        .child("Hand Gesture Controls Guide & Customization"),
+                )
+                .child(
+                    div()
+                        .font_family(Fonts::SANS)
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(Text::MUTED)
+                        .child("Pure Rust CV detection at 60 FPS • Zero cloud dependencies"),
+                ),
+        )
+        .child(div().flex_shrink_0().child(active_status_chip));
+
+    // Master Toggle Control
+    let master_toggle = Toggle::new("OBSBOT Hand Gestures", gestures_enabled)
+        .detail(Some(if gestures_enabled {
+            "✋ Lock • ✌ Zoom • ☝ 1.5x • 🤙 Reset • 🤏 Macro"
+        } else {
+            "Turn on to enable hands-free camera controls"
+        }))
+        .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetHandGestures(enabled)))
+        .into_element();
+
+    // Auto-framing companion toggle
+    let auto_framing_toggle =
+        Toggle::new("Auto-Framing Face Tracking", state.settings.auto_framing)
+            .detail(Some(if state.settings.auto_framing {
+                if state.tracking_locked {
+                    "Tracking Paused (✋ Open Palm to unlock)"
+                } else {
+                    "PTZ Tracking Active (✋ to lock)"
+                }
+            } else {
+                "Off (Open Palm toggles tracking)"
+            }))
+            .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetAutoFraming(enabled)))
+            .into_element();
+
+    // Explanation prose
+    let explanation = div()
+        .w_full()
+        .min_w(px(0.0))
+        .font_family(Fonts::SANS)
+        .text_size(px(Type::XS))
+        .text_color(Text::BODY)
+        .child(
+            "Control camera PTZ tracking, framing, and zoom hands-free using natural hand gestures. Hold your hand clearly in front of the camera for ~0.3 seconds to activate.",
+        );
+
+    // Visual reference cards for each of the 6 gestures
+    struct GestureInfo {
+        icon: &'static str,
+        name: &'static str,
+        action: &'static str,
+        how_to: &'static str,
+        camera_effect: &'static str,
+        gesture: phonecam_media::HandGesture,
+    }
+
+    let gesture_catalog = [
+        GestureInfo {
+            icon: "✋",
+            name: "Open Palm",
+            action: "Lock / Unlock Tracking",
+            how_to: "Hold an open palm facing camera with all 5 fingers spread.",
+            camera_effect: "Pauses or resumes AI face tracking. When locked, camera framing stays frozen in place even if you move.",
+            gesture: phonecam_media::HandGesture::OpenPalm,
+        },
+        GestureInfo {
+            icon: "✌",
+            name: "Peace / V-Sign",
+            action: "Toggle Zoom (1.0x <-> 2.0x)",
+            how_to: "Extend index and middle fingers in a V-sign with other fingers folded in.",
+            camera_effect: "Smoothly switches digital zoom between 1.0x wide-angle and 2.0x zoomed punch-in.",
+            gesture: phonecam_media::HandGesture::PeaceV,
+        },
+        GestureInfo {
+            icon: "☝",
+            name: "Pointing Up",
+            action: "1.5x Medium Zoom",
+            how_to: "Point index finger straight up with thumb and other fingers folded.",
+            camera_effect: "Punches in to 1.5x medium focal framing, centered on the subject.",
+            gesture: phonecam_media::HandGesture::IndexPoint,
+        },
+        GestureInfo {
+            icon: "🤙",
+            name: "Shaka / Call",
+            action: "Reset Framing & Zoom (1.0x Center)",
+            how_to: "Extend thumb and pinky outward with middle 3 fingers curled in.",
+            camera_effect: "Instantly resets all digital zoom to 1.0x and recenters framing back to default camera center.",
+            gesture: phonecam_media::HandGesture::ShakaCall,
+        },
+        GestureInfo {
+            icon: "🤏",
+            name: "Pinch / OK",
+            action: "2.2x Close-Up Macro Focus",
+            how_to: "Touch thumb and index fingertips together forming a circular ring.",
+            camera_effect: "Enters 2.2x close-up macro focal target mode, ideal for showing notes, cards, or fine objects.",
+            gesture: phonecam_media::HandGesture::PinchOk,
+        },
+        GestureInfo {
+            icon: "👍",
+            name: "Thumbs Up",
+            action: "Confirm / Toggle Zoom",
+            how_to: "Point thumb upward with closed fist facing camera.",
+            camera_effect: "Quick affirmative gesture trigger; toggles zoom between 1.0x and 2.0x.",
+            gesture: phonecam_media::HandGesture::ThumbsUp,
+        },
+    ];
+
+    let gesture_cards = gesture_catalog.iter().map(|item| {
+        let is_detected = gestures_enabled && state.active_gesture == Some(item.gesture);
+
+        let border_color = if is_detected {
+            Tone::Ok.border()
+        } else {
+            SHELL.border.alpha(0.4)
+        };
+
+        let bg_color = if is_detected {
+            Tone::Ok.fill()
+        } else {
+            SHELL.recessed
+        };
+
+        div()
+            .w_full()
+            .min_w(px(0.0))
+            .flex()
+            .flex_col()
+            .rounded(px(Radius::MD))
+            .border_1()
+            .border_color(border_color)
+            .bg(bg_color)
+            .p(px(Space::MD))
+            .gap(px(Space::XS))
+            // Row 1: Icon + Name + Action + Status Chip
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .gap(px(Space::SM))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(Space::SM))
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(px(Type::TITLE))
+                                    .child(item.icon),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .child(
+                                        div()
+                                            .font_family(Fonts::SANS)
+                                            .text_size(px(Type::TWO_SM))
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(Text::HEADING)
+                                            .child(item.name),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(Fonts::SANS)
+                                            .text_size(px(Type::TWO_XS))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(Accent::DEFAULT)
+                                            .child(item.action),
+                                    ),
+                            ),
+                    )
+                    .child(div().flex_shrink_0().child(if is_detected {
+                        chip("DETECTED", Tone::Ok)
+                    } else if gestures_enabled {
+                        chip("READY", Tone::Neutral)
+                    } else {
+                        chip("OFF", Tone::Neutral)
+                    })),
+            )
+            // Row 2: How to perform explanation
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .gap(px(Space::XS))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(Text::MUTED)
+                            .child("How to perform:"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .text_color(Text::BODY)
+                            .child(item.how_to),
+                    ),
+            )
+            // Row 3: Camera action effect
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .gap(px(Space::XS))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(Text::MUTED)
+                            .child("Action:"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .text_color(Text::MUTED)
+                            .child(item.camera_effect),
+                    ),
+            )
+            .into_any_element()
+    });
+
+    // Entire Card Wrapper
+    div()
+        .w_full()
+        .min_w(px(0.0))
+        .flex()
+        .flex_col()
+        .rounded(px(Radius::LG))
+        .border_1()
+        .border_color(SHELL.border.alpha(0.6))
+        .bg(SHELL.panel)
+        .p(px(Space::MD))
+        .gap(px(Space::MD))
+        .child(header)
+        .child(explanation)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(Space::XS))
+                .w_full()
+                .min_w(px(0.0))
+                .child(master_toggle)
+                .child(auto_framing_toggle),
+        )
+        .child(
+            div()
+                .font_family(Fonts::SANS)
+                .text_size(px(Type::TWO_XS))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(Text::BODY)
+                .child("SUPPORTED GESTURES REFERENCE (6)"),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(Space::SM))
+                .w_full()
+                .min_w(px(0.0))
+                .children(gesture_cards),
+        )
+        .into_any_element()
 }
 
 /// What the phone captures.
@@ -2257,48 +2594,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         ),
     );
 
-    let hand_gestures_enabled = state.settings.hand_gestures;
-    let hand_gestures_element = crate::views::widgets::field(
-        "OBSBOT Hand Gestures",
-        Some(
-            if hand_gestures_enabled {
-                if let Some(gesture) = state.active_gesture {
-                    match gesture {
-                        phonecam_media::HandGesture::OpenPalm => "✋ Open Palm Detected",
-                        phonecam_media::HandGesture::PeaceV => "✌ V-Sign Detected",
-                        phonecam_media::HandGesture::ThumbsUp => "👍 Thumbs Up Detected",
-                        phonecam_media::HandGesture::None => "Active",
-                    }
-                } else {
-                    "Active"
-                }
-            } else {
-                "Off"
-            }
-            .into(),
-        ),
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(Space::XS))
-            .child(
-                Toggle::new("Hand Gesture Controls", hand_gestures_enabled)
-                    .detail(Some(if hand_gestures_enabled {
-                        "✋ Open Palm (Lock) • ✌ V-Sign (Zoom)"
-                    } else {
-                        "Disabled"
-                    }))
-                    .on_change(|enabled, _window, _cx| {
-                        push_effect(SideEffect::SetHandGestures(enabled))
-                    })
-                    .into_element(),
-            )
-            .into_any_element(),
-        Some(
-            "Hands-free camera controls: ✋ Open Palm toggles tracking lock, ✌ V-Sign toggles 2x zoom."
-                .into(),
-        ),
-    );
+    let hand_gestures_element = hand_gesture_guide_card(state);
 
     let audio_stream_enabled = state.settings.stream_audio;
     let audio_level = state.audio_level.clamp(0.0, 1.0);
@@ -3744,16 +4040,7 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
                 .on_change(|val, _window, _cx| push_effect(SideEffect::SetAutoFraming(val)))
                 .into_element(),
         )
-        .child(
-            Toggle::new("OBSBOT Hand Gestures", state.settings.hand_gestures)
-                .detail(Some(if state.settings.hand_gestures {
-                    "✋ Lock • ✌ Zoom"
-                } else {
-                    "Disabled"
-                }))
-                .on_change(|val, _window, _cx| push_effect(SideEffect::SetHandGestures(val)))
-                .into_element(),
-        )
+        .child(hand_gesture_guide_card(state))
         .child(
             Toggle::new("Stream Audio from Phone", state.settings.stream_audio)
                 .detail(Some(if state.settings.stream_audio {
@@ -4628,5 +4915,35 @@ mod tests {
         let _el = capture_panel(&state);
         let _diag = diagnostics_panel(&state);
         let _pref = preferences_panel(&state);
+    }
+
+    #[test]
+    fn hand_gesture_guide_card_renders_all_states_and_gestures() {
+        let mut state = AppState::default();
+        state.settings.hand_gestures = true;
+        state.settings.auto_framing = true;
+        state.tracking_locked = true;
+
+        // Test with no active gesture
+        state.active_gesture = None;
+        let _guide_none = hand_gesture_guide_card(&state);
+
+        // Test with all 6 active gestures
+        let gestures = [
+            phonecam_media::HandGesture::OpenPalm,
+            phonecam_media::HandGesture::PeaceV,
+            phonecam_media::HandGesture::IndexPoint,
+            phonecam_media::HandGesture::ShakaCall,
+            phonecam_media::HandGesture::PinchOk,
+            phonecam_media::HandGesture::ThumbsUp,
+        ];
+        for g in gestures {
+            state.active_gesture = Some(g);
+            let _guide_active = hand_gesture_guide_card(&state);
+        }
+
+        // Test with gestures disabled
+        state.settings.hand_gestures = false;
+        let _guide_disabled = hand_gesture_guide_card(&state);
     }
 }

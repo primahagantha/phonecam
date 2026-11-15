@@ -396,8 +396,21 @@ impl AutoFramingTracker {
         }
     }
 
-    /// Handles a detected hand gesture event, toggling tracking lock on Open Palm
-    /// or toggling zoom on Peace/V-Sign or Thumbs Up.
+    /// Resets framing target to uncropped center (0.50, 0.50) and zoom to 1.0x.
+    pub fn reset_framing(&mut self) {
+        self.target_center_x = 0.50;
+        self.target_center_y = 0.50;
+        self.set_zoom(1.0);
+        self.tracking_locked = false;
+    }
+
+    /// Handles a detected hand gesture event:
+    /// - OpenPalm: toggles tracking lock/pause.
+    /// - PeaceV: toggles zoom level between 1.0x and 2.0x.
+    /// - IndexPoint: sets zoom to 1.5x medium zoom.
+    /// - ShakaCall: resets framing and zoom to 1.0x uncropped center.
+    /// - PinchOk: sets zoom to 2.2x macro close-up.
+    /// - ThumbsUp: confirms or toggles zoom between 1.0x and 2.0x.
     ///
     /// Returns an optional action description string for UI feedback.
     pub fn handle_gesture(&mut self, event: &crate::gesture::GestureEvent) -> Option<&'static str> {
@@ -413,9 +426,25 @@ impl AutoFramingTracker {
                     Some("Tracking Unlocked")
                 }
             }
-            crate::gesture::HandGesture::PeaceV | crate::gesture::HandGesture::ThumbsUp => {
+            crate::gesture::HandGesture::PeaceV => {
                 self.toggle_zoom(1.0, 2.0);
-                Some("Zoom Toggled")
+                Some("Zoom Toggled (1.0x / 2.0x)")
+            }
+            crate::gesture::HandGesture::IndexPoint => {
+                self.set_zoom(1.5);
+                Some("☝ Index: 1.5x Zoom")
+            }
+            crate::gesture::HandGesture::ShakaCall => {
+                self.reset_framing();
+                Some("🤙 Shaka: Framing & Zoom Reset")
+            }
+            crate::gesture::HandGesture::PinchOk => {
+                self.set_zoom(2.2);
+                Some("🤏 Pinch: 2.2x Macro")
+            }
+            crate::gesture::HandGesture::ThumbsUp => {
+                self.toggle_zoom(1.0, 2.0);
+                Some("👍 Thumbs Up: Confirmed")
             }
             crate::gesture::HandGesture::None => None,
         }
@@ -687,7 +716,60 @@ mod tests {
             triggered: true,
         };
         let zoom_res = tracker.handle_gesture(&peace_event);
-        assert_eq!(zoom_res, Some("Zoom Toggled"));
+        assert_eq!(zoom_res, Some("Zoom Toggled (1.0x / 2.0x)"));
+        assert_eq!(tracker.target_zoom, 2.0);
+
+        // Trigger Index Point gesture -> sets zoom to 1.5x
+        let index_event = crate::gesture::GestureEvent {
+            gesture: crate::gesture::HandGesture::IndexPoint,
+            confidence: 0.9,
+            center_x: 0.5,
+            center_y: 0.5,
+            triggered: true,
+        };
+        let idx_res = tracker.handle_gesture(&index_event);
+        assert_eq!(idx_res, Some("☝ Index: 1.5x Zoom"));
+        assert_eq!(tracker.target_zoom, 1.5);
+
+        // Trigger Pinch / OK gesture -> sets zoom to 2.2x macro
+        let pinch_event = crate::gesture::GestureEvent {
+            gesture: crate::gesture::HandGesture::PinchOk,
+            confidence: 0.9,
+            center_x: 0.5,
+            center_y: 0.5,
+            triggered: true,
+        };
+        let pinch_res = tracker.handle_gesture(&pinch_event);
+        assert_eq!(pinch_res, Some("🤏 Pinch: 2.2x Macro"));
+        assert_eq!(tracker.target_zoom, 2.2);
+
+        // Offset target and lock tracking, then trigger Shaka -> resets to center 1.0x and unlocks
+        tracker.set_target(0.80, 0.70);
+        tracker.set_tracking_locked(true);
+        let shaka_event = crate::gesture::GestureEvent {
+            gesture: crate::gesture::HandGesture::ShakaCall,
+            confidence: 0.9,
+            center_x: 0.5,
+            center_y: 0.5,
+            triggered: true,
+        };
+        let shaka_res = tracker.handle_gesture(&shaka_event);
+        assert_eq!(shaka_res, Some("🤙 Shaka: Framing & Zoom Reset"));
+        assert_eq!(tracker.target_center_x, 0.50);
+        assert_eq!(tracker.target_center_y, 0.50);
+        assert_eq!(tracker.target_zoom, 1.0);
+        assert!(!tracker.is_tracking_locked());
+
+        // Trigger Thumbs Up -> confirms / toggles zoom
+        let thumbs_event = crate::gesture::GestureEvent {
+            gesture: crate::gesture::HandGesture::ThumbsUp,
+            confidence: 0.9,
+            center_x: 0.5,
+            center_y: 0.5,
+            triggered: true,
+        };
+        let thumb_res = tracker.handle_gesture(&thumbs_event);
+        assert_eq!(thumb_res, Some("👍 Thumbs Up: Confirmed"));
         assert_eq!(tracker.target_zoom, 2.0);
 
         // Untriggered event should do nothing

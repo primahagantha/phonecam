@@ -1,8 +1,12 @@
 //! Real-time OBSBOT-style Hand Gesture Recognition in pure Rust.
 //!
 //! Recognizes:
-//! - Open Palm gesture (✋): Toggles tracking lock/unlock.
-//! - Peace / V-Sign gesture (✌) and Thumbs Up (👍): Toggles zoom level (e.g. 1.0x <-> 2.0x).
+//! - Open Palm gesture (✋): Toggles tracking lock/pause.
+//! - Peace / V-Sign gesture (✌): Toggles zoom level (1.0x <-> 2.0x).
+//! - Single Index Pointing Up (☝): Sets zoom to 1.5x medium zoom.
+//! - Shaka / Hang Loose (🤙): Resets framing to center (0.50, 0.50) and zoom to 1.0x.
+//! - Pinch / OK Sign (🤏): Sets zoom to 2.2x close-up macro focal target.
+//! - Thumbs Up gesture (👍): Quick confirm / toggles zoom.
 //!
 //! Guarantees zero heap allocations on the 60 FPS hot path.
 
@@ -17,9 +21,15 @@ pub enum HandGesture {
     None,
     /// Open Palm gesture (✋) - toggles target tracking lock / unlock.
     OpenPalm,
-    /// Peace / V-Sign gesture (✌) - toggles zoom level (e.g. 1.0x <-> 2.0x).
+    /// Peace / V-Sign gesture (✌) - toggles zoom level (1.0x <-> 2.0x).
     PeaceV,
-    /// Thumbs Up gesture (👍) - alternative zoom or confirmation trigger.
+    /// Single index finger pointing up (☝) - sets zoom to 1.5x.
+    IndexPoint,
+    /// Shaka / Hang Loose gesture (🤙) - resets framing to center (0.50, 0.50) and zoom to 1.0x.
+    ShakaCall,
+    /// Pinch / OK sign (🤏) - sets zoom to 2.2x macro close-up.
+    PinchOk,
+    /// Thumbs Up gesture (👍) - quick confirm / toggles zoom.
     ThumbsUp,
 }
 
@@ -29,6 +39,9 @@ impl HandGesture {
             Self::None => "None",
             Self::OpenPalm => "Open Palm (✋)",
             Self::PeaceV => "Peace / V-Sign (✌)",
+            Self::IndexPoint => "Pointing Up (☝)",
+            Self::ShakaCall => "Shaka / Call (🤙)",
+            Self::PinchOk => "Pinch / OK (🤏)",
             Self::ThumbsUp => "Thumbs Up (👍)",
         }
     }
@@ -77,6 +90,10 @@ pub struct GestureDetector {
     queue: Vec<usize>,
     candidates: Vec<HandCandidate>,
     proj_x: [u16; MAX_GRID_W],
+    first_skin_x: [usize; MAX_GRID_H],
+    last_skin_x: [usize; MAX_GRID_H],
+    first_skin_y: [usize; MAX_GRID_W],
+    last_skin_y: [usize; MAX_GRID_W],
 
     pub debounce_frames: usize,
     pub cooldown_frames: usize,
@@ -102,6 +119,10 @@ impl GestureDetector {
             queue: Vec::with_capacity(MAX_GRID_CELLS),
             candidates: Vec::with_capacity(32),
             proj_x: [0u16; MAX_GRID_W],
+            first_skin_x: [0usize; MAX_GRID_H],
+            last_skin_x: [0usize; MAX_GRID_H],
+            first_skin_y: [0usize; MAX_GRID_W],
+            last_skin_y: [0usize; MAX_GRID_W],
 
             debounce_frames: 3,
             cooldown_frames: 45, // ~0.75 - 1.5 seconds at 30-60 FPS
@@ -296,7 +317,7 @@ impl GestureDetector {
                     let aspect = bh as f32 / bw as f32;
                     let fill = pixel_count as f32 / (bw * bh) as f32;
 
-                    if (0.50..=3.50).contains(&aspect) && (0.15..=0.95).contains(&fill) {
+                    if (0.50..=4.00).contains(&aspect) && (0.12..=0.95).contains(&fill) {
                         self.candidates.push(HandCandidate {
                             min_gx,
                             max_gx,
@@ -309,7 +330,7 @@ impl GestureDetector {
             }
         }
 
-        // 4. Classify gesture candidates
+        // 4. Classify gesture candidates with high precision
         let mut best_gesture = HandGesture::None;
         let mut best_conf = 0.0f32;
         let mut best_cx = 0.5f32;
@@ -323,7 +344,7 @@ impl GestureDetector {
 
             let mid_gy = cand.min_gy + bh / 2;
 
-            // Vertical projection in the upper half (fingers zone)
+            // Compute upper and lower pixel counts and upper vertical projection
             self.proj_x[..bw].fill(0);
             let mut upper_pixels = 0u32;
             let mut lower_pixels = 0u32;
@@ -350,84 +371,276 @@ impl GestureDetector {
             } else {
                 0.0
             };
+            let upper_fill = if upper_h > 0.0 {
+                upper_pixels as f32 / (bw as f32 * upper_h)
+            } else {
+                0.0
+            };
 
-            // Count peaks in upper finger projection
-            let peak_threshold = (upper_h * 0.30).max(2.0) as u16;
-            let mut peaks = 0usize;
-            let mut in_peak = false;
-            let mut peak_start = 0usize;
-            let mut peak_positions = [0usize; 6];
+            // Detect topological hole (loop enclosed by skin pixels) for Pinch / OK
+            let bh_clamped = bh.min(MAX_GRID_H);
+            let bw_clamped = bw.min(MAX_GRID_W);
+            self.first_skin_x[..bh_clamped].fill(usize::MAX);
+            self.last_skin_x[..bh_clamped].fill(0);
+            self.first_skin_y[..bw_clamped].fill(usize::MAX);
+            self.last_skin_y[..bw_clamped].fill(0);
 
-            for x in 0..bw {
-                if self.proj_x[x] >= peak_threshold {
-                    if !in_peak {
-                        in_peak = true;
-                        peak_start = x;
+            for gy in cand.min_gy..=cand.max_gy {
+                let y_off = gy - cand.min_gy;
+                if y_off >= MAX_GRID_H {
+                    continue;
+                }
+                let row = gy * grid_w;
+                for gx in cand.min_gx..=cand.max_gx {
+                    let x_off = gx - cand.min_gx;
+                    if x_off >= MAX_GRID_W {
+                        continue;
                     }
-                } else if in_peak {
-                    in_peak = false;
-                    let peak_center = (peak_start + x - 1) / 2;
-                    if peaks < 6 {
-                        peak_positions[peaks] = peak_center;
-                        peaks += 1;
+                    if self.filtered_mask[row + gx] == 1 {
+                        if self.first_skin_x[y_off] == usize::MAX {
+                            self.first_skin_x[y_off] = x_off;
+                        }
+                        self.last_skin_x[y_off] = x_off;
+
+                        if self.first_skin_y[x_off] == usize::MAX {
+                            self.first_skin_y[x_off] = y_off;
+                        }
+                        self.last_skin_y[x_off] = y_off;
                     }
                 }
             }
-            if in_peak && peaks < 6 {
-                peak_positions[peaks] = (peak_start + bw - 1) / 2;
-                peaks += 1;
+
+            let mut enclosed_hole_cells = 0usize;
+            if bw >= 4 && bh >= 4 {
+                for gy in (cand.min_gy + 1)..cand.max_gy {
+                    let y_off = gy - cand.min_gy;
+                    if y_off >= MAX_GRID_H {
+                        continue;
+                    }
+                    let first_x = self.first_skin_x[y_off];
+                    let last_x = self.last_skin_x[y_off];
+                    if first_x == usize::MAX || first_x >= last_x {
+                        continue;
+                    }
+
+                    let row = gy * grid_w;
+                    for gx in (cand.min_gx + 1)..cand.max_gx {
+                        let x_off = gx - cand.min_gx;
+                        if x_off >= MAX_GRID_W {
+                            continue;
+                        }
+                        let first_y = self.first_skin_y[x_off];
+                        let last_y = self.last_skin_y[x_off];
+                        if first_y == usize::MAX || first_y >= last_y {
+                            continue;
+                        }
+
+                        if self.filtered_mask[row + gx] == 0
+                            && x_off > first_x
+                            && x_off < last_x
+                            && y_off > first_y
+                            && y_off < last_y
+                        {
+                            enclosed_hole_cells += 1;
+                        }
+                    }
+                }
+            }
+
+            // Extract finger peaks in upper half projection using valley-aware peak detection
+            let peak_threshold = (upper_h * 0.28).max(2.0) as u16;
+            let mut raw_peaks = [0usize; 8];
+            let mut raw_count = 0usize;
+
+            let mut seg_start = 0;
+            while seg_start < bw {
+                if self.proj_x[seg_start] >= peak_threshold {
+                    let mut p_val = self.proj_x[seg_start];
+                    let mut p_pos = seg_start;
+                    let mut k = seg_start + 1;
+                    // Ascend to local maximum
+                    while k < bw && self.proj_x[k] >= self.proj_x[k - 1] {
+                        p_val = self.proj_x[k];
+                        p_pos = k;
+                        k += 1;
+                    }
+                    // Descend to local minimum
+                    while k < bw
+                        && self.proj_x[k] >= peak_threshold
+                        && self.proj_x[k] <= self.proj_x[k - 1]
+                    {
+                        k += 1;
+                    }
+                    if raw_count < 8 && p_val >= peak_threshold {
+                        raw_peaks[raw_count] = p_pos;
+                        raw_count += 1;
+                    }
+                    seg_start = k;
+                } else {
+                    seg_start += 1;
+                }
+            }
+
+            // Filter/merge peaks by validating valley depth between them
+            let mut peaks = 0usize;
+            let mut peak_pos = [0usize; 8];
+            let mut peak_val = [0u16; 8];
+            let mut peak_w = [0usize; 8];
+
+            for p_idx in 0..raw_count {
+                let curr_pos = raw_peaks[p_idx];
+                let curr_val = self.proj_x[curr_pos];
+
+                if peaks == 0 {
+                    peak_pos[0] = curr_pos;
+                    peak_val[0] = curr_val;
+                    peaks = 1;
+                } else {
+                    let prev_pos = peak_pos[peaks - 1];
+                    let prev_val = peak_val[peaks - 1];
+
+                    // Measure minimum valley between prev_pos and curr_pos
+                    let mut min_valley = u16::MAX;
+                    for vx in prev_pos..=curr_pos {
+                        min_valley = min_valley.min(self.proj_x[vx]);
+                    }
+
+                    let min_peak = prev_val.min(curr_val);
+                    // A distinct finger peak requires a valley dip of at least 25%
+                    if (min_valley as f32) <= (min_peak as f32 * 0.75).max(min_peak as f32 - 2.0) {
+                        if peaks < 8 {
+                            peak_pos[peaks] = curr_pos;
+                            peak_val[peaks] = curr_val;
+                            peaks += 1;
+                        }
+                    } else if curr_val > prev_val {
+                        // Merge into higher peak
+                        peak_pos[peaks - 1] = curr_pos;
+                        peak_val[peaks - 1] = curr_val;
+                    }
+                }
+            }
+
+            // Compute peak widths
+            for p in 0..peaks {
+                let pos = peak_pos[p];
+                let half_val = peak_val[p] / 2;
+                let mut left = pos;
+                while left > 0 && self.proj_x[left] >= half_val {
+                    left -= 1;
+                }
+                let mut right = pos;
+                while right + 1 < bw && self.proj_x[right] >= half_val {
+                    right += 1;
+                }
+                peak_w[p] = right - left + 1;
             }
 
             let mut gesture = HandGesture::None;
             let mut confidence = 0.0f32;
 
-            // Pattern A: Open Palm (✋)
-            // Aspect ratio ~ 0.70 to 1.60, solid palm base, wide fingers spread
-            if (0.65..=1.65).contains(&aspect)
-                && (0.30..=0.85).contains(&fill)
+            // Classify with priority and precision:
+            //
+            // 1. Pinch / OK Sign (🤏)
+            // Presence of internal enclosed hole (circle loop) between thumb and index finger
+            if (enclosed_hole_cells >= 1 && (0.65..=2.30).contains(&aspect) && lower_fill >= 0.20)
+                || (enclosed_hole_cells >= 2 && (0.50..=2.80).contains(&aspect))
+            {
+                let hole_score = (enclosed_hole_cells as f32 / 4.0).clamp(0.4, 1.0);
+                let fill_score = (1.0 - ((fill - 0.50).abs() / 0.40)).clamp(0.2, 1.0);
+                confidence = (hole_score * 0.6 + fill_score * 0.4).clamp(0.0, 1.0);
+                gesture = HandGesture::PinchOk;
+            }
+            // 2. Open Palm (✋)
+            // Wide hand (aspect 0.65..1.65), solid palm base, at least 3 spread fingers
+            else if (0.65..=1.65).contains(&aspect)
+                && (0.28..=0.85).contains(&fill)
                 && lower_fill >= 0.35
-                && (peaks >= 3 || (upper_pixels as f32 / (bw as f32 * upper_h)) >= 0.35)
+                && peaks >= 3
             {
                 let aspect_score = 1.0 - ((aspect - 1.10).abs() / 0.7).min(1.0);
                 let fill_score = 1.0 - ((fill - 0.55).abs() / 0.35).min(1.0);
-                confidence = (aspect_score * 0.5 + fill_score * 0.5).clamp(0.0, 1.0);
+                let palm_score = lower_fill.min(1.0);
+                let finger_score = (upper_fill * 0.5 + (peaks as f32 / 5.0) * 0.5).clamp(0.0, 1.0);
+                confidence = (aspect_score * 0.30
+                    + fill_score * 0.30
+                    + palm_score * 0.20
+                    + finger_score * 0.20)
+                    .clamp(0.0, 1.0);
                 gesture = HandGesture::OpenPalm;
             }
-            // Pattern B: Peace / V-Sign (✌)
-            // Taller aspect ratio ~ 1.10 to 3.50, exactly two peaks in upper section with gap
+            // 3. Shaka / Hang Loose (🤙)
+            // Thumb and Pinky extended on opposite lateral edges, middle fingers folded
+            // Wide/square aspect 0.55..1.60, 2 peaks with one at left edge and one at right edge
+            else if (0.55..=1.65).contains(&aspect)
+                && lower_fill >= 0.28
+                && peaks == 2
+                && peak_pos[0] <= (bw * 35) / 100
+                && peak_pos[1] >= (bw * 65) / 100
+                && (peak_pos[1] - peak_pos[0]) >= (bw * 40) / 100
+            {
+                let min_peak = peak_val[0].min(peak_val[1]);
+                let mut min_valley = u16::MAX;
+                for vx in peak_pos[0]..=peak_pos[1] {
+                    min_valley = min_valley.min(self.proj_x[vx]);
+                }
+                // Middle fingers folded -> valley in center
+                if min_valley <= (min_peak * 3 / 4).max(1) {
+                    let span_score =
+                        ((peak_pos[1] - peak_pos[0]) as f32 / bw as f32).clamp(0.0, 1.0);
+                    let valley_score = 1.0 - (min_valley as f32 / min_peak.max(1) as f32);
+                    confidence = (span_score * 0.5 + valley_score * 0.5).clamp(0.0, 1.0);
+                    gesture = HandGesture::ShakaCall;
+                }
+            }
+            // 4. Peace / V-Sign (✌)
+            // Tall aspect ratio 1.05..3.50, exactly 2 peaks in upper section with gap and deep valley
             else if (1.05..=3.50).contains(&aspect)
                 && (0.15..=0.88).contains(&fill)
                 && lower_fill >= 0.25
                 && peaks == 2
-                && peak_positions[1] > peak_positions[0] + 1
+                && peak_pos[1] > peak_pos[0] + 1
             {
-                // Check valley between peaks
-                let p1 = peak_positions[0];
-                let p2 = peak_positions[1];
-                let mid_x = (p1 + p2) / 2;
-                let valley_val = self.proj_x[mid_x];
-                let p1_val = self.proj_x[p1];
-                let p2_val = self.proj_x[p2];
-                let min_peak = p1_val.min(p2_val);
+                let min_peak = peak_val[0].min(peak_val[1]);
+                let mut min_valley = u16::MAX;
+                for vx in peak_pos[0]..=peak_pos[1] {
+                    min_valley = min_valley.min(self.proj_x[vx]);
+                }
 
-                if valley_val <= (min_peak / 2).max(1) {
-                    let valley_score = 1.0 - (valley_val as f32 / min_peak.max(1) as f32);
+                if min_valley <= (min_peak / 2).max(1) {
+                    let valley_score = 1.0 - (min_valley as f32 / min_peak.max(1) as f32);
                     let aspect_score = (1.0 - ((aspect - 2.0).abs() / 2.0)).clamp(0.2, 1.0);
                     confidence = (valley_score * 0.6 + aspect_score * 0.4).clamp(0.0, 1.0);
                     gesture = HandGesture::PeaceV;
                 }
             }
-            // Pattern C: Thumbs Up (👍)
-            // Solid fist base, 1 single peak on lateral side in upper half
-            else if (0.80..=1.80).contains(&aspect)
-                && lower_fill >= 0.50
+            // 5. Thumbs Up (👍)
+            // Solid fist base, 1 single peak on lateral side in upper half, compact aspect
+            else if (0.70..=1.90).contains(&aspect)
+                && lower_fill >= 0.40
                 && peaks == 1
-                && (peak_positions[0] <= bw / 3 || peak_positions[0] >= (bw * 2) / 3)
+                && (peak_pos[0] <= (bw * 30) / 100 || peak_pos[0] >= (bw * 70) / 100)
             {
                 let aspect_score = 1.0 - ((aspect - 1.25).abs() / 0.6).min(1.0);
                 let fill_score = 1.0 - ((fill - 0.55).abs() / 0.30).min(1.0);
                 confidence = (aspect_score * 0.5 + fill_score * 0.5).clamp(0.0, 1.0);
                 gesture = HandGesture::ThumbsUp;
+            }
+            // 6. Pointing Up / Index Point (☝)
+            // Elongated tall aspect ratio 1.20..3.80, single central index finger peak, solid fist base
+            else if (1.20..=3.80).contains(&aspect)
+                && lower_fill >= 0.35
+                && peaks == 1
+                && peak_pos[0] > (bw * 25) / 100
+                && peak_pos[0] < (bw * 75) / 100
+                && peak_w[0] <= (bw * 65) / 100
+            {
+                let aspect_score = ((aspect - 1.20) / 1.5).clamp(0.3, 1.0);
+                let fill_score = lower_fill.clamp(0.3, 1.0);
+                let height_score = (peak_val[0] as f32 / upper_h.max(1.0)).clamp(0.3, 1.0);
+                confidence =
+                    (aspect_score * 0.4 + fill_score * 0.3 + height_score * 0.3).clamp(0.0, 1.0);
+                gesture = HandGesture::IndexPoint;
             }
 
             if gesture != HandGesture::None && confidence > best_conf {
@@ -438,7 +651,7 @@ impl GestureDetector {
             }
         }
 
-        // 5. Debouncing and rising-edge trigger logic
+        // 5. Debouncing and rising-edge trigger logic with refractory cooldown
         let mut triggered = false;
         if best_gesture != HandGesture::None && best_conf >= 0.30 {
             if best_gesture == self.current_candidate {
@@ -483,6 +696,29 @@ pub fn detect_gesture(
 mod tests {
     use super::*;
 
+    fn make_background(w: usize, h: usize) -> Vec<u8> {
+        let mut bgra = vec![0u8; w * h * 4];
+        for chunk in bgra.chunks_exact_mut(4) {
+            chunk[0] = 50;
+            chunk[1] = 50;
+            chunk[2] = 50;
+            chunk[3] = 255;
+        }
+        bgra
+    }
+
+    fn draw_skin_rect(bgra: &mut [u8], w: usize, x0: usize, x1: usize, y0: usize, y1: usize) {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let idx = (y * w + x) * 4;
+                bgra[idx] = 120; // B
+                bgra[idx + 1] = 150; // G
+                bgra[idx + 2] = 210; // R
+                bgra[idx + 3] = 255;
+            }
+        }
+    }
+
     #[test]
     fn gesture_detector_empty_frame_returns_default() {
         let mut detector = GestureDetector::new();
@@ -495,44 +731,17 @@ mod tests {
     fn gesture_detector_detects_open_palm() {
         let mut detector = GestureDetector::new();
         let (w, h) = (320, 240);
-        let mut bgra = vec![0u8; w * h * 4];
-        for chunk in bgra.chunks_exact_mut(4) {
-            chunk[0] = 50;
-            chunk[1] = 50;
-            chunk[2] = 50;
-            chunk[3] = 255;
-        }
+        let mut bgra = make_background(w, h);
 
         // Draw synthetic Open Palm:
         // Palm rectangle at x: [120..200], y: [130..190]
+        draw_skin_rect(&mut bgra, w, 120, 200, 130, 190);
         // Fingers: 4 vertical fingers at y: [70..130]
-        for y in 130..190 {
-            for x in 120..200 {
-                let idx = (y * w + x) * 4;
-                bgra[idx] = 120; // B
-                bgra[idx + 1] = 150; // G
-                bgra[idx + 2] = 210; // R
-                bgra[idx + 3] = 255;
-            }
-        }
-        for y in 70..130 {
-            for x in 120..200 {
-                // 4 fingers: x in [125..135], [145..155], [165..175], [185..195]
-                if (125..=135).contains(&x)
-                    || (145..=155).contains(&x)
-                    || (165..=175).contains(&x)
-                    || (185..=195).contains(&x)
-                {
-                    let idx = (y * w + x) * 4;
-                    bgra[idx] = 120;
-                    bgra[idx + 1] = 150;
-                    bgra[idx + 2] = 210;
-                    bgra[idx + 3] = 255;
-                }
-            }
-        }
+        draw_skin_rect(&mut bgra, w, 125, 135, 70, 130);
+        draw_skin_rect(&mut bgra, w, 145, 155, 70, 130);
+        draw_skin_rect(&mut bgra, w, 165, 175, 70, 130);
+        draw_skin_rect(&mut bgra, w, 185, 195, 70, 130);
 
-        // Feed frames to satisfy debouncer and catch the rising edge trigger
         let mut triggered_any = false;
         let mut last_event = GestureEvent::default();
         for _ in 0..5 {
@@ -544,47 +753,24 @@ mod tests {
 
         assert_eq!(last_event.gesture, HandGesture::OpenPalm);
         assert!(last_event.confidence >= 0.30);
-        assert!(triggered_any, "Gesture should be triggered after debounce");
+        assert!(
+            triggered_any,
+            "Open Palm should be triggered after debounce"
+        );
     }
 
     #[test]
     fn gesture_detector_detects_peace_v_sign() {
         let mut detector = GestureDetector::new();
         let (w, h) = (320, 240);
-        let mut bgra = vec![0u8; w * h * 4];
-        for chunk in bgra.chunks_exact_mut(4) {
-            chunk[0] = 50;
-            chunk[1] = 50;
-            chunk[2] = 50;
-            chunk[3] = 255;
-        }
+        let mut bgra = make_background(w, h);
 
         // Draw synthetic Peace/V-sign:
         // Fist/palm base at x: [140..180], y: [130..180]
+        draw_skin_rect(&mut bgra, w, 140, 180, 130, 180);
         // 2 fingers (Index and Middle) at y: [60..130]:
-        // Finger 1 at x: [142..154]
-        // Gap at x: [155..165]
-        // Finger 2 at x: [166..178]
-        for y in 130..180 {
-            for x in 140..180 {
-                let idx = (y * w + x) * 4;
-                bgra[idx] = 120;
-                bgra[idx + 1] = 150;
-                bgra[idx + 2] = 210;
-                bgra[idx + 3] = 255;
-            }
-        }
-        for y in 60..130 {
-            for x in 140..180 {
-                if (142..=154).contains(&x) || (166..=178).contains(&x) {
-                    let idx = (y * w + x) * 4;
-                    bgra[idx] = 120;
-                    bgra[idx + 1] = 150;
-                    bgra[idx + 2] = 210;
-                    bgra[idx + 3] = 255;
-                }
-            }
-        }
+        draw_skin_rect(&mut bgra, w, 142, 154, 60, 130);
+        draw_skin_rect(&mut bgra, w, 166, 178, 60, 130);
 
         let mut triggered_any = false;
         let mut last_event = GestureEvent::default();
@@ -601,6 +787,152 @@ mod tests {
             triggered_any,
             "Peace gesture should be triggered after debounce"
         );
+    }
+
+    #[test]
+    fn gesture_detector_detects_index_pointing_up() {
+        let mut detector = GestureDetector::new();
+        let (w, h) = (320, 240);
+        let mut bgra = make_background(w, h);
+
+        // Draw synthetic Pointing Up (☝):
+        // Solid fist base at x: [140..180], y: [130..180]
+        draw_skin_rect(&mut bgra, w, 140, 180, 130, 180);
+        // Single central index finger at x: [154..166], y: [60..130]
+        draw_skin_rect(&mut bgra, w, 154, 166, 60, 130);
+
+        let mut triggered_any = false;
+        let mut last_event = GestureEvent::default();
+        for _ in 0..5 {
+            last_event = detector.detect(&bgra, w, h, None);
+            if last_event.triggered {
+                triggered_any = true;
+            }
+        }
+
+        assert_eq!(last_event.gesture, HandGesture::IndexPoint);
+        assert!(last_event.confidence >= 0.30);
+        assert!(
+            triggered_any,
+            "Index point gesture should trigger after debounce"
+        );
+    }
+
+    #[test]
+    fn gesture_detector_detects_shaka_call() {
+        let mut detector = GestureDetector::new();
+        let (w, h) = (320, 240);
+        let mut bgra = make_background(w, h);
+
+        // Draw synthetic Shaka / Hang Loose (🤙):
+        // Curled center fingers / palm base at x: [140..180], y: [120..170]
+        draw_skin_rect(&mut bgra, w, 140, 180, 120, 170);
+        // Thumb extended far left at x: [115..139], y: [100..140]
+        draw_skin_rect(&mut bgra, w, 115, 139, 100, 140);
+        // Pinky extended far right at x: [181..205], y: [100..140]
+        draw_skin_rect(&mut bgra, w, 181, 205, 100, 140);
+
+        let mut triggered_any = false;
+        let mut last_event = GestureEvent::default();
+        for _ in 0..5 {
+            last_event = detector.detect(&bgra, w, h, None);
+            if last_event.triggered {
+                triggered_any = true;
+            }
+        }
+
+        assert_eq!(last_event.gesture, HandGesture::ShakaCall);
+        assert!(last_event.confidence >= 0.30);
+        assert!(triggered_any, "Shaka gesture should trigger after debounce");
+    }
+
+    #[test]
+    fn gesture_detector_detects_pinch_ok_sign() {
+        let mut detector = GestureDetector::new();
+        let (w, h) = (320, 240);
+        let mut bgra = make_background(w, h);
+
+        // Draw synthetic Pinch / OK circle loop:
+        // Outer skin ring: x in [130..190], y in [110..170]
+        draw_skin_rect(&mut bgra, w, 130, 190, 110, 170);
+        // Inner non-skin hole: x in [148..172], y in [128..152]
+        for y in 128..=152 {
+            for x in 148..=172 {
+                let idx = (y * w + x) * 4;
+                bgra[idx] = 50;
+                bgra[idx + 1] = 50;
+                bgra[idx + 2] = 50;
+                bgra[idx + 3] = 255;
+            }
+        }
+
+        let mut triggered_any = false;
+        let mut last_event = GestureEvent::default();
+        for _ in 0..5 {
+            last_event = detector.detect(&bgra, w, h, None);
+            if last_event.triggered {
+                triggered_any = true;
+            }
+        }
+
+        assert_eq!(last_event.gesture, HandGesture::PinchOk);
+        assert!(last_event.confidence >= 0.30);
+        assert!(
+            triggered_any,
+            "Pinch/OK gesture should trigger after debounce"
+        );
+    }
+
+    #[test]
+    fn gesture_detector_detects_thumbs_up() {
+        let mut detector = GestureDetector::new();
+        let (w, h) = (320, 240);
+        let mut bgra = make_background(w, h);
+
+        // Draw synthetic Thumbs Up (👍):
+        // Solid fist base: x in [130..190], y in [120..175] (bw 61, bh 56)
+        draw_skin_rect(&mut bgra, w, 130, 190, 120, 175);
+        // Lateral thumb sticking upwards on left edge: x in [130..145], y in [90..120]
+        draw_skin_rect(&mut bgra, w, 130, 145, 90, 120);
+
+        let mut triggered_any = false;
+        let mut last_event = GestureEvent::default();
+        for _ in 0..5 {
+            last_event = detector.detect(&bgra, w, h, None);
+            if last_event.triggered {
+                triggered_any = true;
+            }
+        }
+
+        assert_eq!(last_event.gesture, HandGesture::ThumbsUp);
+        assert!(last_event.confidence >= 0.30);
+        assert!(triggered_any, "Thumbs Up should trigger after debounce");
+    }
+
+    #[test]
+    fn gesture_detector_cooldown_prevents_rapid_fire() {
+        let mut detector = GestureDetector::new();
+        detector.debounce_frames = 2;
+        detector.cooldown_frames = 10;
+
+        let (w, h) = (320, 240);
+        let mut bgra = make_background(w, h);
+        draw_skin_rect(&mut bgra, w, 140, 180, 130, 180);
+        draw_skin_rect(&mut bgra, w, 154, 166, 60, 130);
+
+        // Frame 1: debounce count 1
+        let ev1 = detector.detect(&bgra, w, h, None);
+        assert!(!ev1.triggered);
+
+        // Frame 2: debounce count 2 -> triggers!
+        let ev2 = detector.detect(&bgra, w, h, None);
+        assert!(ev2.triggered);
+
+        // Frame 3..10: cooldown active -> must not trigger
+        for _ in 0..8 {
+            let ev = detector.detect(&bgra, w, h, None);
+            assert!(!ev.triggered);
+        }
     }
 
     #[test]

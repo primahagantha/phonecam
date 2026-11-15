@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.1] - 2026-11-15
+
+### Pro Media Pipeline & Touchless Controls
+
+This release introduces native pure Rust computer vision face tracking, OBSBOT-style hand gesture controls, studio audio streaming with an LED VU meter, unlocked 60 FPS capture, dynamic capability probing, and dedicated pro controls.
+
+### Added
+- **Pure Rust Computer Vision Face Detection & Smart Auto-Framing**:
+  - Implemented real-time face detection on premultiplied BGRA buffers (`phonecam-media::face_detect`) in pure Rust with zero external ML runtimes (no ONNX/TensorFlow).
+  - Guaranteed zero dynamic memory allocations on the 60 FPS hot path using pre-allocated static scratch buffers.
+  - Added YCbCr skin chrominance segmentation, candidate component clustering, geometric aspect ratio validation, and Haar-like facial contrast verification.
+  - Enhanced `AutoFramingTracker` with a 1.5% spatial deadband to eliminate micro-jitter, aspect-ratio preserving dynamic cropping (`& !1`), and temporal exponential smoothing ($\alpha = 0.12$).
+  - Added tracking lock/pause functionality to pin camera framing in place during demonstrations.
+  - Added dedicated on/off switch toggle in Capture and Preferences panels (`SideEffect::SetAutoFraming`).
+- **OBSBOT-Style Hand Gesture Recognition**:
+  - Implemented high-precision, zero-allocation hand gesture detector (`phonecam-media::gesture`) in pure Rust.
+  - Multi-feature classification: horizontal projection analysis, finger peak prominence, valley depth thresholds, and palm base solidity ratios.
+  - Debounce filter (consecutive frame verification) and refractory cooldown timer to eliminate accidental re-triggers.
+  - Full 6-gesture repertoire:
+    - ✋ **Open Palm**: Toggle tracking lock / unlock.
+    - ✌ **Peace / V-Sign**: Smoothly toggle zoom between 1.0x wide-angle and 2.0x close-up.
+    - ☝ **Index Pointing Up**: Set zoom to 1.5x medium presentation scale.
+    - 🤙 **Shaka / Call**: Reset framing coordinates to center `(0.50, 0.50)` and reset zoom to 1.0x uncropped.
+    - 🤏 **Pinch / OK**: Engage 2.2x close-up macro focal framing.
+    - 👍 **Thumbs Up**: Quick confirmation trigger and zoom toggle.
+  - Real-time translucent HUD gesture feedback chips rendered atop the GPUI preview stage.
+  - Dedicated "Hand Gesture Controls Guide & Customization" reference card with master on/off toggle.
+- **Low-Latency Microphone Audio Streaming with 16-Segment LED VU Meter**:
+  - Direct 16-bit uncompressed PCM microphone audio capture (48,000 Hz / 16,000 Hz) via Android `AudioRecord`.
+  - Multiplexed in unified TCP connection over `ChannelRole::Audio = 3` alongside H.264 video (`ChannelRole::Video = 1`) and control frames (`ChannelRole::Control = 2`).
+  - Sub-millisecond timestamp alignment (`timestamp_us`) ensuring perfect lip-sync.
+  - 16-segment dynamic LED VU level meter in Capture and Diagnostics panels (10 Green nominal segments, 4 Amber headroom segments, 2 Red clipping segments) with live dBFS and RMS telemetry.
+  - Dedicated on/off switch toggles in desktop and mobile app.
+- **Unlocked 60 FPS Camera2 & Robust Anti-Flicker**:
+  - Resolved Camera2 30 FPS locking by dynamically inspecting `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` to select ranges with `upper == 60` (`[60, 60]` or `[30, 60]`).
+  - Configured hardware `MediaCodec` with both `KEY_FRAME_RATE = 60` and `KEY_CAPTURE_RATE = 60`.
+  - Added mains frequency antibanding / anti-flicker (`Auto`, `50Hz`, `60Hz`, `Off`) protecting against cyclic AC lighting hum, preserved seamlessly across physical lens transitions.
+- **Dynamic Resolution Capabilities**:
+  - Implemented dynamic hardware sensor capability discovery via `StreamConfigurationMap`.
+  - Dynamically detects and advertises supported device resolutions up to 4K (`3840x2160` @ 30 FPS), 1080p @ 60 FPS, 720p @ 60 FPS, and 480p @ 60 FPS.
+  - Desktop UI dynamically formats supported resolutions into selectable cards with aspect ratio chips and detailed resolution badges (`res_detail`).
+- **Dedicated On/Off Toggles for All Pro Features**:
+  - Added dedicated switch toggles for Auto-Framing, Hand Gestures, Audio Streaming, Bokeh Blur, and Color LUTs.
+  - Settings persisted across restarts in `%APPDATA%\PhoneCam\desktop-settings.json`.
+
+---
+
 ## [1.0.0] - 2026-11-13
 
 ### Initial Native Rust Rewrite

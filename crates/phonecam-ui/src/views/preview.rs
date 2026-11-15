@@ -502,19 +502,28 @@ pub fn stage_gesture_feedback(state: &AppState) -> AnyElement {
 
     // 2. If a hand gesture action toast or active gesture is present, show visual feedback chip
     if let Some(action) = &state.gesture_action {
-        if state.toast.as_ref() == Some(action) {
+        if state.toast.as_ref() == Some(action) || state.active_gesture.is_some() {
             chips.push(chip(action.clone(), Tone::Ok));
         }
     } else if let Some(gesture) = state.active_gesture {
         match gesture {
             phonecam_media::HandGesture::OpenPalm => {
-                chips.push(chip("✋ Open Palm", Tone::Ok));
+                chips.push(chip("✋ Open Palm: Lock Tracking", Tone::Ok));
             }
             phonecam_media::HandGesture::PeaceV => {
-                chips.push(chip("✌ V-Sign", Tone::Ok));
+                chips.push(chip("✌ Peace / V-Sign: Zoom 2.0x", Tone::Ok));
+            }
+            phonecam_media::HandGesture::IndexPoint => {
+                chips.push(chip("☝ Index: 1.5x Zoom", Tone::Ok));
+            }
+            phonecam_media::HandGesture::ShakaCall => {
+                chips.push(chip("🤙 Shaka: Framing & Zoom Reset", Tone::Ok));
+            }
+            phonecam_media::HandGesture::PinchOk => {
+                chips.push(chip("🤏 Pinch: 2.2x Macro", Tone::Ok));
             }
             phonecam_media::HandGesture::ThumbsUp => {
-                chips.push(chip("👍 Thumbs Up", Tone::Ok));
+                chips.push(chip("👍 Thumbs Up: Confirmed", Tone::Ok));
             }
             phonecam_media::HandGesture::None => {}
         }
@@ -1000,5 +1009,30 @@ mod tests {
         state.gesture_action = Some("✌ V-Sign: 2.0x Zoom".into());
         state.toast = Some("✌ V-Sign: 2.0x Zoom".into());
         let _feedback = stage_gesture_feedback(&state);
+
+        // Test all expanded hand gestures
+        state.active_gesture = Some(phonecam_media::HandGesture::OpenPalm);
+        state.gesture_action = None;
+        let _feedback_palm = stage_gesture_feedback(&state);
+
+        state.active_gesture = Some(phonecam_media::HandGesture::IndexPoint);
+        state.gesture_action = Some("☝ Index: 1.5x Zoom".into());
+        state.toast = Some("☝ Index: 1.5x Zoom".into());
+        let _feedback_index = stage_gesture_feedback(&state);
+
+        state.active_gesture = Some(phonecam_media::HandGesture::ShakaCall);
+        state.gesture_action = Some("🤙 Shaka: Framing & Zoom Reset".into());
+        state.toast = Some("🤙 Shaka: Framing & Zoom Reset".into());
+        let _feedback_shaka = stage_gesture_feedback(&state);
+
+        state.active_gesture = Some(phonecam_media::HandGesture::PinchOk);
+        state.gesture_action = Some("🤏 Pinch: 2.2x Macro".into());
+        state.toast = Some("🤏 Pinch: 2.2x Macro".into());
+        let _feedback_pinch = stage_gesture_feedback(&state);
+
+        state.active_gesture = Some(phonecam_media::HandGesture::ThumbsUp);
+        state.gesture_action = Some("👍 Thumbs Up: Confirmed".into());
+        state.toast = Some("👍 Thumbs Up: Confirmed".into());
+        let _feedback_thumbs = stage_gesture_feedback(&state);
     }
 }
