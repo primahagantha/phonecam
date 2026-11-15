@@ -19,7 +19,7 @@ Ensure the following tools and environment variables are active in your session:
 | **MSVC C++** | VS 2022 Build Tools | Windows SDK 10.0.22621.0+ |
 | **Java JDK** | 17 | `JAVA_HOME` pointing to JDK 17 |
 | **Android SDK** | 34+ | `ANDROID_HOME` or `ANDROID_SDK_ROOT` |
-| **Android NDK** | 28+ | `ANDROID_NDK_HOME` (e.g., `D:\apps\android-sdk\ndk\28.2.13676358`) |
+| **Android NDK** | 28+ | `ANDROID_NDK_HOME` (e.g., path to Android NDK 28+) |
 | **cargo-ndk** | Latest | `cargo install cargo-ndk` |
 | **NSIS** | 3.08+ | `makensis.exe` in system `PATH` |
 
@@ -169,7 +169,7 @@ When streaming is live:
 - `seq`: Even number when quiescent.
 - `readers`: Written exclusively by driver consumers (never reset by writer).
 
-For complete driver architecture across Windows, Linux (`v4l2loopback`), and macOS (`CoreMediaIO`), see [phonecam-virtualcam](file:///d:/production/phonecam-rust/.agent/skills/phonecam-virtualcam/SKILL.md).
+For complete driver architecture across Windows, Linux (`v4l2loopback`), and macOS (`CoreMediaIO`), see [phonecam-virtualcam](../phonecam-virtualcam/SKILL.md).
 
 ---
 
@@ -221,7 +221,7 @@ adb logcat -v time -s PhoneCam:V CameraStreamService:V
 | `adb: device unauthorized` | Android device prompt not accepted | Unlock phone and tap "Always allow from this computer" |
 | JNI `UnsatisfiedLinkError` | Missing `.so` in APK | Run `.\scripts\build-android-core.ps1` before Gradle build |
 
-For full step-by-step diagnostic workflows, see [phonecam-troubleshoot](file:///d:/production/phonecam-rust/.agent/skills/phonecam-troubleshoot/SKILL.md).
+For full step-by-step diagnostic workflows, see [phonecam-troubleshoot](../phonecam-troubleshoot/SKILL.md).
 
 ---
 
@@ -229,11 +229,11 @@ For full step-by-step diagnostic workflows, see [phonecam-troubleshoot](file:///
 
 PhoneCam includes dedicated skill modules for specific development domains:
 
-- **[phonecam-ci](file:///d:/production/phonecam-rust/.agent/skills/phonecam-ci/SKILL.md)**:
+- **[phonecam-ci](../phonecam-ci/SKILL.md)**:
   Complete reference for GitHub Actions matrix (`ci.yml`, `release.yml`), multi-platform builds, semantic versioning, and release artifact generation.
-- **[phonecam-virtualcam](file:///d:/production/phonecam-rust/.agent/skills/phonecam-virtualcam/SKILL.md)**:
+- **[phonecam-virtualcam](../phonecam-virtualcam/SKILL.md)**:
   Exhaustive virtual camera implementations across Windows (`MFCreateVirtualCamera` & DirectShow COM), Linux (`v4l2loopback`), and macOS (`CoreMediaIO` DAL / `CMIOExtension`).
-- **[phonecam-protocol](file:///d:/production/phonecam-rust/.agent/skills/phonecam-protocol/SKILL.md)**:
+- **[phonecam-protocol](../phonecam-protocol/SKILL.md)**:
   Deep guide for binary framing, 40-byte greeting, 20-byte client handshake, HMAC-SHA256 crypto, JSON payloads, replay guard, and diagnostics.
-- **[phonecam-troubleshoot](file:///d:/production/phonecam-rust/.agent/skills/phonecam-troubleshoot/SKILL.md)**:
+- **[phonecam-troubleshoot](../phonecam-troubleshoot/SKILL.md)**:
   Step-by-step diagnostic procedures for Wi-Fi discovery, USB ADB reverse tunnels, hardware encoder fallbacks, thermal clamps, and audio sync.

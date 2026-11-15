@@ -134,3 +134,18 @@ This document specifies the non-negotiable architectural invariants and system b
 ```
 
 - **Invariant**: The `streaming` phase is entered **only** when at least one decoded frame has been published to the framebus. A valid socket connection or phone-side `streaming: true` flag is necessary but not sufficient.
+
+---
+
+## 9. Privacy, Anonymity & Path Generality Invariant
+
+- **Invariant**: Zero hardcoded personal paths, user home directories, developer drive letters, or single-device hardware serial numbers.
+- **Rule**:
+  - Source code, tests, build scripts, markdown files, and CI workflows must **never** hardcode user directories (`C:\Users\...`, `/home/...`), personal usernames, developer machine drive letters (`D:\...`), or specific hardware device serials (e.g. `79134849`).
+  - Standard dynamic resolution patterns must be used:
+    - **Device Serials**: Dynamically resolved via `ANDROID_SERIAL` env var, falling back to `adb get-serialno` / `adb devices`, or graceful test skipping (`println!("SKIPPED: No Android device detected")`).
+    - **ADB Executable**: Dynamically resolved via `PHONECAM_ADB_PATH`, workspace relative staging (`dist/unpacked/adb.exe`), or system `PATH`.
+    - **Test Artifacts**: Output to `PHONECAM_ARTIFACT_DIR`, falling back to `std::env::temp_dir().join("phonecam-artifacts")`.
+    - **Android NDK**: Dynamically discovered via `ANDROID_NDK_HOME`, `ANDROID_NDK_ROOT`, or standard SDK search paths.
+- **System Exceptions**: The only permissible hardcoded absolute system paths are standardized OS-level contracts: the Windows shared memory backing file (`C:\ProgramData\PhoneCam\framebuffer-v2.bin`) and default Windows installation paths (`C:\Program Files\PhoneCam`).
+

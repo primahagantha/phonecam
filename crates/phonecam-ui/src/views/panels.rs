@@ -13,8 +13,8 @@ use crate::theme::rules;
 use crate::theme::{Accent, Fonts, Radius, Space, Status, Text, Tone, Type, SHELL};
 use crate::views::effects::{push_effect, SideEffect, Tab};
 use crate::views::state::{
-    camera_facing_label, format_battery, format_log_time, resolution_label_of, screen_mode_label,
-    thermal_label, AppState, LogSource, NoticeAction,
+    camera_facing_label, format_battery, format_log_time, resolution_label_of, thermal_label,
+    AppState, LogSource, NoticeAction,
 };
 use crate::views::widgets::{
     chip, key_value, numeric_font, prose, section, status_dot, tinted_box, Button, Panel, Toggle,
@@ -817,18 +817,33 @@ pub fn connect_panel(state: &AppState) -> AnyElement {
     ));
 
     children.push(section(
-        "Automation & Audio",
+        "Automation & Preferences",
         vec![
             Toggle::new("Auto-Connect on USB Plug", state.settings.auto_connect_usb)
+                .detail(Some(if state.settings.auto_connect_usb {
+                    "Auto ADB Reverse"
+                } else {
+                    "Off"
+                }))
                 .on_change(|val, _window, _cx| push_effect(SideEffect::SetAutoConnectUsb(val)))
                 .into_element(),
             Toggle::new(
                 "Minimize to Tray on Window Close",
                 state.settings.minimize_to_tray,
             )
+            .detail(Some(if state.settings.minimize_to_tray {
+                "Keep Virtual Cam Running"
+            } else {
+                "Exit Process"
+            }))
             .on_change(|val, _window, _cx| push_effect(SideEffect::SetMinimizeToTray(val)))
             .into_element(),
             Toggle::new("Stream Audio from Phone", state.settings.stream_audio)
+                .detail(Some(if state.settings.stream_audio {
+                    "Mic Streaming"
+                } else {
+                    "Muted / Off"
+                }))
                 .on_change(|val, _window, _cx| push_effect(SideEffect::SetAudioStream(val)))
                 .into_element(),
             prose(
@@ -1842,6 +1857,12 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
     ));
 
     let auto = state.settings.quality_mode == phonecam_protocol::QualityMode::Auto;
+    let ambient_hint = match state.settings.screen_mode {
+        phonecam_protocol::ScreenMode::KeepOn => "Keep On (Normal display)",
+        phonecam_protocol::ScreenMode::Dim => "Dim (Reduced brightness)",
+        phonecam_protocol::ScreenMode::Black => "Pure Black (100% OLED off)",
+    };
+
     children.push(section(
         "While streaming",
         vec![
@@ -1856,8 +1877,8 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                 "Your resolution, frame rate and bitrate above are used exactly as set."
             }),
             crate::views::widgets::field(
-                "Phone screen",
-                Some(screen_mode_label(state.settings.screen_mode).into()),
+                "OLED Ambient Display",
+                Some(ambient_hint.into()),
                 div()
                     .flex()
                     .flex_row()
@@ -1865,9 +1886,9 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                     .gap(px(Space::SM))
                     .children(
                         [
-                            (phonecam_protocol::ScreenMode::KeepOn, "Keep on", "screen-keep-on"),
+                            (phonecam_protocol::ScreenMode::KeepOn, "Keep On", "screen-keep-on"),
                             (phonecam_protocol::ScreenMode::Dim, "Dim", "screen-dim"),
-                            (phonecam_protocol::ScreenMode::Black, "Off (Save Battery)", "screen-black"),
+                            (phonecam_protocol::ScreenMode::Black, "Pure Black", "screen-black"),
                         ]
                         .into_iter()
                         .map(|(mode, label, id)| {
@@ -1878,7 +1899,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                         }),
                     )
                     .into_any_element(),
-                Some("The phone screen is not part of the stream. Turning it off saves battery on a long session.".into()),
+                Some("OLED Pure-Black ambient mode turns off display pixels 100% to save battery and prevent burn-in while camera streams live.".into()),
             ),
         ],
     ));
@@ -1970,7 +1991,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                 )
             }))
             .into_any_element(),
-        Some("Hardware-accelerated color grading applied with zero latency.".into()),
+        Some("Hardware-accelerated color grading presets with dedicated None/Off and Natural profiles.".into()),
     );
 
     let blur_enabled = state.settings.portrait_blur;
@@ -1981,6 +2002,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         .gap(px(Space::SM))
         .child(
             Toggle::new("Enable Portrait Bokeh Blur", blur_enabled)
+                .detail(Some(if blur_enabled { "Active" } else { "Off" }))
                 .on_change(move |enabled, _window, _cx| {
                     push_effect(SideEffect::SetPortraitBlur(enabled, blur_intensity))
                 })
@@ -1994,22 +2016,22 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
                 .child(pill_button(
                     "blur-soft",
                     "Soft (30%)",
-                    (blur_intensity - 0.40).abs() < 0.15,
-                    !blur_enabled,
+                    blur_enabled && (blur_intensity - 0.40).abs() < 0.15,
+                    false,
                     move |_window, _cx| push_effect(SideEffect::SetPortraitBlur(true, 0.40)),
                 ))
                 .child(pill_button(
                     "blur-studio",
                     "Studio (70%)",
-                    (blur_intensity - 0.70).abs() < 0.15,
-                    !blur_enabled,
+                    blur_enabled && (blur_intensity - 0.70).abs() < 0.15,
+                    false,
                     move |_window, _cx| push_effect(SideEffect::SetPortraitBlur(true, 0.70)),
                 ))
                 .child(pill_button(
                     "blur-dreamy",
                     "Dreamy (100%)",
-                    (blur_intensity - 1.00).abs() < 0.15,
-                    !blur_enabled,
+                    blur_enabled && (blur_intensity - 1.00).abs() < 0.15,
+                    false,
                     move |_window, _cx| push_effect(SideEffect::SetPortraitBlur(true, 1.00)),
                 )),
         )
@@ -2019,23 +2041,76 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
         "Portrait Bokeh",
         Some(if blur_enabled { "Active" } else { "Off" }.into()),
         blur_control,
-        Some("Keeps you in focus while softly blurring background distractions.".into()),
+        Some("Keeps you in focus while softly blurring background distractions. Select an intensity preset or toggle on/off.".into()),
     );
 
     let auto_framing_enabled = state.settings.auto_framing;
-    let auto_framing_element = div()
-        .flex()
-        .flex_col()
-        .gap(px(Space::XS))
-        .child(
-            Toggle::new("Center Stage Auto-Framing", auto_framing_enabled)
-                .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetAutoFraming(enabled)))
-                .into_element(),
-        )
-        .child(prose(
-            "Dynamically tracks your position in the frame with smooth pan and zoom transitions.",
-        ))
-        .into_any_element();
+    let auto_framing_element = crate::views::widgets::field(
+        "Auto-Framing",
+        Some(
+            if auto_framing_enabled {
+                "Active"
+            } else {
+                "Off"
+            }
+            .into(),
+        ),
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(Space::XS))
+            .child(
+                Toggle::new("Center Stage Auto-Framing", auto_framing_enabled)
+                    .detail(Some(if auto_framing_enabled {
+                        "Tracking Active"
+                    } else {
+                        "Off"
+                    }))
+                    .on_change(|enabled, _window, _cx| {
+                        push_effect(SideEffect::SetAutoFraming(enabled))
+                    })
+                    .into_element(),
+            )
+            .into_any_element(),
+        Some(
+            "Dynamically tracks your position in the frame with smooth pan and zoom transitions."
+                .into(),
+        ),
+    );
+
+    let audio_stream_enabled = state.settings.stream_audio;
+    let audio_element = crate::views::widgets::field(
+        "Audio Streaming",
+        Some(
+            if audio_stream_enabled {
+                "Active"
+            } else {
+                "Muted / Off"
+            }
+            .into(),
+        ),
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(Space::XS))
+            .child(
+                Toggle::new("Stream Audio from Phone", audio_stream_enabled)
+                    .detail(Some(if audio_stream_enabled {
+                        "Mic Streaming"
+                    } else {
+                        "Muted / Off"
+                    }))
+                    .on_change(|enabled, _window, _cx| {
+                        push_effect(SideEffect::SetAudioStream(enabled))
+                    })
+                    .into_element(),
+            )
+            .into_any_element(),
+        Some(
+            "Streams low-latency microphone audio from the phone to your PC virtual audio input."
+                .into(),
+        ),
+    );
 
     let exp_val = state.settings.exposure;
     let exp_control = div()
@@ -2191,6 +2266,7 @@ pub fn capture_panel(state: &AppState) -> AnyElement {
             lut_selector,
             blur_element,
             auto_framing_element,
+            audio_element,
         ],
     ));
 
@@ -3289,6 +3365,11 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
     Panel::new("Preferences")
         .child(
             Toggle::new("Keep window on top", state.settings.always_on_top)
+                .detail(Some(if state.settings.always_on_top {
+                    "Pinned"
+                } else {
+                    "Normal"
+                }))
                 .on_change(|_enabled, _window, _cx| push_effect(SideEffect::ToggleAlwaysOnTop))
                 .into_element(),
         )
@@ -3297,12 +3378,21 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
                 "Show preview in this window",
                 state.settings.preview_enabled,
             )
-            .detail(Some("Off keeps virtual camera running"))
+            .detail(Some(if state.settings.preview_enabled {
+                "GPU Preview On"
+            } else {
+                "Off (VCam Only)"
+            }))
             .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetPreviewEnabled(enabled)))
             .into_element(),
         )
         .child(
             Toggle::new("Auto-Connect on USB Plug", state.settings.auto_connect_usb)
+                .detail(Some(if state.settings.auto_connect_usb {
+                    "Auto ADB Reverse"
+                } else {
+                    "Off"
+                }))
                 .on_change(|val, _window, _cx| push_effect(SideEffect::SetAutoConnectUsb(val)))
                 .into_element(),
         )
@@ -3311,11 +3401,21 @@ pub fn preferences_panel(state: &AppState) -> AnyElement {
                 "Minimize to Tray on Window Close",
                 state.settings.minimize_to_tray,
             )
+            .detail(Some(if state.settings.minimize_to_tray {
+                "Keep Virtual Cam Running"
+            } else {
+                "Exit Process"
+            }))
             .on_change(|val, _window, _cx| push_effect(SideEffect::SetMinimizeToTray(val)))
             .into_element(),
         )
         .child(
             Toggle::new("Stream Audio from Phone", state.settings.stream_audio)
+                .detail(Some(if state.settings.stream_audio {
+                    "Mic Streaming"
+                } else {
+                    "Muted / Off"
+                }))
                 .on_change(|val, _window, _cx| push_effect(SideEffect::SetAudioStream(val)))
                 .into_element(),
         )
@@ -3861,5 +3961,37 @@ mod tests {
         ] {
             let _el = log_level_badge(level);
         }
+    }
+
+    #[test]
+    fn capture_panel_renders_all_pro_controls_and_toggles() {
+        let mut state = AppState::default();
+        state.settings.auto_framing = true;
+        state.settings.portrait_blur = true;
+        state.settings.portrait_blur_intensity = 0.70;
+        state.settings.stream_audio = true;
+        state.settings.lut_preset = phonecam_media::LutPreset::WarmStudio;
+        state.settings.screen_mode = phonecam_protocol::ScreenMode::Black;
+        state.settings.auto_connect_usb = true;
+        state.settings.minimize_to_tray = true;
+
+        let _el = capture_panel(&state);
+        let _pref = preferences_panel(&state);
+        let _setup = connect_panel(&state);
+        let _pub = publish_panel(&state);
+    }
+
+    #[test]
+    fn lut_preset_all_includes_none_off_and_natural() {
+        let presets = phonecam_media::LutPreset::all();
+        assert!(presets.contains(&phonecam_media::LutPreset::None));
+        assert!(presets.contains(&phonecam_media::LutPreset::Natural));
+        assert!(presets.contains(&phonecam_media::LutPreset::WarmStudio));
+        assert!(presets.contains(&phonecam_media::LutPreset::CoolCorporate));
+        assert!(presets.contains(&phonecam_media::LutPreset::VibrantStreamer));
+        assert!(presets.contains(&phonecam_media::LutPreset::Monochrome));
+
+        assert_eq!(phonecam_media::LutPreset::None.display_name(), "None / Off");
+        assert_eq!(phonecam_media::LutPreset::Natural.display_name(), "Natural");
     }
 }

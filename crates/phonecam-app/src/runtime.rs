@@ -1273,7 +1273,9 @@ impl Runtime {
                 blur_amt,
             );
         }
-        if lut_preset != phonecam_media::LutPreset::Natural {
+        if lut_preset != phonecam_media::LutPreset::None
+            && lut_preset != phonecam_media::LutPreset::Natural
+        {
             phonecam_media::apply_lut(&mut scratch.bgra, lut_preset);
         }
 
@@ -3540,6 +3542,12 @@ mod tests {
         runtime.set_quality_mode(false);
         runtime.sync_output_transform(true, 90);
         runtime.set_log_level(LogLevel::Debug);
+        runtime.set_auto_framing(true);
+        runtime.set_portrait_blur(true, 0.70);
+        runtime.set_audio_stream(true);
+        runtime.set_lut_filter(phonecam_media::LutPreset::WarmStudio);
+        runtime.set_auto_connect_usb(false);
+        runtime.set_minimize_to_tray(false);
 
         let outbox = runtime.outbox.lock().clone();
         assert!(matches!(outbox[0], DesktopToPhone::SetCamera { ref camera } if camera == "front"));
@@ -3577,10 +3585,14 @@ mod tests {
                 mode: QualityMode::Manual
             }
         ));
+        assert!(matches!(
+            outbox[7],
+            DesktopToPhone::SetAudioStream { enabled: true }
+        ));
         assert_eq!(
             outbox.len(),
-            7,
-            "sync_output_transform operates locally without polluting outbox"
+            8,
+            "local effects operate without polluting outbox"
         );
 
         {
@@ -3595,7 +3607,28 @@ mod tests {
             assert!(state.settings.output_mirror);
             assert_eq!(state.settings.output_rotation, 90);
             assert_eq!(state.settings.log_level, LogLevel::Debug);
+            assert!(state.settings.auto_framing);
+            assert!(state.settings.portrait_blur);
+            assert!((state.settings.portrait_blur_intensity - 0.70).abs() < 0.01);
+            assert!(state.settings.stream_audio);
+            assert_eq!(
+                state.settings.lut_preset,
+                phonecam_media::LutPreset::WarmStudio
+            );
+            assert!(!state.settings.auto_connect_usb);
+            assert!(!state.settings.minimize_to_tray);
         }
+
+        // Verify disk persistence
+        let loaded = crate::settings::load();
+        assert_eq!(loaded.camera, "front");
+        assert!(loaded.auto_framing);
+        assert!(loaded.portrait_blur);
+        assert!((loaded.portrait_blur_intensity - 0.70).abs() < 0.01);
+        assert!(loaded.stream_audio);
+        assert_eq!(loaded.lut_preset, phonecam_media::LutPreset::WarmStudio);
+        assert!(!loaded.auto_connect_usb);
+        assert!(!loaded.minimize_to_tray);
 
         match saved_before {
             Some(bytes) => {

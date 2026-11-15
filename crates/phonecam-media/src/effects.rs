@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum LutPreset {
     #[default]
+    #[serde(alias = "off")]
+    None,
     Natural,
     WarmStudio,
     CoolCorporate,
@@ -22,6 +24,7 @@ pub enum LutPreset {
 impl LutPreset {
     pub fn all() -> &'static [Self] {
         &[
+            Self::None,
             Self::Natural,
             Self::WarmStudio,
             Self::CoolCorporate,
@@ -32,6 +35,7 @@ impl LutPreset {
 
     pub fn display_name(&self) -> &'static str {
         match self {
+            Self::None => "None / Off",
             Self::Natural => "Natural",
             Self::WarmStudio => "Warm Studio",
             Self::CoolCorporate => "Cool Corporate",
@@ -44,12 +48,12 @@ impl LutPreset {
 /// Applies a color grading filter preset in-place to a premultiplied BGRA pixel buffer.
 /// Channel order: [B, G, R, A]. Alpha channel is preserved.
 pub fn apply_lut(bgra: &mut [u8], preset: LutPreset) {
-    if preset == LutPreset::Natural {
+    if preset == LutPreset::None || preset == LutPreset::Natural {
         return;
     }
 
     match preset {
-        LutPreset::Natural => {}
+        LutPreset::None | LutPreset::Natural => {}
         LutPreset::WarmStudio => {
             // Warm studio: boost reds and warm tones, gently raise contrast
             for chunk in bgra.chunks_exact_mut(4) {
@@ -412,6 +416,14 @@ impl AutoFramingTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lut_none_leaves_pixels_unchanged() {
+        let mut pixels = vec![100, 150, 200, 255];
+        let original = pixels.clone();
+        apply_lut(&mut pixels, LutPreset::None);
+        assert_eq!(pixels, original);
+    }
 
     #[test]
     fn lut_natural_leaves_pixels_unchanged() {

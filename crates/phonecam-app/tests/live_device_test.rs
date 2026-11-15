@@ -1,7 +1,7 @@
 //! Comprehensive Live Device Testing & Pro Features Verification Suite
 //!
-//! Connects with the physical Android device (Xiaomi Redmi Note 11, serial 79134849)
-//! via ADB reverse port forwarding and drives the full end-to-end stack:
+//! Connects with a physical Android device via ADB reverse port forwarding
+//! and drives the full end-to-end stack:
 //! - H.264 video decoding, NV12 framebus, and BGRA preview pipeline
 //! - Pure-black OLED ambient display mode & tap-to-peek
 //! - Multi-lens camera switching
@@ -11,6 +11,7 @@
 //! - Stress testing: Rapid control message burst flooding (100 msgs/sec)
 //! - Stress testing: USB disconnect/reconnect simulation with fail-safe verification
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -20,45 +21,225 @@ use phonecam_media::{apply_lut, apply_portrait_blur, BlurIntensity, LutPreset};
 use phonecam_protocol::{AntiFlickerMode, ScreenMode, StreamPhase};
 use phonecam_ui::views::state::Settings;
 
-const ADB_PATH: &str = r"D:\production\phonecam-rust\dist\unpacked\adb.exe";
-const DEVICE_SERIAL: &str = "79134849";
-const ARTIFACT_DIR: &str =
-    r"C:\Users\Prima\.gemini\antigravity\brain\aaca3dde-46c3-4955-968f-221f994af8a5";
-
-fn run_adb(args: &[&str]) -> String {
-    let mut full_args = vec!["-s", DEVICE_SERIAL];
-    full_args.extend_from_slice(args);
-    let output = Command::new(ADB_PATH)
-        .args(&full_args)
-        .output()
-        .unwrap_or_else(|e| panic!("Failed to run adb with args {args:?}: {e}"));
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
-
-fn capture_phone_screenshot(name: &str) {
-    let phone_tmp = format!("/sdcard/{name}");
-    run_adb(&["shell", "screencap", "-p", &phone_tmp]);
-    let local_dest = format!("{ARTIFACT_DIR}\\{name}");
-    run_adb(&["pull", &phone_tmp, &local_dest]);
-    println!(" [SCREENSHOT] Saved phone screenshot to: {local_dest}");
-}
-
-#[allow(clippy::chunks_exact_to_as_chunks)]
-fn save_bgra_to_png(bgra: &[u8], width: u32, height: u32, name: &str) {
-    let mut rgba = bgra.to_vec();
-    for chunk in rgba.chunks_exact_mut(4) {
-        chunk.swap(0, 2); // BGRA -> RGBA
+/// Dynamically locates the ADB executable without hardcoding local paths.
+pub fn resolve_adb_path() -> Option<PathBuf> {
+    // 1. Explicit environment variable override
+    if let Ok(env_path) = std::env::var("PHONECAM_ADB_PATH") {
+        if !env_path.trim().is_empty() {
+            let p = PathBuf::from(env_path.trim());
+            if p.is_file() {
+                return Some(p);
+            }
+        }
     }
-    let local_dest = format!("{ARTIFACT_DIR}\\{name}");
-    image::save_buffer(
-        &local_dest,
-        &rgba,
-        width,
-        height,
-        image::ExtendedColorType::Rgba8,
-    )
-    .unwrap_or_else(|e| eprintln!("Failed to save image {name}: {e}"));
-    println!(" [FRAME] Saved decoded video frame to: {local_dest}");
+
+    // 2. Relative paths from workspace or executable directory
+    let relative_candidates = [
+        "dist/unpacked/adb.exe",
+        "dist/unpacked/adb",
+        "../../dist/unpacked/adb.exe",
+        "../../dist/unpacked/adb",
+        "adb.exe",
+        "adb",
+    ];
+    for rel in relative_candidates {
+        let p = PathBuf::from(rel);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+
+    // 3. Search system PATH
+    if let Ok(path) = std::env::var("PATH") {
+        for entry in std::env::split_paths(&path) {
+            let exe = entry.join("adb.exe");
+            if exe.is_file() {
+                return Some(exe);
+            }
+            let bin = entry.join("adb");
+            if bin.is_file() {
+                return Some(bin);
+            }
+        }
+    }
+
+    // 4. Standard Android SDK locations
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let p = PathBuf::from(local_app_data)
+            .join("Android")
+            .join("Sdk")
+            .join("platform-tools")
+            .join("adb.exe");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        let p = PathBuf::from(user_profile)
+            .join("AppData")
+            .join("Local")
+            .join("Android")
+            .join("Sdk")
+            .join("platform-tools")
+            .join("adb.exe");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+
+    for variable in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
+        if let Ok(root) = std::env::var(variable) {
+            if !root.is_empty() {
+                let p = PathBuf::from(&root).join("platform-tools").join("adb.exe");
+                if p.is_file() {
+                    return Some(p);
+                }
+                let bin = PathBuf::from(&root).join("platform-tools").join("adb");
+                if bin.is_file() {
+                    return Some(bin);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Dynamically discovers an authorized Android device serial number.
+pub fn resolve_device_serial(adb_path: &Path) -> Option<String> {
+    // 1. Explicit environment variable override
+    if let Ok(serial) = std::env::var("ANDROID_SERIAL") {
+        let trimmed = serial.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+
+    // 2. Parse `adb devices` output for the first ready device
+    if let Ok(output) = Command::new(adb_path).arg("devices").output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("List of devices") {
+                continue;
+            }
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 2 && parts[1] == "device" {
+                return Some(parts[0].to_string());
+            }
+        }
+    }
+
+    // 3. Fallback to `adb get-serialno`
+    if let Ok(output) = Command::new(adb_path).arg("get-serialno").output() {
+        let serial = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !serial.is_empty() && serial != "unknown" && !serial.contains("error") {
+            return Some(serial);
+        }
+    }
+
+    None
+}
+
+/// Resolves a safe directory for saving test artifacts and screenshots.
+pub fn resolve_artifact_dir() -> PathBuf {
+    let dir = if let Ok(val) = std::env::var("PHONECAM_ARTIFACT_DIR") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            PathBuf::from(trimmed)
+        } else {
+            std::env::temp_dir().join("phonecam-artifacts")
+        }
+    } else {
+        std::env::temp_dir().join("phonecam-artifacts")
+    };
+
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Execution context for live physical device tests.
+pub struct TestContext {
+    pub adb_path: PathBuf,
+    pub device_serial: String,
+    pub artifact_dir: PathBuf,
+}
+
+impl TestContext {
+    pub fn run_adb(&self, args: &[&str]) -> String {
+        let mut full_args = vec!["-s", self.device_serial.as_str()];
+        full_args.extend_from_slice(args);
+        let output = Command::new(&self.adb_path)
+            .args(&full_args)
+            .output()
+            .unwrap_or_else(|e| panic!("Failed to run adb with args {args:?}: {e}"));
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    pub fn capture_phone_screenshot(&self, name: &str) {
+        let phone_tmp = format!("/sdcard/{name}");
+        self.run_adb(&["shell", "screencap", "-p", &phone_tmp]);
+        let local_dest = self.artifact_dir.join(name);
+        let local_dest_str = local_dest.to_string_lossy().to_string();
+        self.run_adb(&["pull", &phone_tmp, &local_dest_str]);
+        println!(
+            " [SCREENSHOT] Saved phone screenshot to: {}",
+            local_dest.display()
+        );
+    }
+
+    #[allow(clippy::chunks_exact_to_as_chunks)]
+    pub fn save_bgra_to_png(&self, bgra: &[u8], width: u32, height: u32, name: &str) {
+        let mut rgba = bgra.to_vec();
+        for chunk in rgba.chunks_exact_mut(4) {
+            chunk.swap(0, 2); // BGRA -> RGBA
+        }
+        let local_dest = self.artifact_dir.join(name);
+        image::save_buffer(
+            &local_dest,
+            &rgba,
+            width,
+            height,
+            image::ExtendedColorType::Rgba8,
+        )
+        .unwrap_or_else(|e| eprintln!("Failed to save image {name}: {e}"));
+        println!(
+            " [FRAME] Saved decoded video frame to: {}",
+            local_dest.display()
+        );
+    }
+}
+
+#[test]
+fn test_resolve_adb_path_finds_adb_or_none() {
+    let adb = resolve_adb_path();
+    if let Some(path) = adb {
+        assert!(
+            path.is_file(),
+            "Resolved ADB path must exist as a file: {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn test_resolve_artifact_dir_returns_valid_path() {
+    let dir = resolve_artifact_dir();
+    assert!(
+        dir.exists(),
+        "Artifact directory must be created/exist: {}",
+        dir.display()
+    );
+}
+
+#[test]
+fn test_resolve_device_serial_with_custom_env() {
+    std::env::set_var("ANDROID_SERIAL", "TEST_SERIAL_999");
+    let dummy_adb = PathBuf::from("adb");
+    let serial = resolve_device_serial(&dummy_adb);
+    std::env::remove_var("ANDROID_SERIAL");
+    assert_eq!(serial.as_deref(), Some("TEST_SERIAL_999"));
 }
 
 #[test]
@@ -68,26 +249,47 @@ fn test_live_physical_device_and_pro_features_full_run() {
     println!("  PHONECAM LIVE PHYSICAL DEVICE & PRO FEATURE SUITE    ");
     println!("=======================================================\n");
 
+    let adb_path = match resolve_adb_path() {
+        Some(p) => p,
+        None => {
+            println!("SKIPPED: adb executable not found (set PHONECAM_ADB_PATH or add to PATH)");
+            return;
+        }
+    };
+
+    let device_serial = match resolve_device_serial(&adb_path) {
+        Some(s) => s,
+        None => {
+            println!("SKIPPED: No Android device detected");
+            return;
+        }
+    };
+
+    let artifact_dir = resolve_artifact_dir();
+
+    let ctx = TestContext {
+        adb_path,
+        device_serial,
+        artifact_dir,
+    };
+
     // 0. Verify ADB device connected
-    let devices_out = Command::new(ADB_PATH)
-        .arg("devices")
-        .output()
-        .expect("adb devices");
-    let devices_str = String::from_utf8_lossy(&devices_out.stdout);
-    assert!(
-        devices_str.contains(DEVICE_SERIAL),
-        "Redmi Note 11 (serial {DEVICE_SERIAL}) must be connected via ADB!"
+    let state = ctx.run_adb(&["get-state"]);
+    assert_eq!(
+        state, "device",
+        "Target Android device (serial {}) must be authorized and in 'device' state",
+        ctx.device_serial
     );
-    println!("-> Physical device connected: Redmi Note 11 ({DEVICE_SERIAL})");
+    println!("-> Physical device connected: serial {}", ctx.device_serial);
 
     // Setup ADB reverse port forwarding
-    run_adb(&["reverse", "tcp:48721", "tcp:48721"]);
+    ctx.run_adb(&["reverse", "tcp:48721", "tcp:48721"]);
     println!("-> ADB reverse port configured: tcp:48721 -> tcp:48721");
 
     // Clean previous app instances
-    run_adb(&["shell", "am", "force-stop", "com.phonecam.camera.debug"]);
+    ctx.run_adb(&["shell", "am", "force-stop", "com.phonecam.camera.debug"]);
     thread::sleep(Duration::from_millis(500));
-    run_adb(&[
+    ctx.run_adb(&[
         "shell",
         "am",
         "start",
@@ -111,7 +313,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
 
     // 2. Launch phone stream service
     println!("-> Starting PhoneCam CameraStreamService on phone...");
-    run_adb(&[
+    ctx.run_adb(&[
         "shell",
         "am",
         "start-foreground-service",
@@ -147,13 +349,13 @@ fn test_live_physical_device_and_pro_features_full_run() {
     }
 
     let initial_frame = frame_captured.expect("Must receive at least one live decoded frame!");
-    save_bgra_to_png(
+    ctx.save_bgra_to_png(
         &initial_frame.bgra,
         initial_frame.width,
         initial_frame.height,
         "live_frame_01_initial_stream.png",
     );
-    capture_phone_screenshot("live_screen_01_initial_stream.png");
+    ctx.capture_phone_screenshot("live_screen_01_initial_stream.png");
 
     // Verify shared memory framebus via real FrameReader (virtual camera contract)
     println!("-> Verifying Windows Shared Memory Framebus via FrameReader...");
@@ -188,12 +390,12 @@ fn test_live_physical_device_and_pro_features_full_run() {
     println!("-> Setting ScreenMode::Black...");
     runtime.set_screen_mode(ScreenMode::Black);
     thread::sleep(Duration::from_millis(2500));
-    capture_phone_screenshot("live_screen_02_oled_ambient_black.png");
+    ctx.capture_phone_screenshot("live_screen_02_oled_ambient_black.png");
 
     println!("-> Simulating Tap-to-Peek (input tap 1200 500)...");
-    run_adb(&["shell", "input", "tap", "1200", "500"]);
+    ctx.run_adb(&["shell", "input", "tap", "1200", "500"]);
     thread::sleep(Duration::from_millis(1000));
-    capture_phone_screenshot("live_screen_03_oled_ambient_peek.png");
+    ctx.capture_phone_screenshot("live_screen_03_oled_ambient_peek.png");
 
     println!("-> Restoring ScreenMode::KeepOn...");
     runtime.set_screen_mode(ScreenMode::KeepOn);
@@ -219,13 +421,13 @@ fn test_live_physical_device_and_pro_features_full_run() {
         }
         f.expect("Front camera must deliver decoded frames")
     };
-    save_bgra_to_png(
+    ctx.save_bgra_to_png(
         &front_frame.bgra,
         front_frame.width,
         front_frame.height,
         "live_frame_04_camera_front.png",
     );
-    capture_phone_screenshot("live_screen_04_camera_front.png");
+    ctx.capture_phone_screenshot("live_screen_04_camera_front.png");
 
     println!("-> Switching camera back to 'back' (Main lens)...");
     runtime.set_camera("back".to_string());
@@ -243,13 +445,13 @@ fn test_live_physical_device_and_pro_features_full_run() {
         }
         f.expect("Back camera must deliver decoded frames")
     };
-    save_bgra_to_png(
+    ctx.save_bgra_to_png(
         &back_frame.bgra,
         back_frame.width,
         back_frame.height,
         "live_frame_05_camera_back.png",
     );
-    capture_phone_screenshot("live_screen_05_camera_back.png");
+    ctx.capture_phone_screenshot("live_screen_05_camera_back.png");
     println!("-> [PASS] Multi-Lens Switching verified!");
 
     // 6. Test Pro Camera Controls
@@ -259,7 +461,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
     runtime.set_exposure(-2);
     thread::sleep(Duration::from_millis(2000));
     if let Some(f) = runtime.frames.lock().take() {
-        save_bgra_to_png(
+        ctx.save_bgra_to_png(
             &f.bgra,
             f.width,
             f.height,
@@ -272,7 +474,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
     runtime.set_exposure(2);
     thread::sleep(Duration::from_millis(2000));
     if let Some(f) = runtime.frames.lock().take() {
-        save_bgra_to_png(
+        ctx.save_bgra_to_png(
             &f.bgra,
             f.width,
             f.height,
@@ -286,7 +488,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
     runtime.set_white_balance(Some(3200));
     thread::sleep(Duration::from_millis(2000));
     if let Some(f) = runtime.frames.lock().take() {
-        save_bgra_to_png(&f.bgra, f.width, f.height, "live_frame_08_wb_3200k.png");
+        ctx.save_bgra_to_png(&f.bgra, f.width, f.height, "live_frame_08_wb_3200k.png");
     }
 
     // Manual White Balance: 6500K (Daylight Cool)
@@ -294,7 +496,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
     runtime.set_white_balance(Some(6500));
     thread::sleep(Duration::from_millis(2000));
     if let Some(f) = runtime.frames.lock().take() {
-        save_bgra_to_png(&f.bgra, f.width, f.height, "live_frame_09_wb_6500k.png");
+        ctx.save_bgra_to_png(&f.bgra, f.width, f.height, "live_frame_09_wb_6500k.png");
     }
     runtime.set_white_balance(None); // Auto WB
 
@@ -303,7 +505,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
     runtime.set_focus(Some(0.1));
     thread::sleep(Duration::from_millis(2000));
     if let Some(f) = runtime.frames.lock().take() {
-        save_bgra_to_png(&f.bgra, f.width, f.height, "live_frame_10_focus_macro.png");
+        ctx.save_bgra_to_png(&f.bgra, f.width, f.height, "live_frame_10_focus_macro.png");
     }
     runtime.set_focus(None); // Auto Focus
 
@@ -347,7 +549,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
     for (name, preset) in presets {
         let mut pixels = base_frame.bgra.clone();
         apply_lut(&mut pixels, preset);
-        save_bgra_to_png(
+        ctx.save_bgra_to_png(
             &pixels,
             base_frame.width,
             base_frame.height,
@@ -359,7 +561,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
     // Test Portrait Bokeh Blur
     let mut bokeh_soft = base_frame.bgra.clone();
     apply_portrait_blur(&mut bokeh_soft, w, h, BlurIntensity::Soft, 0.5);
-    save_bgra_to_png(
+    ctx.save_bgra_to_png(
         &bokeh_soft,
         base_frame.width,
         base_frame.height,
@@ -368,7 +570,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
 
     let mut bokeh_dreamy = base_frame.bgra.clone();
     apply_portrait_blur(&mut bokeh_dreamy, w, h, BlurIntensity::Dreamy, 0.85);
-    save_bgra_to_png(
+    ctx.save_bgra_to_png(
         &bokeh_dreamy,
         base_frame.width,
         base_frame.height,
@@ -400,7 +602,7 @@ fn test_live_physical_device_and_pro_features_full_run() {
     // 10. Stress Testing: Cable Disconnect & Fail-Safe Recovery
     println!("\n--- [STRESS TEST 2] Cable Glitch / Disconnect Simulation ---");
     println!("-> Removing ADB reverse to simulate sudden physical USB pull...");
-    run_adb(&["reverse", "--remove", "tcp:48721"]);
+    ctx.run_adb(&["reverse", "--remove", "tcp:48721"]);
 
     // Observe fail-safe slate
     println!("-> Waiting 1.5s: Checking fail-safe frame hold...");
@@ -412,10 +614,10 @@ fn test_live_physical_device_and_pro_features_full_run() {
 
     // Restore USB connection
     println!("-> Restoring ADB reverse tunnel (tcp:48721)...");
-    run_adb(&["reverse", "tcp:48721", "tcp:48721"]);
+    ctx.run_adb(&["reverse", "tcp:48721", "tcp:48721"]);
 
     // Re-trigger reconnect via service intent
-    run_adb(&[
+    ctx.run_adb(&[
         "shell",
         "am",
         "start-foreground-service",

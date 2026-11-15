@@ -67,6 +67,28 @@ Every agent or contributor modifying or extending PhoneCam must adhere strictly 
 - Phases: `Idle -> Connecting -> Connected -> Streaming -> Reconnecting`.
 - **Invariant**: The `Streaming` phase is entered **only** when at least one decoded frame has been written to the framebus. A live socket or phone-side `streaming: true` flag is necessary but not sufficient.
 
+### 1.9 Strict Zero-Telemetry & Local-Only Media Invariant
+- **Zero Cloud Infrastructure**: PhoneCam must never transmit user data, audio, video frames, telemetry, crash reporting, or analytics across the internet.
+- **Offline First**: All operations must function normally on isolated local air-gapped networks or direct USB tethering without internet connectivity.
+- **Local Media & AI Processing**: All video decoding (`openh264`), color grading (LUTs), portrait bokeh blurring, and auto-framing tracking execute 100% locally in-process on host CPU/GPU shaders.
+
+### 1.10 PhoneCam Pro Processing & Controls Invariant
+- **In-Place BGRA Effects**: Color LUT presets (Natural, Warm Studio, Cool Corporate, Vibrant Streamer, Monochrome) and Portrait Bokeh blur execute in-place on premultiplied BGRA buffers with zero dynamic heap allocations on the 60 FPS hot path.
+- **Auto-Framing Smoothing**: Aspect-ratio preserving digital crop calculations utilize temporal exponential smoothing ($\alpha = 0.12$) clamped to sensor boundaries.
+- **Continuous Session Handoff**: Multi-lens camera switches (`0.5x`, `1.0x`, `3.0x`, `Front`) and manual sensor parameter updates (Exposure EV compensation, White Balance Kelvin, Focus diopter distance, Anti-Flicker) must execute seamlessly without tearing down or reconnecting the active streaming session.
+- **OLED Pure-Black Mode**: True-black `#000000` (0-nit) AMOLED rendering with anti-burn-in coordinate drift every minute and tap-to-peek toggle.
+- **Multiplexed Low-Latency Audio**: Microsecond-synchronized audio streaming over unified TCP channel (`ChannelRole::Audio = 3`).
+
+### 1.11 Privacy, Anonymity & Path Generality Invariant
+- **Zero Hardcoded Personal Paths**: Source code, test suites, build scripts, markdown documentation, and configuration files must **never** hardcode user directories (`C:\Users\...`, `/home/...`), personal usernames, developer machine drive letters (`D:\...`), or specific hardware device serials (e.g. `79134849`).
+- **Standard Dynamic Resolution Contract**:
+  - **Device Serials**: Resolved dynamically via `std::env::var("ANDROID_SERIAL")`, fallback to running `adb get-serialno` or parsing `adb devices` for state `device`. If no device is detected, tests must skip gracefully (`println!("SKIPPED: No Android device detected")`) rather than failing or hanging.
+  - **ADB Executable**: Resolved dynamically via `std::env::var("PHONECAM_ADB_PATH")`, fallback to workspace relative staging (`dist/unpacked/adb.exe`), system `PATH`, or standard SDK install locations (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, `LOCALAPPDATA`).
+  - **Artifact Directory**: Resolved dynamically via `std::env::var("PHONECAM_ARTIFACT_DIR")`, fallback to `std::env::temp_dir().join("phonecam-artifacts")`. Never target private user profiles, agent brains, or conversation directories.
+  - **Android NDK**: Resolved dynamically via `ANDROID_NDK_HOME`, `ANDROID_NDK_ROOT`, or standard SDK search paths. Never hardcode machine-specific drive letters or local SDK folders.
+  - **Service Ports**: Configured via `PHONECAM_PORT` (defaults to `48721` TCP / `48720` UDP).
+- **System Path Exceptions**: The only permissible hardcoded absolute system paths are standardized OS-level contracts: the Windows shared memory backing file (`C:\ProgramData\PhoneCam\framebuffer-v2.bin`) and default Windows installation paths (`C:\Program Files\PhoneCam`).
+
 ---
 
 ## 2. Workspace & Crate Organization
@@ -170,6 +192,17 @@ Copy-Item target\release\phonecam.exe dist\unpacked\phonecam.exe -Force
 makensis scripts\installer.nsi
 # Output: dist\installer\PhoneCam-Setup-1.0.0.exe
 ```
+
+### 3.5 Physical Live Device & Integration Tests
+```powershell
+# Run physical Android live device test suite (requires phone connected via USB with USB debugging)
+$env:ANDROID_SERIAL = "your_device_serial"
+cargo test -p phonecam-app --test live_device_test -- --ignored --nocapture
+```
+Environment variables:
+- `ANDROID_SERIAL`: Specifies target Android device. If no physical phone is connected, test suite detects absence and skips gracefully without failing.
+- `PHONECAM_ADB_PATH`: Path to custom ADB executable (falls back to `PATH` or relative `dist/unpacked/adb.exe`).
+- `PHONECAM_ARTIFACT_DIR`: Destination directory for captured frames and screenshots (defaults to `%TEMP%\phonecam-artifacts`).
 
 ---
 

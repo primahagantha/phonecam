@@ -15,10 +15,23 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $RepoRoot
 try {
     if (-not $env:ANDROID_NDK_HOME -or -not (Test-Path $env:ANDROID_NDK_HOME)) {
-        $env:ANDROID_NDK_HOME = "D:\apps\android-sdk\ndk\28.2.13676358"
+        $candidateRoots = @(
+            $env:ANDROID_NDK_ROOT,
+            $(if ($env:ANDROID_HOME) { Join-Path $env:ANDROID_HOME "ndk" }),
+            $(if ($env:ANDROID_SDK_ROOT) { Join-Path $env:ANDROID_SDK_ROOT "ndk" }),
+            $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Android\Sdk\ndk" })
+        ) | Where-Object { $_ -and (Test-Path $_) }
+
+        foreach ($root in $candidateRoots) {
+            $latest = Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+            if ($latest) {
+                $env:ANDROID_NDK_HOME = $latest.FullName
+                break
+            }
+        }
     }
-    if (-not (Test-Path $env:ANDROID_NDK_HOME)) {
-        throw "ANDROID_NDK_HOME not found at '$($env:ANDROID_NDK_HOME)'"
+    if (-not $env:ANDROID_NDK_HOME -or -not (Test-Path $env:ANDROID_NDK_HOME)) {
+        throw "ANDROID_NDK_HOME is not set or not found. Please set ANDROID_NDK_HOME to your Android NDK installation directory."
     }
 
     $cargoNdkVersion = & cargo ndk --version 2>&1

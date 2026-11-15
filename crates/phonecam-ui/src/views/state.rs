@@ -320,7 +320,7 @@ impl Default for Settings {
             exposure: 0,
             white_balance_kelvin: None,
             focus_distance: None,
-            lut_preset: phonecam_media::LutPreset::Natural,
+            lut_preset: phonecam_media::LutPreset::None,
             portrait_blur: false,
             portrait_blur_intensity: 0.70,
             auto_framing: false,

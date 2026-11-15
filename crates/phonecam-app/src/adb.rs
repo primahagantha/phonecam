@@ -55,6 +55,16 @@ impl Adb {
         exe_dir: Option<&std::path::Path>,
         current_dir: Option<&std::path::Path>,
     ) -> Result<Self, String> {
+        // 1. Explicit environment variable override takes precedence.
+        if let Ok(env_path) = std::env::var("PHONECAM_ADB_PATH") {
+            if !env_path.is_empty() {
+                let candidate = PathBuf::from(env_path);
+                if candidate.is_file() {
+                    return Ok(Self { path: candidate });
+                }
+            }
+        }
+
         let mut candidates: Vec<PathBuf> = Vec::new();
 
         if let Some(dir) = exe_dir {
@@ -116,11 +126,6 @@ impl Adb {
                 candidates.push(entry.join("adb.exe"));
             }
         }
-
-        // Dev fallback last, so packaged or user-configured tools always win.
-        candidates.push(PathBuf::from(
-            r"D:\production\phonecam\third_party\platform-tools\adb.exe",
-        ));
 
         for candidate in candidates {
             if candidate.is_file() {
@@ -544,8 +549,11 @@ mod tests {
         }
     }
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn locate_finds_dist_unpacked_from_target_release_and_workspace() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let root = TempDirGuard::new("dist_unpacked");
         let dist_adb = root.0.join("dist").join("unpacked").join("adb.exe");
         std::fs::create_dir_all(dist_adb.parent().unwrap()).unwrap();
@@ -582,6 +590,24 @@ mod tests {
         assert_eq!(
             found_beside_exe.path().canonicalize().unwrap(),
             exe_adb.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn locate_respects_phonecam_adb_path_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = TempDirGuard::new("adb_env_override");
+        let custom_adb = root.0.join("custom-adb.exe");
+        std::fs::write(&custom_adb, b"").unwrap();
+
+        std::env::set_var("PHONECAM_ADB_PATH", &custom_adb);
+        let found =
+            Adb::locate(None).expect("locate should find custom adb from PHONECAM_ADB_PATH");
+        std::env::remove_var("PHONECAM_ADB_PATH");
+
+        assert_eq!(
+            found.path().canonicalize().unwrap(),
+            custom_adb.canonicalize().unwrap()
         );
     }
 

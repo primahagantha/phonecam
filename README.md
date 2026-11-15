@@ -25,8 +25,17 @@ PhoneCam is a complete, native Rust rewrite of the desktop webcam companion. Eng
 - [Overview & Architecture](#overview--architecture)
 - [Why Native Rust & GPUI (Comparison)](#why-native-rust--gpui-comparison)
 - [Key Features](#key-features)
+- [PhoneCam Pro Features](#phonecam-pro-features)
+  - [AI Auto-Framing](#ai-auto-framing-smart-center-stage)
+  - [Low-Latency Audio Streaming](#low-latency-audio-streaming)
+  - [Portrait Bokeh Background Blur](#portrait-bokeh-background-blur)
+  - [Studio Color LUT Presets](#studio-color-lut-presets)
+  - [Pure-Black OLED Ambient Display Mode](#pure-black-oled-ambient-display-mode)
+  - [Multi-Lens Optical Camera Switching](#multi-lens-optical-camera-switching)
+  - [Pro Manual Camera Controls](#pro-manual-camera-controls)
+  - [USB Auto-Connect & ADB Background Supervisor](#usb-auto-connect--adb-background-supervisor)
 - [Dual Connection Modes](#dual-connection-modes)
-- [Network Protocol & Port Reference](#network-protocol--port-reference)
+- [Network Protocol & Environment Variables](#network-protocol--environment-variables)
 - [System Requirements](#system-requirements)
 - [Installation & Quick Start (Pre-Built Binaries)](#installation--quick-start-pre-built-binaries)
   - [1. Android APK Installation](#1-android-apk-installation)
@@ -39,9 +48,13 @@ PhoneCam is a complete, native Rust rewrite of the desktop webcam companion. Eng
   - [3. Android Native Rust JNI Core](#3-android-native-rust-jni-core)
   - [4. Android APK](#4-android-apk)
   - [5. Linux Desktop Application](#5-linux-desktop-application)
+- [Testing & Quality Assurance](#testing--quality-assurance)
+  - [Automated Workspace Tests](#automated-workspace-tests)
+  - [Physical Live Device Test Suite](#physical-live-device-test-suite)
+  - [Environment Variables for Testing](#environment-variables-for-testing)
 - [Virtual Camera Registration](#virtual-camera-registration)
 - [Repository & Workspace Crates](#repository--workspace-crates)
-- [Security & Privacy Guarantee](#security--privacy-guarantee)
+- [Security & Privacy Guarantee (Zero Telemetry)](#security--privacy-guarantee-zero-telemetry)
 - [Troubleshooting & FAQ](#troubleshooting--faq)
 - [Contributing](#contributing)
 - [Changelog](#changelog)
@@ -147,6 +160,98 @@ flowchart LR
 
 ---
 
+## PhoneCam Pro Features
+
+PhoneCam Pro elevates the desktop companion into a studio-grade virtual camera workstation. All pro features run **100% locally on your machine with zero cloud connectivity and zero telemetry**, leveraging in-process SIMD and GPU-accelerated video shaders. Each feature includes an intuitive on/off toggle directly accessible in the desktop GUI:
+
+```mermaid
+flowchart LR
+    subgraph Capture["Android Device (Camera2)"]
+        Sensors["Multi-Lens (0.5x, 1.0x, 3.0x, Front)"]
+        Manual["Manual EV / Kelvin / Focus"]
+        OLED["Pure-Black OLED Display"]
+    end
+    
+    subgraph Transport["Unified Link (USB/Wi-Fi)"]
+        TCP["TCP 48721 Video + Audio"]
+    end
+
+    subgraph Processing["PhoneCam Pro Engine (Single Process)"]
+        AutoFrame["AI Auto-Framing (Temporal Smoothing)"]
+        Bokeh["Portrait Bokeh Blur (Hermite Feather)"]
+        LUT["5 Studio Color LUT Presets"]
+        Audio["Low-Latency Audio Sync Engine"]
+    end
+
+    subgraph Output["Outputs"]
+        VCam["Windows Virtual Camera (OBS/Zoom/Meet)"]
+        Speaker["Virtual Mic / Playback"]
+    end
+
+    Sensors --> TCP
+    Manual --> TCP
+    TCP --> AutoFrame --> Bokeh --> LUT --> VCam
+    TCP --> Audio --> Speaker
+```
+
+For comprehensive technical specifications and math models, see [docs/pro-features.md](docs/pro-features.md).
+
+### AI Auto-Framing (Smart Center Stage)
+- **Dynamic Face & Body Tracking**: Intelligently tracks the presenter's position within the camera frame, providing automatic digital pan, tilt, and zoom to keep you perfectly composed as you move around your workspace.
+- **Temporal Exponential Smoothing**: Utilizes a dual-axis exponential moving average filter (`smoothing = 0.12`, configurable zoom from `1.0x` to `2.5x`) to eliminate abrupt tracking snap, delivering buttery-smooth cinematic camera reframing.
+- **Dedicated GUI On/Off Toggle**: Fast 1-click toggle switch in the desktop Capture panel. Can be engaged or disengaged instantly without restarting video streaming.
+
+### Low-Latency Audio Streaming
+- **Microphone Passthrough**: Streams synchronized microphone audio directly from your Android phone's mic array to your PC, turning your phone into an ultra-low latency studio microphone.
+- **Dedicated Protocol Channel**: Multiplexed over the unified TCP transport via `ChannelRole::Audio = 3` alongside video, preserving microsecond-accurate lip-sync (`timestamp_us`).
+- **Dedicated GUI On/Off Toggle**: Simple on/off toggle switch in both the Capture and Setup panels, allowing video-only or audio-video operation.
+
+### Portrait Bokeh Background Blur
+- **Cinematic Depth of Field**: Softens cluttered home offices or distracting backgrounds, rendering an aesthetic optical lens blur while keeping the presenter in razor-sharp focus.
+- **Separable 2D Box Blur with Hermite Feathering**: Utilizes a two-pass horizontal and vertical box blur combined with an elliptical subject mask feathered via smooth cubic Hermite polynomial interpolation ($3t^2 - 2t^3$) to prevent unnatural haloing around shoulders and hair.
+- **3 Calibrated Intensity Levels**: Choose between **Soft** (radius: 3), **Studio** (radius: 6), and **Dreamy** (radius: 10) presets, plus an interactive blend intensity slider (0% to 100%).
+- **Dedicated GUI On/Off Toggle**: Toggle on/off instantly with persistent state saved in `desktop-settings.json`.
+
+### Studio Color LUT Presets
+- **In-Process Real-Time Color Grading**: Transforms video color dynamics in-place on premultiplied BGRA pixel buffers with zero dynamic allocations on the 60 FPS hot path.
+- **5 Calibrated Studio Presets + Off Toggle**:
+  - **Natural**: True-to-life passthrough sensor calibration.
+  - **Warm Studio**: Enhanced warm spectrum (+red/warm warmth, +10% contrast) for flattering skin tones under home desk lighting.
+  - **Cool Corporate**: Crisp blue tones, lifted shadow detail, and clean whites for executive videoconferences.
+  - **Vibrant Streamer**: +35% saturation punch with ITU-R BT.601 luma preservation for vivid gaming backdrops and creator streams.
+  - **Monochrome**: High-contrast, classic black-and-white luminance filter.
+  - **None / Off**: Clean bypass option to disable color grading and output raw sensor tones.
+
+### Pure-Black OLED Ambient Display Mode
+- **0-Nit True-Black Pixel Shutoff**: For AMOLED and OLED smartphones, the phone screen renders `#000000` (100% black) across the entire display. Pixels physically turn off, drastically reducing phone temperatures by up to **8°C–12°C** and eliminating nighttime screen glare.
+- **Anti-Burn-In Protection**: Features a dim, minimalist clock at 20% white opacity (`#33FFFFFF`), a battery level indicator, and a discrete `● LIVE` badge. The coordinates subtly shift every minute to eliminate static pixel burn-in.
+- **Tap-to-Peek Navigation**: Single tap on the black screen reveals full viewfinder controls and status readouts; a second tap restores pure-black ambient stillness.
+- **Selectable Screen Modes**: Choose between **Keep Screen On**, **Dim Screen**, or **Pure-Black Ambient**.
+
+### Multi-Lens Optical Camera Switching
+- **Physical Multi-Lens Enumeration**: Automatically detects and enumerates the physical rear and front camera sensors on multi-camera Android devices.
+- **One-Click Instant Switching**: Switch seamlessly between lenses without interrupting the active video stream:
+  - **Ultra-Wide (0.5x)**: Wide field of view (<24mm equivalent) for boardrooms, group meetings, and full-room capture.
+  - **Wide (1.0x)**: Primary main camera sensor (24mm–50mm equivalent) for standard desktop framing.
+  - **Telephoto (3.0x)**: Dedicated optical zoom lens (>50mm equivalent) for tight, flattering portrait framing without digital degradation.
+  - **Front**: Front-facing selfie camera for phone-facing setups.
+- **Interactive UI Pills**: Dedicated lens selector pills (`0.5x`, `1.0x`, `3.0x`, `Front`) in the desktop Capture panel.
+
+### Pro Manual Camera Controls
+- **Direct Sensor-Level Manual Overrides**: Fine-tune camera parameters directly from the desktop companion via Android Camera2 hardware hooks:
+  - **Exposure Compensation (EV)**: Fine-grain exposure bias adjustment slider clamped to your physical camera sensor's hardware limits (`CONTROL_AE_COMPENSATION_RANGE`).
+  - **Manual Kelvin White Balance**: Toggle between Auto White Balance (AWB) and precision manual color temperature adjustment (2000K to 8000K) to eliminate unflattering color casts.
+  - **Manual Diopter Focus (Macro Focus)**: Switch from continuous autofocus (AF) to precision manual diopter focal distance (0.0 to 10.0+ diopters) for razor-sharp product close-ups and macro framing.
+  - **Anti-Flicker Mode**: Selectable `Auto`, `50Hz`, or `60Hz` mains frequency anti-banding to eliminate rolling light hum under fluorescent or LED lighting.
+
+### USB Auto-Connect & ADB Background Supervisor
+- **Frictionless Zero-Click Connection**: A dedicated background supervisor continuously monitors USB device attachment events.
+- **Automated ADB Port Forwarding**: Automatically runs `adb reverse tcp:48721 tcp:48721` the moment your device is plugged in with USB debugging enabled.
+- **Auto-Connect Toggle**: With "Auto-Connect on USB Plug" enabled in Preferences, plugging in your phone starts live streaming immediately without requiring manual clicks on the phone or PC.
+- **Minimize to Tray**: Window close minimizes to the system notification area tray (`Shell_NotifyIcon`), ensuring the virtual camera feed remains uninterrupted for OBS, Discord, and Zoom.
+
+---
+
 ## Dual Connection Modes
 
 PhoneCam supports both wireless freedom and tethered reliability using a single unified protocol:
@@ -196,15 +301,26 @@ sequenceDiagram
 
 ---
 
-## Network Protocol & Port Reference
+## Network Protocol & Environment Variables
 
 | Port / Interface | Protocol | Direction | Purpose | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | **48720** | UDP | Phone ⇄ Desktop | LAN Discovery Beacon | Periodic presence beacon broadcast |
-| **48721** | TCP | Phone → Desktop | Primary Service & Video Stream | Length-prefixed JSON control & H.264 video |
+| **48721** | TCP | Phone → Desktop | Primary Service & Video Stream | Length-prefixed JSON control, H.264 video, PCM audio |
 | **48723** | TCP | *Eliminated* | Legacy Loopback IPC | Removed in Rust rewrite; no longer used |
 
-### Environment Variable Overrides
+### Runtime & Testing Environment Variables
+
+PhoneCam respects standard environment variables across the runtime, test harness, and build scripts:
+
+| Variable | Scope | Description | Default Fallback |
+| :--- | :--- | :--- | :--- |
+| `PHONECAM_PORT` | Runtime | Port override for desktop TCP listener & UDP broadcast | `48721` (TCP) / `48720` (UDP) |
+| `ANDROID_SERIAL` | Testing / Tooling | Target Android device serial for ADB reverse and test harness | Auto-detected via `adb get-serialno` or first device in `adb devices` |
+| `PHONECAM_ADB_PATH` | Testing / Tooling | Custom path to Android Debug Bridge binary | Searches system `PATH`, falls back to relative `dist/unpacked/adb.exe` |
+| `PHONECAM_ARTIFACT_DIR`| Testing | Destination directory for test screenshots & video frame dumps | System temp directory (`%TEMP%\phonecam-artifacts` or `/tmp/phonecam-artifacts`) |
+
+#### Port Override Example
 If another application or legacy service binds to port 48721, PhoneCam can be directed to bind an alternate port:
 ```powershell
 $env:PHONECAM_PORT = 48791
@@ -439,6 +555,68 @@ The compiled Linux executable will be located at:
 
 ---
 
+## Testing & Quality Assurance
+
+PhoneCam maintains an extensive test suite across Rust crates and Android components, ensuring absolute stability on the high-throughput video hot path.
+
+### Automated Workspace Tests
+Run unit, protocol wire-format, and integration tests across all 7 workspace crates:
+```powershell
+# Run full workspace test suite (230+ tests across 7 crates)
+cargo test --workspace
+
+# Run individual crate test suites
+cargo test -p phonecam-protocol
+cargo test -p phonecam-framebus
+cargo test -p phonecam-media
+cargo test -p phonecam-core
+cargo test -p phonecam-ui
+cargo test -p phonecam-app --test end_to_end
+```
+
+### Android JVM Unit Tests
+Test Camera2 state machine, physical lens detection, and JNI bindings without needing an emulator:
+```powershell
+cd apps\android
+.\gradlew.bat test
+cd ..\..
+```
+
+### Physical Live Device Test Suite
+PhoneCam includes an automated end-to-end physical device verification suite (`crates/phonecam-app/tests/live_device_test.rs`). It connects to a real physical phone over USB/ADB, starts the camera, verifies H.264 stream decoding, drives the OLED ambient mode, switches physical camera lenses, exercises manual exposure/white balance/focus, toggles audio streaming, tests AI Color LUTs and Portrait Blur, and captures verification screenshots.
+
+```powershell
+# Run the live physical device test suite
+cargo test -p phonecam-app --test live_device_test -- --ignored --nocapture
+```
+
+### Environment Variables for Testing
+The live device test suite is 100% generic and accepts configuration via environment variables:
+
+- **`ANDROID_SERIAL`**: Target device serial. If not specified, the suite runs `adb get-serialno` or parses `adb devices` to target the connected phone. If no physical phone is connected, the test skips gracefully without failing CI:
+  ```powershell
+  $env:ANDROID_SERIAL = "your_device_serial"
+  ```
+- **`PHONECAM_ADB_PATH`**: Path to the `adb` executable. If unset, checks `PATH` followed by `dist\unpacked\adb.exe`:
+  ```powershell
+  $env:PHONECAM_ADB_PATH = "C:\Android\platform-tools\adb.exe"
+  ```
+- **`PHONECAM_ARTIFACT_DIR`**: Output directory for captured test frames and phone screenshots. Defaults to `%TEMP%\phonecam-artifacts`:
+  ```powershell
+  $env:PHONECAM_ARTIFACT_DIR = "C:\TestArtifacts\phonecam"
+  ```
+
+### Static Analysis, Linting & Formatting
+```powershell
+# Code formatting check
+cargo fmt --all -- --check
+
+# Strict Clippy lint check (zero warnings tolerated)
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+---
+
 ## Virtual Camera Registration
 
 ### Windows (Automatic Elevation & CLI)
@@ -490,12 +668,16 @@ phonecam/
 
 ---
 
-## Security & Privacy Guarantee
+## Security & Privacy Guarantee (Zero Telemetry)
 
-- **Zero Cloud Infrastructure**: PhoneCam never transmits telemetry, audio, or video across the internet. All communication occurs strictly within your local network or through the physical USB cable.
+PhoneCam is built from first principles as an **offline-first, zero-cloud, privacy-preserving webcam system**:
+
+- **Strict Zero-Telemetry Invariant**: PhoneCam never collects analytics, telemetry, diagnostics pings, or crash reporting data. There are zero background network calls to third-party endpoints or external servers. All operations run strictly on your local computer and private local network (or direct USB cable).
+- **100% Local-Only Media & AI Processing**: All video decoding (`openh264`), color grading (LUTs), portrait background blurring (SIMD/GPU), and AI auto-framing tracking execute entirely in-process on your local CPU and GPU. Raw video frames and microphone audio never touch the internet or external cloud APIs.
 - **Cryptographic Pairing**: Devices pair using ephemeral 128-bit CSPRNG tokens that expire in 5 minutes and require explicit on-screen user approval on the desktop.
-- **HMAC-SHA256 Authentication**: Every subsequent session is verified using a shared 256-bit secret and authenticated against strictly increasing nonces to make replay attacks mathematically impossible.
-- **Automated Log Redaction**: The internal logger runs an aggressive redaction filter that automatically strips out any 32- or 64-character hexadecimal tokens from debug logs, ensuring secrets are never leaked into log files.
+- **HMAC-SHA256 Authentication & Monotonic Replay Guard**: Every subsequent session is verified using a shared 256-bit secret stored in `%APPDATA%\PhoneCam\devices.json` and authenticated against strictly increasing 64-bit client nonces (`client_nonce`) to make replay attacks mathematically impossible.
+- **Automated Memory Redaction**: The internal logger runs an aggressive redaction filter that automatically strips out any 32- or 64-character hexadecimal tokens from debug logs, ensuring secrets and session tokens are never leaked into log files.
+- **Local Shared Memory Isolation**: Frame delivery to the virtual camera occurs via local Windows memory-mapped files (`framebuffer-v2.bin`) protected by atomic seqlocks, isolated entirely from the public network.
 
 ---
 
