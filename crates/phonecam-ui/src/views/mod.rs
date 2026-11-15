@@ -46,6 +46,7 @@ pub struct AppView {
     qr_payload_cached: Option<String>,
     pub focus_handle: Option<gpui::FocusHandle>,
     pub scroll_handle: gpui::ScrollHandle,
+    pub scroll_handles: [gpui::ScrollHandle; 4],
 }
 
 impl AppView {
@@ -63,6 +64,12 @@ impl AppView {
             qr_payload_cached: None,
             focus_handle: None,
             scroll_handle: gpui::ScrollHandle::new(),
+            scroll_handles: [
+                gpui::ScrollHandle::new(),
+                gpui::ScrollHandle::new(),
+                gpui::ScrollHandle::new(),
+                gpui::ScrollHandle::new(),
+            ],
         }
     }
 
@@ -287,12 +294,8 @@ impl Render for AppView {
             .child(stage);
 
         if !self.focus_preview {
-            content_row = content_row.child(panels::rail(
-                &self.state,
-                self.tab,
-                narrow,
-                &self.scroll_handle,
-            ));
+            let handle = &self.scroll_handles[self.tab.index()];
+            content_row = content_row.child(panels::rail(&self.state, self.tab, narrow, handle));
         }
 
         let mut root = div()

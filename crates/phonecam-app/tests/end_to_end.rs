@@ -754,3 +754,60 @@ fn stepped_camera_retries_on_initial_camera_start_failure() {
         "stepped retry must issue start_stream again after delay"
     );
 }
+
+#[test]
+fn rapid_stress_test_coalesces_commands_and_recovers() {
+    let (runtime, port) = runtime();
+    let payloads = runtime.arm_pairing();
+    let payload: serde_json::Value = serde_json::from_str(&payloads[0]).unwrap();
+    let token = payload["token"].as_str().unwrap().to_string();
+
+    let mut phone = Phone::dial(port);
+    phone.read_greeting();
+    phone.handshake(ChannelRole::Control, AuthMode::PairingToken, 1, &token);
+    assert_eq!(phone.read_response().status as u8, 0);
+
+    let welcome = phone.read_control().expect("welcome");
+    assert_eq!(welcome["t"], "welcome");
+
+    // Rapidly toggle 50 commands (Start, Stop, SetVideo, SetExposure, SetZoom) in tight burst
+    for i in 0..50 {
+        if i % 2 == 0 {
+            runtime.start_stream();
+        } else {
+            runtime.stop_stream();
+        }
+        runtime.set_video(format!("{}p", 480 + (i % 3) * 240), Some(30), 4_000_000);
+        runtime.set_exposure((i % 5) - 2);
+        runtime.set_zoom(1.0 + (i % 4) as f32);
+    }
+    // Final user intent: start the stream at 1080p
+    runtime.set_video("1080p".into(), Some(30), 8_000_000);
+    runtime.start_stream();
+
+    // Verify outbox was properly coalesced (does not contain 200+ raw spam entries)
+    let outbox_len = runtime.outbox.lock().len();
+    assert!(
+        outbox_len <= 10,
+        "rapid stress test must coalesce commands in outbox, but saw {outbox_len}"
+    );
+
+    phone
+        .stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+
+    let mut delivered_types = Vec::new();
+    while let Some(msg) = phone.read_control() {
+        let t = msg["t"].as_str().unwrap_or_default().to_string();
+        delivered_types.push(t.clone());
+        if t == "start_stream" {
+            break;
+        }
+    }
+
+    assert!(
+        delivered_types.iter().any(|t| t == "start_stream"),
+        "phone must ultimately receive the coalesced start_stream command; saw {delivered_types:?}"
+    );
+}

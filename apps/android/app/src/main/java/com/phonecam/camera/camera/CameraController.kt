@@ -248,14 +248,9 @@ class CameraController(private val context: Context) {
          */
         previewSurface: Surface? = null,
         /**
-         * Keep the camera handler thread alive across the teardown.
-         *
-         * A camera switch closes one device and opens another on the same
-         * thread. Quitting that thread and starting a replacement costs a
-         * `quitSafely` drain plus a join — a quarter of a second on this phone,
-         * which the viewer sees as the freeze at the start of every switch.
+         * Keep the camera handler thread alive across teardown and reconfiguration.
          */
-        keepThread: Boolean = false,
+        keepThread: Boolean = true,
     ) {
         if (keepThread && thread != null) {
             closeDevice()
@@ -321,6 +316,20 @@ class CameraController(private val context: Context) {
                 camera.close()
                 if (generation != cameraGeneration) return
                 device = null
+                if ((error == ERROR_CAMERA_IN_USE || error == ERROR_MAX_CAMERAS_IN_USE) && generation == cameraGeneration) {
+                    // Under rapid camera switching or start/stop toggles, Camera2 HAL may still be
+                    // completing the close of the previous camera instance. A brief retry avoids failing.
+                    handler?.postDelayed({
+                        if (generation == cameraGeneration && device == null) {
+                            try {
+                                cameraManager.openCamera(cameraId, this, handler)
+                            } catch (_: Throwable) {
+                                onError("Your camera is being used by another app. Close the other camera app and retry.")
+                            }
+                        }
+                    }, 200L)
+                    return
+                }
                 val message = when (error) {
                     ERROR_CAMERA_IN_USE, ERROR_MAX_CAMERAS_IN_USE ->
                         "Your camera is being used by another app. Close the other camera app and retry."
@@ -1051,6 +1060,10 @@ class CameraController(private val context: Context) {
     }
 
     fun stop() {
+        closeDevice()
+    }
+
+    fun release() {
         closeDevice()
         stopThread()
     }

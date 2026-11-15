@@ -563,7 +563,6 @@ pub fn rail(state: &AppState, tab: Tab, narrow: bool, scroll_handle: &ScrollHand
                 .flex()
                 .flex_col()
                 .flex_1()
-                .h_full()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
                 .track_scroll(scroll_handle)

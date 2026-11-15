@@ -577,6 +577,7 @@ class StreamSession(
     fun stop() {
         audioStreamer.stop()
         stopStreaming(notifyPeer = false)
+        camera.release()
         stopStatsLoop()
         stopReconnecting()
         disconnect(notifyPeer = true)

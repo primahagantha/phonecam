@@ -179,6 +179,12 @@ pub struct Runtime {
     pub camera_retry: Arc<Mutex<phonecam_core::CameraRetryTracker>>,
     /// Generation counter used to cancel obsolete pending retry threads.
     pub camera_retry_generation: Arc<AtomicU64>,
+    /// Generation counter for the active control channel to prevent stale teardowns.
+    pub control_generation: Arc<AtomicU64>,
+    /// Generation counter for the active video channel to prevent stale teardowns.
+    pub video_generation: Arc<AtomicU64>,
+    /// Generation counter for the active audio channel to prevent stale teardowns.
+    pub audio_generation: Arc<AtomicU64>,
     /// Recycled BGRA buffers returned from the UI pump to prevent per-frame allocations.
     pub spare_buffers: Arc<Mutex<Vec<Vec<u8>>>>,
     /// Counter bumped on state mutations so the UI only clones AppState when changed.
@@ -277,6 +283,9 @@ impl Runtime {
             self_weak: weak.clone(),
             camera_retry: Arc::new(Mutex::new(phonecam_core::CameraRetryTracker::new())),
             camera_retry_generation: Arc::new(AtomicU64::new(0)),
+            control_generation: Arc::new(AtomicU64::new(0)),
+            video_generation: Arc::new(AtomicU64::new(0)),
+            audio_generation: Arc::new(AtomicU64::new(0)),
             spare_buffers: Arc::new(Mutex::new(Vec::new())),
             state_version: Arc::new(AtomicU64::new(1)),
             bytes_in: Arc::new(AtomicU64::new(0)),
@@ -891,7 +900,9 @@ impl Runtime {
 
     /// The control channel: JSON messages, one per frame.
     fn run_control(self: &Arc<Self>, conn: Connection) {
-        conn.set_read_timeout(Some(std::time::Duration::from_millis(1000)))
+        let control_gen = self.control_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        // Fast polling read timeout: checks flush_pending every 50ms so UI commands dispatch instantly.
+        conn.set_read_timeout(Some(std::time::Duration::from_millis(50)))
             .ok();
 
         // Tell the phone who we are before anything else.
@@ -912,7 +923,9 @@ impl Runtime {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         if self.session.stream_wanted.load(Ordering::Relaxed)
-            || (conn.is_loopback() && self.state.lock().settings.auto_connect_usb)
+            || (conn.is_loopback()
+                && self.active_usb_serial.lock().is_some()
+                && self.state.lock().settings.auto_connect_usb)
             || auto_start_env
         {
             self.log_info(
@@ -927,6 +940,12 @@ impl Runtime {
         loop {
             if !self.running.load(Ordering::Relaxed) {
                 break;
+            }
+            if self.control_generation.load(Ordering::SeqCst) != control_gen {
+                tracing::info!(
+                    "newer control connection active; gracefully stopping stale control loop"
+                );
+                return;
             }
 
             // Commands queued by the UI and the stats thread go out here, on the
@@ -1028,14 +1047,19 @@ impl Runtime {
             }
         }
 
-        // Teardown: no surface may name a phone or a link that is gone.
-        self.session.note_control_closed();
-        self.broadcast_state();
-        tracing::info!("control channel closed");
+        // Teardown: only clear session if this was the latest active control connection.
+        if self.control_generation.load(Ordering::SeqCst) == control_gen {
+            self.session.note_control_closed();
+            self.broadcast_state();
+            tracing::info!("control channel closed");
+        } else {
+            tracing::info!("stale control channel closed; keeping newer connection active");
+        }
     }
 
     /// The video channel: H.264 packets in, decoded frames out.
     fn run_video(self: &Arc<Self>, conn: Connection) {
+        let video_gen = self.video_generation.fetch_add(1, Ordering::SeqCst) + 1;
         conn.set_read_timeout(Some(std::time::Duration::from_millis(2000)))
             .ok();
         self.session.note_video_channel_opened();
@@ -1059,6 +1083,12 @@ impl Runtime {
         loop {
             if !self.running.load(Ordering::Relaxed) {
                 break;
+            }
+            if self.video_generation.load(Ordering::SeqCst) != video_gen {
+                tracing::info!(
+                    "newer video connection active; gracefully stopping stale video loop"
+                );
+                return;
             }
             // A video channel that goes quiet is a stalled stream, but a read
             // timeout is not proof the socket closed.
@@ -1143,14 +1173,19 @@ impl Runtime {
 
         self.sync_stage_stats();
         // The picture stops but the camera keeps the last frame until the
-        // placeholder grace period elapses in the stats thread.
-        self.session.live_frame_seen.store(false, Ordering::Relaxed);
-        self.broadcast_state();
-        tracing::info!("video channel closed");
+        // placeholder grace period elapses in the stats thread. Only clear if this was the latest video channel.
+        if self.video_generation.load(Ordering::SeqCst) == video_gen {
+            self.session.live_frame_seen.store(false, Ordering::Relaxed);
+            self.broadcast_state();
+            tracing::info!("video channel closed");
+        } else {
+            tracing::info!("stale video channel closed; keeping newer stream active");
+        }
     }
 
     /// The audio channel: reads incoming PCM 16-bit audio payloads and calculates live levels.
     fn run_audio(self: &Arc<Self>, conn: Connection) {
+        let audio_gen = self.audio_generation.fetch_add(1, Ordering::SeqCst) + 1;
         conn.set_read_timeout(Some(std::time::Duration::from_millis(500)))
             .ok();
         tracing::info!("audio channel opened");
@@ -1160,6 +1195,10 @@ impl Runtime {
         let mut last_report_ms = 0i64;
 
         while self.running.load(Ordering::Relaxed) {
+            if self.audio_generation.load(Ordering::SeqCst) != audio_gen {
+                tracing::info!("newer audio channel active; gracefully stopping stale audio loop");
+                return;
+            }
             match conn.read_some(&mut buf) {
                 ReadResult::Ok(n) => {
                     self.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
@@ -1914,10 +1953,54 @@ impl Runtime {
     }
 
     fn send_to_phone(&self, message: DesktopToPhone) {
-        // The control socket is owned by its loop, so this queues rather than
-        // writes. Dropping the oldest under pressure would lose a stop_stream,
-        // so the queue is bounded generously instead.
         let mut outbox = self.outbox.lock();
+        // Coalesce rapid control changes so the phone isn't flooded with obsolete commands
+        match &message {
+            DesktopToPhone::StartStream => {
+                outbox.retain(|m| {
+                    !matches!(m, DesktopToPhone::StopStream | DesktopToPhone::StartStream)
+                });
+            }
+            DesktopToPhone::StopStream => {
+                outbox.retain(|m| {
+                    !matches!(m, DesktopToPhone::StartStream | DesktopToPhone::StopStream)
+                });
+            }
+            DesktopToPhone::SetVideo { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetVideo { .. }));
+            }
+            DesktopToPhone::SetCamera { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetCamera { .. }));
+            }
+            DesktopToPhone::SetImage { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetImage { .. }));
+            }
+            DesktopToPhone::SetExposure { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetExposure { .. }));
+            }
+            DesktopToPhone::SetWhiteBalance { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetWhiteBalance { .. }));
+            }
+            DesktopToPhone::SetFocus { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetFocus { .. }));
+            }
+            DesktopToPhone::SetAntiFlicker { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetAntiFlicker { .. }));
+            }
+            DesktopToPhone::SetScreen { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetScreen { .. }));
+            }
+            DesktopToPhone::SetTorch { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetTorch { .. }));
+            }
+            DesktopToPhone::SetQualityMode { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetQualityMode { .. }));
+            }
+            DesktopToPhone::SetAudioStream { .. } => {
+                outbox.retain(|m| !matches!(m, DesktopToPhone::SetAudioStream { .. }));
+            }
+            _ => {}
+        }
         if outbox.len() < 256 {
             outbox.push(message);
         }
