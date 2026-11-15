@@ -891,12 +891,18 @@ impl Runtime {
         // Stream auto-resume on reconnect (upstream commit 220c3af):
         // If stream_wanted is true, the stream was running before the reconnect.
         // Ask the phone to resume!
-        if self.session.stream_wanted.load(Ordering::Relaxed) {
+        let auto_start_env = std::env::var("PHONECAM_AUTO_START")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if self.session.stream_wanted.load(Ordering::Relaxed)
+            || (conn.is_loopback() && self.state.lock().settings.auto_connect_usb)
+            || auto_start_env
+        {
             self.log_info(
-                "the stream was running before the reconnect; asking the phone to resume",
+                "the stream was running before the reconnect or auto-connect is active; asking the phone to start",
             );
             tracing::info!(
-                "the stream was running before the reconnect; asking the phone to resume"
+                "the stream was running before the reconnect or auto-connect is active; asking the phone to start"
             );
             self.start_stream();
         }

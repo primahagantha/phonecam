@@ -163,9 +163,10 @@ class H264Encoder(
                     runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull() ?: return null
                 }
 
-                val basicFormat = configureMediaFormat(cand, iFrameInterval = 1)
+                val basicFormat = createBasicMediaFormat(cand.width, cand.height, cand.fps, cand.bitrate)
                 try {
                     created.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                    configured = true
                 } catch (e: Throwable) {
                     Log.w(TAG, "basic configure failed on ${created.name}: ${e.message}")
                     runCatching { created.release() }
@@ -198,7 +199,7 @@ class H264Encoder(
                     runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull()
                 } ?: return null
 
-                val basicFormat = configureMediaFormat(cand, iFrameInterval = 1)
+                val basicFormat = createBasicMediaFormat(cand.width, cand.height, cand.fps, cand.bitrate)
                 fallback.configure(basicFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 val fallbackSurface = fallback.createInputSurface()
                 fallback.start()
@@ -368,6 +369,23 @@ class H264Encoder(
         private const val DEQUEUE_TIMEOUT_US = 100_000L
         private const val DRAIN_JOIN_TIMEOUT_MS = 500L
 
+        internal fun createBasicMediaFormat(
+            width: Int,
+            height: Int,
+            fps: Int,
+            bitrate: Int,
+        ): MediaFormat {
+            return MediaFormat.createVideoFormat(MIME, width, height).apply {
+                setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+                )
+                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            }
+        }
+
         internal fun configureMediaFormat(
             width: Int,
             height: Int,
@@ -385,21 +403,6 @@ class H264Encoder(
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
-                if (isCbr && specificCodecName == null) {
-                    setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
-                }
-                // Enforce Baseline profile for guaranteed compatibility with desktop openh264
-                setInteger(
-                    MediaFormat.KEY_PROFILE,
-                    MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
-                )
-                if (Build.VERSION.SDK_INT >= 21) {
-                    setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
-                }
-                // Real-time zero-latency operating mode (API 26+)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setInteger(MediaFormat.KEY_LATENCY, 0)
-                }
                 // Disallow B-frames to prevent reordering latency (API 29+)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
