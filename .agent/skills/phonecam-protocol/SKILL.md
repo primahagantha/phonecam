@@ -18,16 +18,16 @@ The PhoneCam protocol contract is strictly frozen (`PROTOCOL_VERSION = 1`). It i
 - **TypeScript**: `packages/shared-types/src/protocol.ts`
 
 ```
-┌────────────────────────────────────────────────────────┐
-│                      Android Client                    │
-└──────┬───────────────────┬───────────────────┬─────────┘
-       │ UDP Port 48720    │ TCP Port 48721    │ TCP Port 48721
-       │ (Datagram)        │ (Stream / JSON)   │ (Framed Binary)
-       ▼                   ▼                   ▼
-┌──────────────┐    ┌──────────────┐    ┌────────────────┐
-│  Discovery   │    │   Control    │    │     Video      │
-│   Channel    │    │   Channel    │    │    Channel     │
-└──────────────┘    └──────────────┘    └────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                             Android Client                             │
+└──────┬───────────────────┬───────────────────┬───────────────────┬─────┘
+       │ UDP Port 48720    │ TCP Port 48721    │ TCP Port 48721    │ TCP Port 48721
+       │ (Datagram)        │ (Stream / JSON)   │ (Framed Binary)   │ (Framed PCM)
+       ▼                   ▼                   ▼                   ▼
+┌──────────────┐    ┌──────────────┐    ┌────────────────┐   ┌───────────────┐
+│  Discovery   │    │   Control    │    │     Video      │   │     Audio     │
+│   Channel    │    │   Channel    │    │    Channel     │   │    Channel    │
+└──────────────┘    └──────────────┘    └────────────────┘   └───────────────┘
 ```
 
 ### Channel Summary
@@ -36,6 +36,7 @@ The PhoneCam protocol contract is strictly frozen (`PROTOCOL_VERSION = 1`). It i
 | **Discovery** | UDP | `48720` | Single JSON payload per UDP packet | Local network peer announcement |
 | **Service (Control)** | TCP | `48721` | Big-endian `u32` length + UTF-8 JSON | State exchange, commands, telemetry |
 | **Service (Video)** | TCP | `48721` | Big-endian `u32` totalLen + 24B Header + Payload | H.264 Annex-B video stream |
+| **Service (Audio)** | TCP | `48721` | Big-endian `u32` totalLen + 16-bit PCM Payload | Real-time microphone audio stream |
 
 > **Endianness Rule**: All integers on the wire are encoded in **Big-Endian** (network byte order).
 
@@ -102,7 +103,7 @@ In response, the client transmits its handshake:
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-- `Channel Role`: `1 = Control`, `2 = Video`.
+- `Channel Role`: `1 = Control`, `2 = Video`, `3 = Audio`.
 - `Auth Mode`:
   - `1 = PairToken`: First contact via 128-bit pairing token.
   - `2 = DeviceSecret`: Regular session via HMAC proof of shared secret.
@@ -264,6 +265,60 @@ Dispatched by adaptive bitrate ladder or manual UI settings:
 Calculates round-trip network latency (`rttUs`):
 - Desktop sends `{"type": "ping", "timestamp": 1731512400123}`
 - Phone immediately responds with `{"type": "pong", "timestamp": 1731512400123}`
+
+### 4.4 Phone -> Desktop: `capabilities` (Dynamic Hardware Negotiation)
+Transmitted by the phone after connecting or sensor enumeration, reporting hardware capabilities discovered via Camera2 `StreamConfigurationMap`:
+```json
+{
+  "type": "capabilities",
+  "device": {
+    "model": "Pixel 8 Pro",
+    "androidVersion": 34,
+    "appVersion": "1.0.0"
+  },
+  "cameras": [
+    {
+      "id": "0",
+      "facing": "back",
+      "resolutions": ["3840x2160", "1920x1080", "1280x720", "640x480"],
+      "fps": [24, 30, 60],
+      "torch": true,
+      "focus": true,
+      "zoom": true,
+      "exposure": true,
+      "whiteBalance": true,
+      "minZoom": 1.0,
+      "maxZoom": 10.0,
+      "orientationDegrees": 90
+    },
+    {
+      "id": "1",
+      "facing": "front",
+      "resolutions": ["1920x1080", "1280x720", "640x480"],
+      "fps": [30, 60],
+      "torch": false,
+      "focus": false,
+      "zoom": true,
+      "exposure": true,
+      "whiteBalance": true,
+      "minZoom": 1.0,
+      "maxZoom": 4.0,
+      "orientationDegrees": 270
+    }
+  ]
+}
+```
+Desktop consumes this to dynamically populate resolution options, unlock 60 FPS options, configure zoom bounds, and present multi-lens toggles (`0.5x`, `1.0x`, `3.0x`, `Front`).
+
+### 4.5 Desktop -> Phone: `setAudioStream`
+Dispatched when user enables or disables microphone streaming in desktop UI:
+```json
+{
+  "type": "setAudioStream",
+  "enabled": true
+}
+```
+When `enabled: true`, the phone starts its audio capture loop (via `AudioStreamer` and `RECORD_AUDIO` permission) and opens a multiplexed TCP connection using `ChannelRole::Audio = 3`.
 
 ---
 

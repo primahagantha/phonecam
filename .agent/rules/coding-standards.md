@@ -32,12 +32,24 @@ This document establishes the code quality standards, safety constraints, UI des
 - **Library Crates**: Use `thiserror` to define strongly-typed, exhaustive error enums (`ProtocolError`, `FramebusError`, `MediaError`).
 - **Application Binary**: Use `anyhow::Result` with `.context("...")` in `phonecam-app` to provide descriptive error trails.
 
-### Zero-Allocation Media Hot Path
+### Zero-Allocation Media & Computer Vision Hot Path
 - The frame processing loop handles up to 60 frames per second (over 124 MB/s of raw uncompressed video).
-- **Rules for Hot Paths**:
+- **Rules for Media Hot Paths**:
   - Zero heap allocations (`Vec::new()`, `String::from()`, `format!()`) on a per-frame basis.
   - Pre-allocate frame buffers during stream initialization or upon resolution renegotiation.
   - Use in-place conversions for YUV420P to NV12 pitch padding and BGRA color conversions.
+- **Rules for Computer Vision (CV) Hot Path**:
+  - `FaceDetector` and `GestureDetector` must pre-allocate all internal analysis arrays and scratch buffers (`skin_mask`, `filtered_mask`, `luma`, `visited`, `queue`, `candidates`, `proj_x`, `first_skin_x/y`, `last_skin_x/y`) up front at initialization (`MAX_GRID_CELLS = 160 x 120`).
+  - Never call `Vec::push()` on unbounded vectors or re-allocate grid structures during per-frame detection. Use `.clear()` and bounded `.push()` up to pre-allocated capacity (`Vec::with_capacity(MAX_GRID_CELLS)`).
+  - Downscaled grid dimensions must be clamped to `MAX_GRID_W (160)` and `MAX_GRID_H (120)` to ensure bounds safety without re-allocation.
+
+### Gesture Recognition Debounce & Cooldown Standards
+- **3-Frame Debounce Standard**:
+  - Hand gestures must be observed with identical classification across at least **3 consecutive frames** before triggering an action.
+  - Prevents erratic toggles from optical noise, transient hand motions, or rapid transitions.
+- **45-Frame Refractory Cooldown Standard**:
+  - Following a confirmed gesture trigger, the detector must enforce a **45-frame refractory cooldown** (~0.75 seconds at 60 FPS, ~1.5 seconds at 30 FPS).
+  - During cooldown, candidate gestures are processed but cannot dispatch rising-edge triggers (`triggered = false`), preventing rapid-fire repeated actions from held gestures.
 
 ### Concurrency & Thread Synchronization
 - Prefer `parking_lot::Mutex` and `parking_lot::RwLock` over standard library primitives for reduced overhead.

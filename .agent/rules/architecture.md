@@ -137,7 +137,88 @@ This document specifies the non-negotiable architectural invariants and system b
 
 ---
 
-## 9. Privacy, Anonymity & Path Generality Invariant
+## 9. Pure-Rust Computer Vision & Zero-Allocation PTZ Face Tracking
+
+- **Pure-Rust In-Process CV**:
+  - Face detection and hand gesture recognition execute 100% locally in Rust in `phonecam-media` without external OpenCV, Python, or C++ dependencies.
+  - Operates directly on premultiplied BGRA buffers with **zero dynamic heap allocations** on the 60 FPS hot path.
+  - Scratch buffers (`skin_mask`, `filtered_mask`, `luma`, `visited`, `queue`, `candidates`) are pre-allocated at detector creation (`MAX_GRID_CELLS = 160 x 120`).
+- **Detection Algorithm**:
+  1. Downscaled grid analysis preserving aspect ratio.
+  2. Skin-chrominance segmentation using fixed-point BT.601 integer math (`is_skin_rgb`).
+  3. Morphological 3x3 noise filter.
+  4. Breadth-First Search (BFS) connected-component blob extraction.
+  5. Facial geometry verification with Haar-like vertical luma contrast (darker eye sockets vs forehead and cheeks) and bilateral symmetry scoring.
+- **PTZ Auto-Framing Tracking Contract**:
+  - `AutoFramingTracker` calculates aspect-ratio preserving digital crops centered on the detected subject.
+  - **Deadband Hysteresis**: Applies a **1.5% deadband** to eliminate micro-jitter and small head movements.
+  - **Temporal Exponential Smoothing**: Applies smoothing factor $\alpha = 0.12$ ($x_t = x_{t-1} \cdot (1 - \alpha) + x_{\text{target}} \cdot \alpha$) clamped to sensor boundaries.
+  - **Loss Recovery**: Holds previous face position with exponential confidence decay for up to 6 frames (~100-200ms) to bridge transient occlusions.
+
+---
+
+## 10. 6 OBSBOT Hand Gestures & Interactive Stage HUD
+
+- **Gesture Vocabulary**:
+  - `OpenPalm` (✋): Toggles target tracking lock / pause.
+  - `PeaceV` (✌): Toggles zoom level (1.0x <-> 2.0x).
+  - `IndexPoint` (☝): Sets zoom to 1.5x medium zoom.
+  - `ShakaCall` (🤙): Resets framing to center (0.50, 0.50) and zoom to 1.0x.
+  - `PinchOk` (🤏): Sets zoom to 2.2x close-up macro focal target.
+  - `ThumbsUp` (👍): Quick confirm / toggles zoom.
+- **Classification Rules**:
+  - **Valley Depth Check**: Distinct finger peaks in vertical projection require a valley dip of at least 25% relative to neighboring peak values (`min_valley <= min_peak * 0.75`).
+  - **O(1) Enclosed Loop Scanner**: Pinch/OK gesture detects an internal circular void between thumb and index finger using row-wise (`first_skin_x`, `last_skin_x`) and column-wise (`first_skin_y`, `last_skin_y`) bounding projections.
+  - **Palm Base Solidity Ratio**: OpenPalm and fist gestures verify `lower_fill >= 0.35` across the lower hand half.
+  - **Face Masking**: Face bounding box (expanded by 4% margin) is masked out from skin detection to eliminate false-positive hand detections on cheeks.
+- **Debounce & Refractory Cooldown**:
+  - **Debounce**: 3 consecutive identical candidate frames required before triggering.
+  - **Refractory Cooldown**: 45 frames (~0.75-1.5s at 30-60 FPS) lockout following a trigger to prevent action chatter.
+- **Stage HUD Feedback**:
+  - Triggered gestures display transient HUD chips overlaid on the video stage preview with gesture iconography and animated confirmation badges.
+
+---
+
+## 11. Multiplexed Audio Streaming (Channel Role 3)
+
+- **Channel Role 3**:
+  - PhoneCam multiplexes audio over the unified TCP transport alongside Video (`ChannelRole::Video = 2`) and Control (`ChannelRole::Control = 1`).
+  - Wire identifier: `ChannelRole::Audio = 3`.
+  - Toggled via `DesktopToPhone::SetAudioStream { enabled: bool }` (JSON: `{"type": "setAudioStream", "enabled": true}`).
+- **Audio Payload Format**:
+  - Uncompressed 16-bit linear PCM at 48,000 Hz or 44,100 Hz mono/stereo.
+  - Desktop calculates live audio volume levels (RMS / peak metering) for real-time display in the status bar and stage meters.
+- **Generation Counter Invariant**:
+  - Desktop runtime tracks monotonic `audio_generation: Arc<AtomicU64>`.
+  - Stale audio channels from previous connection attempts gracefully terminate upon detecting an incremented generation counter, preventing race conditions and thread leaks.
+
+---
+
+## 12. Dynamic Capabilities Negotiation
+
+- **Android Probe via `StreamConfigurationMap`**:
+  - Phone client inspects Camera2 `CameraCharacteristics` and `StreamConfigurationMap` upon startup.
+  - Gathers available sensor IDs, facing (`front`, `back`, `external`), lens types (ultra-wide, wide, telephoto), supported output resolutions, and available auto-exposure target FPS ranges (`CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`).
+- **Capabilities Exchange**:
+  - Phone dispatches `PhoneToDesktop::Capabilities` with `CapabilitiesPayload` containing `DeviceCapabilities` and `CameraCapability` lists over the control channel.
+  - Desktop UI dynamically populates resolution selectors, framerate toggles (unlocking 60 FPS when supported by the hardware sensor), and multi-lens switchers (`0.5x`, `1.0x`, `3.0x`, `Front`) without static hardcoding.
+
+---
+
+## 13. Double-Buffered Texture Recycling & GPU Leak Prevention
+
+- **GPUI Texture Atlas Invariant**:
+  - Recreating GPU textures every frame at 60 FPS without eviction leaks texture atlas VRAM in Direct3D 11.
+- **Double-Buffered Management**:
+  - `AppView` maintains `preview_image` (active frame) and `previous_preview_image` (frame from previous tick).
+  - When a new frame arrives, the frame from 2 frames ago is reclaimed:
+    1. Explicitly evicted from the GPUI window texture cache via `window.drop_image(frame_2_ago)`.
+    2. Buffer payload is recycled back into the application's memory pool via `reclaim_render_image_buffer`.
+  - Prevents flickering by ensuring the currently rendered frame is never unmapped while the GPU draws, while strictly eliminating VRAM leaks over long streaming sessions.
+
+---
+
+## 14. Privacy, Anonymity & Path Generality Invariant
 
 - **Invariant**: Zero hardcoded personal paths, user home directories, developer drive letters, or single-device hardware serial numbers.
 - **Rule**:

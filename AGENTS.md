@@ -89,6 +89,54 @@ Every agent or contributor modifying or extending PhoneCam must adhere strictly 
   - **Service Ports**: Configured via `PHONECAM_PORT` (defaults to `48721` TCP / `48720` UDP).
 - **System Path Exceptions**: The only permissible hardcoded absolute system paths are standardized OS-level contracts: the Windows shared memory backing file (`C:\ProgramData\PhoneCam\framebuffer-v2.bin`) and default Windows installation paths (`C:\Program Files\PhoneCam`).
 
+### 1.12 Computer Vision, Face Tracking & OBSBOT Hand Gestures
+- **Pure-Rust In-Process Vision (`phonecam-media::face_detect`)**:
+  - Native Rust implementation with zero external ML dependencies (no ONNX, libtorch, or OpenCV).
+  - **Zero Allocations on Hot Path**: Executes on premultiplied BGRA buffers with pre-allocated scratch grids (`MAX_GRID_W = 160`, `MAX_GRID_H = 120`, `MAX_GRID_CELLS = 19200`).
+  - **Pipeline**: Normalized YCbCr skin chrominance segmentation $\to$ connected component clustering into `CandidateRegion`s $\to$ aspect ratio ($0.65 \le \text{AR} \le 1.35$) & minimum area filtering $\to$ Haar-like contrast polarity verification between upper eye-line and cheek zones.
+  - **Cinematic PTZ Smoothing**: Center target $(X_c, Y_c) \in [0.15, 0.85]$ stabilized via $1.5\%$ spatial deadband hysteresis, exponential temporal moving average ($\alpha = 0.12$, user zoom $1.0\times - 2.5\times$), and aspect-ratio preserving crop (`CropRect`) with even-pixel boundary alignment (`& !1`).
+  - **Tracking Lock / Pause**: Instantly freezes the PTZ crop window via UI toggle or the ✋ Open Palm hand gesture.
+- **OBSBOT Hand Gesture Recognition Repertoire (`phonecam-media::gesture`)**:
+  - Zero-allocation classifier evaluating horizontal projection histograms (`proj_x`), finger peak prominence, valley depth thresholds, and palm base solidity ratio relative to detected face anchor.
+  - **Debounce & Refractory Filter**: Requires candidate gesture to hold for 3 consecutive frames before confirming trigger; enforces a 45-frame (~0.75-1.5s) refractory cooldown to prevent duplicate triggers.
+  - **6 Distinct Gestures**:
+    1. ✋ **Open Palm**: Tracking Lock / Unlock (toggles `tracking_locked` state).
+    2. ✌ **Peace / V-Sign**: Toggle Zoom (smooth interpolation between $1.0\times \leftrightarrow 2.0\times$).
+    3. ☝ **Pointing Up (Index)**: Medium Zoom ($1.5\times$ presentation framing).
+    4. 🤙 **Shaka / Call**: Framing & Zoom Reset (recenters $(0.5, 0.5)$ and returns to $1.0\times$).
+    5. 🤏 **Pinch / OK**: Macro Close-Up ($2.2\times$ detail zoom).
+    6. 👍 **Thumbs Up**: Quick Confirm / Alternate Zoom toggle.
+  - **Live Stage HUD Chips**: Confirmed gestures trigger non-blocking translucent HUD chip overlays (`StageContent`) over the live GPUI preview stage.
+
+### 1.13 Multiplexed Low-Latency Audio Streaming & VU Metering
+- **Unified Transport Multiplexing**: Audio packets are transmitted over the unified TCP socket (port `48721`) tagged with `ChannelRole::Audio = 3` alongside Control (`1`) and Video (`2`).
+- **PCM Format & Sub-Millisecond Synchronization**:
+  - Uncompressed 16-bit linear PCM at 48,000 Hz primary (16,000 Hz fallback) captured via Android `AudioRecord`.
+  - Pinned 2,048-byte chunks (~21.3 ms) for minimal buffering delay.
+  - Microsecond-accurate timestamp alignment (`timestamp_us`) with video frames prevents lip-sync drift.
+- **16-Segment Broadcast LED VU Meter**:
+  - Real-time RMS and dBFS calculation embedded in UI panels.
+  - 16 discrete LED stages: 10 Green nominal segments ($-60\text{ dBFS}$ to $-12\text{ dBFS}$), 4 Amber headroom segments ($-12\text{ dBFS}$ to $-3\text{ dBFS}$), and 2 Red digital clipping segments ($> -3\text{ dBFS}$).
+
+### 1.14 Double-Buffered Frame Ring & Bounded Memory Management
+- **Runtime Ping-Pong Double-Buffering**: Video decode loop in `phonecam-app` runtime utilizes a ping-pong buffer pair (`scratch.bgra` and `scratch.spare`) ensuring the GPUI rendering mailbox never reads a buffer actively being written by the decode thread.
+- **GPU Texture Atlas Lifetime & Safe Dropping**:
+  - In `phonecam-ui` (`AppView`), the preview image handle maintains `preview_image` and `previous_preview_image` across consecutive frames.
+  - Holding the previous frame prevents flickering and race conditions during GPU texture atlas eviction when uploading new frames.
+  - Backing memory is reclaimed with original capacity via `reclaim_render_image_buffer` (`std::mem::forget(render_img)` followed by `Vec::from_raw_parts`) when exclusive Arc ownership permits, preventing heap churn and VRAM leaks.
+- **Strict Bounded Memory Invariant**: Desktop process memory consumption must remain bounded and flat during prolonged 60 FPS streaming sessions; never leak allocations across frame updates or resolution shifts.
+
+### 1.15 Dynamic Capabilities Negotiation & Unlocked 60 FPS AE Range
+- **Unlocked 60 FPS AE Target Range Selection**:
+  - Android Camera2 pipeline automatically inspects `CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` to find ranges where `upper == 60` (`[60, 60]`, `[30, 60]`).
+  - Sets repeating `CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE` and configures `MediaCodec` hardware encoder with both `KEY_FRAME_RATE = 60` and `KEY_CAPTURE_RATE = 60`.
+- **Persistent Anti-Flicker Protection**:
+  - Dynamic query of `CONTROL_AE_AVAILABLE_ANTIBANDING_MODES` supporting `Auto`, `50Hz`, `60Hz`, and `Off`.
+  - Antibanding mode is preserved and re-asserted across physical lens handoffs (`0.5x`, `1.0x`, `3.0x`, `Front`) and stream reconnects.
+- **Dynamic Capabilities Probing**:
+  - Resolution and framerate limits are negotiated dynamically via Android `SCALER_STREAM_CONFIGURATION_MAP` and hardware `CodecCapabilities` (supporting up to 4K@30, 1080p@60, 720p@60) instead of relying on hardcoded resolution tables.
+  - Dynamically updates desktop UI preset cards and resolution detail chips.
+
 ---
 
 ## 2. Workspace & Crate Organization
@@ -121,7 +169,7 @@ phonecam-rust/
 | :--- | :--- | :--- |
 | `phonecam-protocol` | Wire protocol v1, binary framing, crypto | `framing.rs`, `messages.rs`, `lib.rs` |
 | `phonecam-framebus` | Shared memory seqlock buffer writer & reader | `writer.rs`, `reader.rs`, `nv12.rs`, `lib.rs` |
-| `phonecam-media` | Video decoding, color conversion, pacer | `decoder.rs`, `h264.rs`, `convert.rs`, `pacer.rs` |
+| `phonecam-media` | Video decoding, color conversion, pacer, CV & gestures | `decoder.rs`, `h264.rs`, `convert.rs`, `pacer.rs`, `face_detect.rs`, `gesture.rs`, `effects.rs` |
 | `phonecam-core` | Connection listener, auth state machine, ladder | `session.rs`, `transport.rs`, `discovery.rs`, `quality.rs` |
 | `phonecam-ui` | GPUI renderer, design system, stage & rail | `theme.rs`, `stage.rs`, `rail.rs`, `status_bar.rs` |
 | `phonecam-app` | Windows binary entrypoint, tray, ADB | `main.rs`, `runtime.rs`, `tray.rs`, `adb.rs`, `vcam.rs` |
@@ -136,7 +184,7 @@ phonecam-rust/
 # Check workspace compilation
 cargo check --workspace
 
-# Run full automated test suite (230+ tests across 7 crates)
+# Run full automated test suite (413+ tests across 7 crates)
 cargo test --workspace
 
 # Run individual crate test suites

@@ -52,26 +52,26 @@ Binary output: `target\release\phonecam.exe`.
 ## 3. Automated Testing Workflows
 
 ### Complete Workspace Test Suite
-Run all 230+ tests across the 7 crates:
+Run all 413+ tests across the 7 crates (415 unit and integration tests):
 ```powershell
 cargo test --workspace
 ```
 
 ### Testing Individual Subsystems
 ```powershell
-# Wire protocol, HMAC-SHA256, and framing tests
+# Wire protocol, HMAC-SHA256, ChannelRole::Audio, and framing tests
 cargo test -p phonecam-protocol
 
 # Shared memory seqlock and 68-byte header tests
 cargo test -p phonecam-framebus
 
-# H.264 decode, SPS parsing, and color conversions
+# H.264 decode, pure-Rust CV face detection, and 6 OBSBOT gesture tests
 cargo test -p phonecam-media
 
 # Transport, handshake, and adaptive bitrate ladder
 cargo test -p phonecam-core
 
-# UI design system tokens, contrast checks, and layout rules
+# UI design system tokens, stage HUD gesture chips, preview texture recycling, and layout rules
 cargo test -p phonecam-ui
 
 # End-to-end runtime integration tests
@@ -235,5 +235,7 @@ PhoneCam includes dedicated skill modules for specific development domains:
   Exhaustive virtual camera implementations across Windows (`MFCreateVirtualCamera` & DirectShow COM), Linux (`v4l2loopback`), and macOS (`CoreMediaIO` DAL / `CMIOExtension`).
 - **[phonecam-protocol](../phonecam-protocol/SKILL.md)**:
   Deep guide for binary framing, 40-byte greeting, 20-byte client handshake, HMAC-SHA256 crypto, JSON payloads, replay guard, and diagnostics.
+- **[phonecam-media-cv](../phonecam-media-cv/SKILL.md)**:
+  Technical and algorithmic guide for pure-Rust Computer Vision face detection, zero-allocation PTZ tracking, and 6 OBSBOT hand gestures.
 - **[phonecam-troubleshoot](../phonecam-troubleshoot/SKILL.md)**:
   Step-by-step diagnostic procedures for Wi-Fi discovery, USB ADB reverse tunnels, hardware encoder fallbacks, thermal clamps, and audio sync.

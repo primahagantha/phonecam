@@ -11,7 +11,7 @@ This file provides essential commands, architectural standards, code style rules
 # Fast compilation check across the entire workspace
 cargo check --workspace
 
-# Run complete automated test suite (230+ tests across 7 crates)
+# Run complete automated test suite (413+ tests across 7 crates)
 cargo test --workspace
 
 # Run tests with output for a specific crate
@@ -82,6 +82,46 @@ PhoneCam enforces critical non-negotiable architectural invariants:
 5. **Unified Transport (USB & Wi-Fi)**: Phone always connects via TCP to port 48721. USB mode executes `adb reverse tcp:48721 tcp:48721` to bridge `127.0.0.1:48721`. Handshake, auth, control, and video protocols are identical.
 6. **Authentication & Replay Guard**: First-time pairing uses a 128-bit CSPRNG token (5 min TTL) with explicit desktop UI approval. Session auth uses persistent 256-bit device secret and `HMAC-SHA256(secret, serverNonce || clientNonce)`. Strictly monotonic `client_nonce` protects against replays.
 7. **Adaptive Bitrate Ladder**: `1080p60 -> 1080p30 -> 720p30 -> 480p30` with hysteresis (10s down / instant thermal, 30s clean up). Pending lock prevents skipping rungs.
+8. **Pure-Rust Computer Vision Face Detection (`phonecam-media::face_detect`)**:
+   - Zero dynamic heap allocations on the 60 FPS hot path using pre-allocated scratch grids (`MAX_GRID_W = 160`, `MAX_GRID_H = 120`, `MAX_GRID_CELLS = 19200`).
+   - Pipeline: Normalized YCbCr skin chrominance segmentation $\to$ connected component clustering into `CandidateRegion`s $\to$ aspect ratio ($0.65 \le \text{AR} \le 1.35$) & minimum area filtering $\to$ Haar-like contrast polarity verification between upper eye-line and cheek zones.
+   - Cinematic PTZ Smoothing: Center target $(X_c, Y_c) \in [0.15, 0.85]$ stabilized via $1.5\%$ spatial deadband hysteresis, exponential temporal moving average ($\alpha = 0.12$, user zoom $1.0\times - 2.5\times$), and aspect-ratio preserving crop (`CropRect`) with even-pixel boundary alignment (`& !1`).
+   - Tracking Lock / Pause: Instantly freezes the PTZ crop window in place via UI toggle or the ✋ Open Palm hand gesture.
+9. **OBSBOT-Style Touchless Hand Gesture Recognition (`phonecam-media::gesture`)**:
+   - Real-time zero-allocation classifier evaluating horizontal projection histograms (`proj_x`), finger peak prominence, valley depth thresholds, and palm base solidity ratio relative to detected face anchor.
+   - Debounce & Refractory Filter: Requires candidate gesture to hold for 3 consecutive frames before confirming trigger; enforces a 45-frame (~0.75-1.5s) refractory cooldown to prevent duplicate triggers.
+   - 6 Distinct Gestures:
+     - ✋ **Open Palm**: Tracking Lock / Unlock (toggles `tracking_locked` state).
+     - ✌ **Peace / V-Sign**: Toggle Zoom (smooth interpolation between $1.0\times \leftrightarrow 2.0\times$).
+     - ☝ **Pointing Up (Index)**: Medium Zoom ($1.5\times$ presentation framing).
+     - 🤙 **Shaka / Call**: Framing & Zoom Reset (recenters $(0.5, 0.5)$ and returns to $1.0\times$).
+     - 🤏 **Pinch / OK**: Macro Close-Up ($2.2\times$ detail zoom).
+     - 👍 **Thumbs Up**: Quick Confirm / Alternate Zoom toggle.
+   - Live Stage HUD Chips: Confirmed gestures trigger non-blocking translucent HUD chip overlays (`StageContent`) over the live GPUI preview stage.
+10. **Multiplexed Low-Latency Audio Streaming & 16-Segment LED VU Meter**:
+    - Transmitted over unified TCP port `48721` with `ChannelRole::Audio = 3` alongside Control (`1`) and Video (`2`).
+    - Uncompressed 16-bit linear PCM (48,000 Hz primary, 16,000 Hz fallback) in 2,048-byte chunks (~21.3 ms) with microsecond timestamp synchronization (`timestamp_us`) aligned with video frames to eliminate lip-sync drift.
+    - 16-Segment Dynamic LED VU Meter: Real-time RMS and dBFS calculation embedded in UI panels with 10 Green nominal segments ($-60\text{ dBFS}$ to $-12\text{ dBFS}$), 4 Amber headroom segments ($-12\text{ dBFS}$ to $-3\text{ dBFS}$), and 2 Red digital clipping segments ($> -3\text{ dBFS}$).
+11. **Unlocked 60 FPS Camera2 & Robust Anti-Flicker**:
+    - Automatically selects AE Target FPS ranges where `upper == 60` (`[60, 60]`, `[30, 60]`) on repeating requests.
+    - Configures `MediaCodec` hardware encoder with both `KEY_FRAME_RATE = 60` and `KEY_CAPTURE_RATE = 60`.
+    - Antibanding mode (`Auto`, `50Hz`, `60Hz`, `Off`) dynamically selected and preserved across physical lens switching (`0.5x`, `1.0x`, `3.0x`, `Front`) and stream reconnects.
+12. **Dynamic Capabilities Negotiation**:
+    - Sensor capabilities probed dynamically via Android `SCALER_STREAM_CONFIGURATION_MAP` and hardware `CodecCapabilities` supporting up to 4K@30, 1080p@60, 720p@60 without hardcoded tables.
+    - Dynamically updates desktop UI preset cards and resolution detail chips (`res_detail`).
+13. **Double-Buffered Frame Ring & Bounded Memory Management**:
+    - Runtime Double-Buffering: Video decode loop in `phonecam-app` runtime utilizes a ping-pong buffer pair (`scratch.bgra` and `scratch.spare`) ensuring the rendering mailbox never reads a buffer actively being written.
+    - GPU Texture Atlas Eviction Safety: In `phonecam-ui` (`AppView`), the preview image handle holds `preview_image` and `previous_preview_image` across consecutive frames, preventing flickering and race conditions during GPU texture atlas eviction.
+    - Explicit Buffer Reclamation: Backing allocations are reclaimed with original capacity via `reclaim_render_image_buffer` (`std::mem::forget(render_img)` followed by `Vec::from_raw_parts`) when exclusive Arc ownership permits, preventing heap churn and VRAM leaks.
+    - Memory consumption remains strictly bounded and flat during prolonged 60 FPS streaming sessions.
+14. **Privacy, Anonymity & Path Generality Contract (AGENTS.md Rule 1.11)**:
+    - Strictly zero hardcoded personal paths (`C:\Users\...`, `/home/...`), personal usernames, developer machine drive letters (`D:\...`), or specific hardware device serials.
+    - Standard dynamic resolution contract:
+      - Device Serial: `ANDROID_SERIAL` env var $\to$ `adb get-serialno` $\to$ parse `adb devices`. Tests skip gracefully if no device is detected.
+      - ADB Path: `PHONECAM_ADB_PATH` env var $\to$ `dist/unpacked/adb.exe` $\to$ system `PATH` $\to$ standard SDK locations.
+      - Artifact Directory: `PHONECAM_ARTIFACT_DIR` env var $\to$ `%TEMP%\phonecam-artifacts`.
+      - Service Ports: `PHONECAM_PORT` (default: `48721` TCP / `48720` UDP).
+    - Permissible fixed paths are standard OS contracts only: `C:\ProgramData\PhoneCam\framebuffer-v2.bin` and `C:\Program Files\PhoneCam`.
 
 ---
 
@@ -89,9 +129,10 @@ PhoneCam enforces critical non-negotiable architectural invariants:
 
 ### 3.1 Rust Standards
 - **Edition**: Rust 2021 (1.85+).
-- **Zero-Allocation Hot Path**: Zero heap allocations (`Vec::new()`, `String::from()`, `format!()`) in per-frame media loops. Pre-allocate buffers at initialization and resolution changes.
-- **`unsafe` Blocks**: Must have an explicit `// SAFETY:` comment documenting caller invariants and data-race prevention. Restricted to `phonecam-framebus` (memory mapping), `phonecam-app` (Win32 API), and `phonecam-android-core` (JNI).
+- **Zero-Allocation Hot Path**: Zero heap allocations (`Vec::new()`, `String::from()`, `format!()`) in per-frame media loops. Pre-allocate buffers at initialization and resolution changes. Applies strictly to video decoders, color converters, `phonecam-media::face_detect` static grid processing (`MAX_GRID_CELLS = 19200`), and `phonecam-media::gesture` projection histograms.
+- **`unsafe` Blocks**: Must have an explicit `// SAFETY:` comment documenting caller invariants and data-race prevention. Restricted to `phonecam-framebus` (memory mapping), `phonecam-app` (Win32 API), `phonecam-ui` (buffer reclamation via `reclaim_render_image_buffer`), and `phonecam-android-core` (JNI).
 - **Concurrency**: Use `parking_lot` primitives (`Mutex`, `RwLock`) and `crossbeam_channel`. Never hold a mutex lock across an `.await`, channel send, or socket I/O.
+- **Double-Buffering & Bounded Memory**: Use ping-pong double-buffering (`scratch.bgra` / `scratch.spare`) and retain previous preview frame (`previous_preview_image`) for GPU texture atlas eviction. Reclaim image allocations with capacity intact to eliminate heap churn.
 
 ### 3.2 Error Handling
 - **No Unchecked Panics**: Never use `.unwrap()` or `.expect()` inside socket loops, video decoders, or framebus update paths.
@@ -102,6 +143,9 @@ PhoneCam enforces critical non-negotiable architectural invariants:
 - **Color Format**: GPUI `RenderImage` requires **premultiplied BGRA**. Emitting standard RGBA results in inverted red/blue channels.
 - **Tabular Figures**: Dynamic numerical readouts (FPS, latency, bitrate, nonces) must use `numeric_font()` with OpenType `tnum` to prevent text jitter.
 - **Single Status Headline**: Status bar shows exactly one headline based on strict priority (`service_unreachable` > `error` > `no_phone` > `connecting` > `reconnecting` > `streaming` > `ready`).
+- **Live Stage HUD Overlays**: Gesture confirmations and status notifications render non-blocking translucent HUD chips (`StageContent`) over the live stage viewport with automatic timeout fades.
+- **16-Segment LED VU Meter**: Render dynamic 16-segment audio level indicator with color-coded thresholds (10 Green nominal, 4 Amber headroom, 2 Red clipping) and tabular dBFS readouts.
+- **Texture Double-Buffering & Safe Dropping**: Retain `previous_preview_image` for safe GPU texture atlas replacement; reclaim buffers via `reclaim_render_image_buffer` to eliminate memory leaks and allocation pauses.
 - **Window Lifecycle**: Window close (`WM_CLOSE`) minimizes to the system tray (`ShowWindow(SW_HIDE)`), ensuring the virtual camera driver remains active.
 
 ### 3.4 Android & JNI
@@ -109,7 +153,9 @@ PhoneCam enforces critical non-negotiable architectural invariants:
 - **MediaCodec**: Use hardware encoder input surface or reuse direct byte buffers to eliminate garbage collection pauses.
 - **JNI Hygiene**: Release all local references (`DeleteLocalRef`) in JNI loops and clear pending Java exceptions before returning.
 
-### 3.5 Privacy & Logging Rules
+### 3.5 Privacy, Paths & Logging Rules
+- **Rule 1.11 Privacy & Path Generality**: Strictly zero hardcoded personal paths (`C:\Users\...`, `/home/...`), personal usernames, developer machine drive letters (`D:\...`), or device serials.
+- **Dynamic Resolution Contract**: Always resolve device serials dynamically via `ANDROID_SERIAL` env var (or `adb get-serialno` / `adb devices`), ADB path via `PHONECAM_ADB_PATH`, artifact directory via `PHONECAM_ARTIFACT_DIR` (fallback to `%TEMP%\phonecam-artifacts`), and service port via `PHONECAM_PORT`. Tests must skip gracefully when no physical device is detected.
 - **Mandatory Redaction**: All log sinks apply `redact()`, stripping any continuous hex sequence of 32 or more characters.
 - **Zero Cleartext Credentials**: Never log pairing tokens, QR strings, device secrets, or HMAC digests. Use `sha256(secret)[0:8]` for log correlation.
 - Never dump raw video payload byte buffers.

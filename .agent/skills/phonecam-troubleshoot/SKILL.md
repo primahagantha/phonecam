@@ -166,6 +166,38 @@ adb shell am start-foreground-service `
 - **Root Cause**: Phone emitted a critical thermal alert (`thermal: "critical"`).
 - **Behavior**: The adaptive bitrate ladder intentionally bypasses the standard 10-second dwell time on thermal emergencies, dropping rungs immediately to prevent hardware thermal shutdown.
 
+### 4.4 60 FPS Camera2 AE Range Troubleshooting (`upper == 60` vs 30 FPS Cap)
+- **Symptom**: Desktop requests 60 FPS, but frame telemetry indicates incoming FPS is capped at 30 FPS, or capture session creation fails.
+- **Root Cause**:
+  1. Camera sensor hardware does not support 60 FPS in its Auto-Exposure target ranges (`CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`).
+  2. Many budget or mid-tier Android sensors support 60 FPS exclusively via **Constrained High Speed Session** (`highSpeedVideoSizes`), which forbids simultaneous preview surfaces (`previewSurface == null`).
+- **Inspection**:
+  ```powershell
+  # Query Camera2 characteristics via ADB
+  adb shell dumpsys media.camera | Select-String -Pattern "CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES|SCALER_STREAM_CONFIGURATION_MAP"
+  ```
+- **Architectural Handling in PhoneCam**:
+  - `CameraCapabilityProbe` queries `aeRanges.any { it.upper >= 60 }`.
+  - When `hasAe60` is true, PhoneCam requests standard session with `CONTROL_AE_TARGET_FPS_RANGE` set to `[30, 60]`.
+  - **Exposure Headroom Rule**: PhoneCam avoids pinning `[60, 60]`. Pinning `[60, 60]` forbids exposure lengthening, causing freezing/underexposure indoors. `[30, 60]` allows the camera to adapt exposure under dim lighting while delivering 60 FPS in normal lighting.
+  - When `hasAe60` is false and high-speed sizes are unavailable, PhoneCam safely clamps the target FPS to 30.
+
+### 4.5 Back Camera Anti-Flicker Reapplication on Lens Switch
+- **Symptom**: Switching between rear camera lenses (e.g. 1.0x wide to 0.5x ultra-wide or 3.0x telephoto) introduces visible 50 Hz / 60 Hz rolling light bands or flickering brightness under indoor lighting.
+- **Root Cause**:
+  - In Android Camera2, switching physical lenses or recreating the capture session resets `CaptureRequest.CONTROL_AE_ANTIBANDING_MODE` to hardware defaults (often `OFF` or device default) unless explicitly re-applied.
+- **Remediation**:
+  - `CameraController` retains `savedAntibanding = configuredAntibanding` during lens transitions.
+  - After recreation of the repeating request builder, it explicitly invokes:
+    ```kotlin
+    val targetMode = resolveAntibandingMode(chars, configuredAntibanding)
+    builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, targetMode)
+    ```
+  - Mode resolution:
+    - `"50hz"` $\rightarrow$ `CONTROL_AE_ANTIBANDING_MODE_50HZ` (falls back to `AUTO`).
+    - `"60hz"` $\rightarrow$ `CONTROL_AE_ANTIBANDING_MODE_60HZ` (falls back to `AUTO`).
+    - `"auto"` $\rightarrow$ `CONTROL_AE_ANTIBANDING_MODE_AUTO` (dynamic flicker detection).
+
 ---
 
 ## 5. Shared Memory Framebus & Virtual Camera Diagnostics
@@ -211,6 +243,29 @@ Stop-Service -Name "CapabilityAccessManagerService" -Force
 Start-Service -Name "CapabilityAccessManagerService"
 ```
 
+### 5.3 Double-Buffered GPU Texture Memory Leak Diagnosis
+- **Symptom**:
+  - The desktop process (`phonecam.exe`) gradually increases GPU VRAM consumption and system memory (Private Working Set) over hours of streaming, eventually causing DirectX 11 out-of-memory errors or application crashes.
+- **Root Cause**:
+  - In GPUI on Windows (Direct3D 11), creating a new `gpui::RenderImage` at 30-60 FPS adds textures to the window texture atlas.
+  - If previous frame handles are retained or dropped without explicit atlas eviction, stale textures accumulate in VRAM.
+- **Remediation & Architecture**:
+  - `phonecam-ui` implements a strict double-buffered preview contract in `AppView`:
+    ```rust
+    // Evicts frame from 2 frames ago from Direct3D texture atlas
+    if let Some(frame_2_ago) = self.previous_preview_image.take() {
+        if let Some(w) = window.as_mut() {
+            let _ = w.drop_image(frame_2_ago.clone());
+        }
+        reclaim_render_image_buffer(frame_2_ago, self.previous_preview_capacity);
+    }
+    self.previous_preview_image = self.preview_image.take();
+    self.preview_image = Some(Arc::new(RenderImage::new(...)));
+    ```
+  - `window.drop_image()` explicitly purges the GPU texture handle.
+  - `reclaim_render_image_buffer` recycles the raw pixel `Vec<u8>` capacity to prevent heap churn.
+  - Holding the frame for exactly 1 extra frame (`previous_preview_image`) ensures the GPU finishes drawing the frame before eviction, preventing visible flickering.
+
 ---
 
 ## 6. Audio Sync & Latency Tuning
@@ -227,7 +282,34 @@ Start-Service -Name "CapabilityAccessManagerService"
 ### 6.2 Latency Tuning Checklist
 1. **Prefer USB Connection**: Eliminates 10–40ms of 2.4/5GHz Wi-Fi packet jitter and bufferbloat.
 2. **Disable Power Saving on Phone**: Battery saver mode throttles camera sensor processing clock, inducing 50–100ms latency spikes.
-3. **Set Constant Framerate (CFR)**: Configure Android Camera2 capture request to `CONTROL_AE_TARGET_FPS_RANGE = [60, 60]`.
+3. **Set Constant Framerate (CFR)**: Configure Android Camera2 capture request to `CONTROL_AE_TARGET_FPS_RANGE = [30, 60]`.
+
+### 6.3 Audio Recording Permission & Foreground Service Configuration
+- **Symptom**:
+  - Enabling audio streaming produces no sound, or phone logcat logs:
+    `AudioStreamer: android.permission.RECORD_AUDIO not granted; aborting`
+  - Android application crashes with `SecurityException: Foreground service type microphone not declared`.
+- **Root Cause**:
+  1. User denied microphone permission on Android.
+  2. Android 14+ (API 34+) strictly requires foreground services capturing audio to declare `android:foregroundServiceType="camera|microphone"` in `AndroidManifest.xml`.
+- **Diagnostics**:
+  ```powershell
+  # Check granted permissions
+  adb shell pm dump com.phonecam.camera.debug | Select-String -Pattern "RECORD_AUDIO"
+  ```
+- **Remediation**:
+  1. Grant microphone permission manually via ADB if UI prompt was dismissed:
+     ```powershell
+     adb shell pm grant com.phonecam.camera.debug android.permission.RECORD_AUDIO
+     ```
+  2. In `apps/android/app/src/main/AndroidManifest.xml`, verify service declaration:
+     ```xml
+     <service
+         android:name=".service.CameraStreamService"
+         android:foregroundServiceType="camera|microphone"
+         android:exported="false" />
+     ```
+  3. Ensure `CameraStreamService` starts with `startForeground()` passing a valid notification with audio capabilities.
 
 ---
 
