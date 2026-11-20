@@ -777,10 +777,14 @@ class StreamSession(
                     Log.i("paired with ${serverName ?: serverId} (secret ${Auth.secretFingerprint(secret)})")
                 }
 
+                val healthSnapshot = health.snapshot()
                 _state.value = _state.value.copy(
                     phase = SessionState.Phase.CONNECTED,
                     serverName = serverName ?: _state.value.serverName,
                     serverId = serverId ?: _state.value.serverId,
+                    batteryPercent = healthSnapshot.batteryPercent,
+                    charging = healthSnapshot.charging,
+                    thermal = healthSnapshot.thermal,
                     error = null,
                     notice = null,
                     noticeKind = NoticeKind.Substitution,
@@ -788,6 +792,7 @@ class StreamSession(
 
                 sendHello()
                 sendCapabilities()
+                sendState()
                 startControlLoop()
                 // The stats tick is started when the stream starts, not here:
                 // it exists to report fps and bitrate, which only exist while
@@ -1143,6 +1148,11 @@ class StreamSession(
             0
         }
 
+        val previousBattery = _state.value.batteryPercent
+        val previousCharging = _state.value.charging
+        val batteryChanged = previousBattery != healthSnapshot.batteryPercent ||
+            previousCharging != healthSnapshot.charging
+
         _state.value = _state.value.copy(
             streamFps = fps,
             droppedPercent = dropPercent,
@@ -1165,6 +1175,10 @@ class StreamSession(
                 thermal = healthSnapshot.thermal,
             ),
         )
+
+        if (batteryChanged) {
+            sendState()
+        }
     }
 
     // ---------------------------------------------------------------- inbound

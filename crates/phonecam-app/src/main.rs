@@ -346,20 +346,7 @@ fn apply_effect(
         SideEffect::DisconnectUsb => runtime.disconnect_usb(),
         SideEffect::RestartAdb => runtime.restart_adb(),
         SideEffect::OpenPlatformToolsUrl => open_platform_tools_url(runtime),
-        SideEffect::ForgetDevice => {
-            let id = runtime.state.lock().settings.last_device_id.clone();
-            if let Some(id) = id {
-                runtime.pairing.lock().forget_device(&id);
-                runtime.registry.lock().retain(|r| r.device_id != id);
-                let snapshot = {
-                    let mut state = runtime.state.lock();
-                    state.settings.last_device_id = None;
-                    state.clone()
-                };
-                let _ = settings::save(&snapshot.settings);
-                runtime.bump_state_version();
-            }
-        }
+        SideEffect::ForgetDevice(target_id) => runtime.forget_device(target_id.as_deref()),
         SideEffect::SetTab(tab) => {
             view.update(cx, |app, cx| {
                 app.tab = tab;

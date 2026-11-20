@@ -73,8 +73,8 @@ pub fn status_strip(state: &AppState) -> AnyElement {
         .border_b_1()
         .border_color(SHELL.border.alpha(0.6))
         .bg(SHELL.raised)
-        .px(px(Space::PAD))
-        .py(px(Space::LG))
+        .px(px(16.0))
+        .py(px(Space::PAD))
         .child(
             div()
                 .flex()
@@ -118,7 +118,7 @@ pub fn status_strip(state: &AppState) -> AnyElement {
                 .flex_row()
                 .min_w(px(0.0))
                 .items_center()
-                .gap(px(Space::MD))
+                .gap(px(Space::XL))
                 .child(
                     div()
                         .font_family(Fonts::SANS)
@@ -147,27 +147,97 @@ pub fn status_strip(state: &AppState) -> AnyElement {
                 ),
         );
 
-    if let Some((label, critical)) = state
-        .core
-        .as_ref()
-        .and_then(|c| c.phone.as_ref())
-        .and_then(|p| thermal_label(p.thermal))
-    {
-        row = row.child(chip(
-            label,
-            if critical { Tone::Danger } else { Tone::Warn },
-        ));
-    }
-
-    if let Some(phone) = state.core.as_ref().and_then(|c| c.phone.as_ref()) {
-        if let Some(batt) = format_battery(phone.battery, phone.charging) {
-            let tone = if phone.battery <= 15 && !phone.charging {
+    let has_device = state.has_device();
+    let phone_device_name = state.device_name().or_else(|| {
+        state.core.as_ref().and_then(|c| {
+            c.device.as_ref().map(|d| {
+                if !d.name.trim().is_empty() {
+                    d.name.clone()
+                } else if !d.model.trim().is_empty() {
+                    clean_device_model(&d.model)
+                } else {
+                    "Phone".to_string()
+                }
+            })
+        })
+    });
+    let phone_state = state.core.as_ref().and_then(|c| c.phone.as_ref());
+    let battery_info = phone_state.and_then(|p| {
+        format_battery(p.battery, p.charging).map(|batt| {
+            let tone = if p.battery <= 15 && !p.charging {
                 Tone::Warn
             } else {
                 Tone::Neutral
             };
-            row = row.child(chip(batt, tone));
+            (batt, tone)
+        })
+    });
+    let thermal_info = phone_state.and_then(|p| thermal_label(p.thermal));
+
+    if has_device || phone_device_name.is_some() || battery_info.is_some() || thermal_info.is_some()
+    {
+        row = row.child(
+            div()
+                .flex_shrink_0()
+                .w(px(1.0))
+                .h(px(24.0))
+                .bg(SHELL.border.alpha(0.7)),
+        );
+
+        let mut phone_container = div()
+            .flex()
+            .flex_row()
+            .min_w(px(0.0))
+            .items_center()
+            .gap(px(Space::XL));
+
+        let device_label = phone_device_name.unwrap_or_else(|| "Phone".to_string());
+        if device_label != "Phone" {
+            phone_container = phone_container.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(Space::SM))
+                    .child(
+                        div()
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .text_color(Text::MUTED)
+                            .child("Phone"),
+                    )
+                    .child(
+                        div()
+                            .font_family(Fonts::SANS)
+                            .text_size(px(Type::TWO_XS))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(Text::PRIMARY)
+                            .child(device_label),
+                    ),
+            );
+        } else {
+            phone_container = phone_container.child(
+                div()
+                    .font_family(Fonts::SANS)
+                    .text_size(px(Type::TWO_XS))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(Text::MUTED)
+                    .child("Phone"),
+            );
         }
+
+        if let Some((batt, tone)) = battery_info {
+            phone_container = phone_container.child(chip(format!("🔋 {batt}"), tone));
+        }
+
+        if let Some((label, critical)) = thermal_info {
+            phone_container = phone_container.child(chip(
+                label,
+                if critical { Tone::Danger } else { Tone::Warn },
+            ));
+        }
+
+        row = row.child(phone_container);
     }
 
     if streaming {
@@ -1239,13 +1309,17 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
             kv_items.push(key_value("Battery", batt, false));
         }
         kv_items.push(key_value("Device id", device.device_id.clone(), true));
-    } else if let Some(id) = stored_id {
-        kv_items.push(key_value("Device id", id, true));
+    } else if let Some(id) = &stored_id {
+        kv_items.push(key_value("Device id", id.clone(), true));
     }
 
     if !kv_items.is_empty() {
         children.push(well(kv_items));
     }
+
+    let target_id = device
+        .map(|d| d.device_id.clone())
+        .or_else(|| stored_id.clone());
 
     children.push(
         div()
@@ -1269,8 +1343,8 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
             .child(
                 div()
                     .mt(px(Space::LG))
-                    .child(Button::danger(format!("Forget {name}")).on_click(|_window, _cx| {
-                        push_effect(SideEffect::ForgetDevice)
+                    .child(Button::danger(format!("Forget {name}")).on_click(move |_window, _cx| {
+                        push_effect(SideEffect::ForgetDevice(target_id.clone()))
                     })),
             )
             .into_any_element(),
@@ -4869,6 +4943,19 @@ mod tests {
     }
 
     #[test]
+    fn paired_phone_panel_with_stored_id_renders() {
+        let mut state = AppState::default();
+        state.settings.last_device_id = Some("stored-dev-42".into());
+        let _panel = paired_phone_panel(&state);
+    }
+
+    #[test]
+    fn paired_phone_panel_empty_when_no_device() {
+        let state = AppState::default();
+        let _panel = paired_phone_panel(&state);
+    }
+
+    #[test]
     fn audio_vu_meter_renders_active_and_muted_states() {
         let _active = audio_vu_meter(0.75, true);
         let _muted = audio_vu_meter(0.0, false);
@@ -4945,5 +5032,60 @@ mod tests {
         // Test with gestures disabled
         state.settings.hand_gestures = false;
         let _guide_disabled = hand_gesture_guide_card(&state);
+    }
+
+    #[test]
+    fn status_strip_renders_correctly_across_all_connection_states() {
+        // 1. Disconnected / Idle state
+        let mut state = AppState::default();
+        let _strip_idle = status_strip(&state);
+
+        // 2. Connected phone with battery and device name
+        state.status.connected = true;
+        state.core = Some(phonecam_protocol::CoreState {
+            phase: phonecam_protocol::StreamPhase::Connected,
+            device: Some(phonecam_protocol::DeviceIdentity {
+                device_id: "dev-pixel".into(),
+                name: "Pixel 8 Pro".into(),
+                model: "Pixel_8_Pro".into(),
+                android_version: 34,
+            }),
+            phone: Some(phonecam_protocol::PhoneState {
+                battery: 84,
+                charging: false,
+                thermal: phonecam_protocol::ThermalState::None,
+                ..Default::default()
+            }),
+            vcam: Some(phonecam_protocol::VcamStatus {
+                state: phonecam_protocol::VcamState::Running,
+                name: "PhoneCam Camera".into(),
+                registered: true,
+                consumers: 1,
+                error: None,
+            }),
+            ..Default::default()
+        });
+        let _strip_connected = status_strip(&state);
+
+        // 3. Streaming with thermal warning, low battery, and stop button
+        if let Some(core) = &mut state.core {
+            core.phase = phonecam_protocol::StreamPhase::Streaming;
+            if let Some(phone) = &mut core.phone {
+                phone.battery = 12;
+                phone.charging = false;
+                phone.thermal = phonecam_protocol::ThermalState::Moderate;
+            }
+        }
+        let _strip_streaming = status_strip(&state);
+
+        // 4. Critical thermal state and charging
+        if let Some(core) = &mut state.core {
+            if let Some(phone) = &mut core.phone {
+                phone.battery = 15;
+                phone.charging = true;
+                phone.thermal = phonecam_protocol::ThermalState::Critical;
+            }
+        }
+        let _strip_critical = status_strip(&state);
     }
 }

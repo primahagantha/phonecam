@@ -1,6 +1,9 @@
 package com.phonecam.camera.protocol
 
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import androidx.core.content.ContextCompat
@@ -121,7 +124,7 @@ object Log {
 class DeviceHealth(private val context: Context) {
 
     private val powerManager = ContextCompat.getSystemService(context, PowerManager::class.java)
-    private val batteryManager = ContextCompat.getSystemService(context, android.os.BatteryManager::class.java)
+    private val batteryManager = ContextCompat.getSystemService(context, BatteryManager::class.java)
 
     data class Snapshot(
         val batteryPercent: Int,
@@ -130,8 +133,28 @@ class DeviceHealth(private val context: Context) {
     )
 
     fun snapshot(): Snapshot {
-        val percent = batteryManager?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
-        val charging = batteryManager?.isCharging == true
+        var percent = batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+        var charging = batteryManager?.isCharging == true
+
+        if (percent <= 0 || percent > 100) {
+            val intent = runCatching {
+                context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            }.getOrNull()
+            if (intent != null) {
+                val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                if (level >= 0 && scale > 0) {
+                    percent = (level * 100) / scale
+                }
+                val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)
+                charging = charging ||
+                    status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL ||
+                    plugged > 0
+            }
+        }
+
         return Snapshot(
             batteryPercent = percent.coerceIn(-1, 100),
             charging = charging,

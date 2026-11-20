@@ -21,7 +21,7 @@ pub enum SideEffect {
     DisconnectUsb,
     RestartAdb,
     OpenPlatformToolsUrl,
-    ForgetDevice,
+    ForgetDevice(Option<String>),
     ResolvePair(bool),
     RefreshState,
     SetTab(Tab),

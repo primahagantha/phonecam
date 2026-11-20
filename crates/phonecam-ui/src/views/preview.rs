@@ -76,9 +76,11 @@ pub fn stage_content(state: &AppState, pairing_selected: usize) -> StageContent 
         return StageContent::Picture;
     }
 
+    let has_device = state.has_device();
     let summary = state.status_summary();
     let pairing = state.core.as_ref().map(|c| &c.pairing);
-    let pairing_open = pairing.map(|p| p.open).unwrap_or(false) && !summary.attention;
+    let pairing_open =
+        pairing.map(|p| p.open).unwrap_or(false) && !summary.attention && !has_device;
 
     if pairing_open {
         let expires_at = pairing.and_then(|p| p.expires_at);
@@ -827,6 +829,32 @@ mod tests {
     #[test]
     fn streaming_shows_the_picture() {
         let mut state = state_with_device();
+        if let Some(core) = &mut state.core {
+            core.phase = phonecam_protocol::StreamPhase::Streaming;
+        }
+        assert_eq!(stage_content(&state, 0), StageContent::Picture);
+    }
+
+    #[test]
+    fn connected_device_does_not_show_pairing_code() {
+        let mut state = state_with_device();
+        // Even if pairing.open is still true, a connected device must never show the QR pairing stage.
+        if let Some(core) = &mut state.core {
+            core.pairing.open = true;
+            core.pairing.qr_payloads = vec!["some_payload".into()];
+        }
+        match stage_content(&state, 0) {
+            StageContent::Empty { title, action, .. } => {
+                assert_eq!(title, "Ready to stream");
+                assert!(matches!(
+                    action,
+                    EmptyAction::StartStreaming { enabled: true, .. }
+                ));
+            }
+            other => panic!("expected Empty ready to stream, got {other:?}"),
+        }
+
+        // And when streaming, it shows Picture
         if let Some(core) = &mut state.core {
             core.phase = phonecam_protocol::StreamPhase::Streaming;
         }

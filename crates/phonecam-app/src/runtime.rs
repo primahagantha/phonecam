@@ -857,7 +857,13 @@ impl Runtime {
             }
             persist_registry(&registry);
         }
+        {
+            let mut state = self.state.lock();
+            state.settings.last_device_id = Some(outcome.device_id.clone());
+            let _ = crate::settings::save(&state.settings);
+        }
         self.log_info(&format!("{} connected", outcome.device_name));
+        self.disarm_pairing();
 
         match outcome.role {
             phonecam_protocol::ChannelRole::Video => self.run_video(conn),
@@ -920,6 +926,7 @@ impl Runtime {
             conn.write_all(&bytes);
         }
         *self.session.phase.lock() = StreamPhase::Connected;
+        self.disarm_pairing();
         self.broadcast_state();
 
         // Stream auto-resume on reconnect (upstream commit 220c3af):
@@ -1012,6 +1019,7 @@ impl Runtime {
                         self.quality.lock().confirm(rung);
                     }
                     self.reconcile_resolution_downgrade(&phone_state);
+                    *self.session.phone_thermal.lock() = phone_state.thermal;
                     *self.session.phone_state.lock() = Some(phone_state);
                     // The phase rules live in the core and are unit tested there.
                     let next = phase_after_phone_state(self.session.phase(), streaming);
@@ -2455,6 +2463,67 @@ impl Runtime {
         self.bump_state_version();
     }
 
+    /// Forgets a paired device: removes it from credentials and registry, saves settings,
+    /// and tears down active session if it matches.
+    pub fn forget_device(&self, target_id: Option<&str>) {
+        let id = target_id
+            .map(|s| s.to_string())
+            .or_else(|| {
+                let cur = self.session.device_id.lock().clone();
+                if !cur.is_empty() {
+                    Some(cur)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| self.state.lock().settings.last_device_id.clone())
+            .or_else(|| self.registry.lock().first().map(|r| r.device_id.clone()));
+
+        if let Some(id) = id {
+            self.pairing.lock().forget_device(&id);
+            {
+                let mut registry = self.registry.lock();
+                registry.retain(|r| r.device_id != id);
+                persist_registry(&registry);
+            }
+
+            let is_active = {
+                let cur = self.session.device_id.lock();
+                !cur.is_empty() && *cur == id
+            };
+
+            if is_active {
+                self.stop_stream();
+                self.control_generation.fetch_add(1, Ordering::SeqCst);
+                self.video_generation.fetch_add(1, Ordering::SeqCst);
+                self.audio_generation.fetch_add(1, Ordering::SeqCst);
+                self.session.device_id.lock().clear();
+                self.session.device_name.lock().clear();
+                self.session.device_model.lock().clear();
+                self.session.android_version.store(0, Ordering::Relaxed);
+                *self.session.transport.lock() = "none".into();
+                *self.session.phone_state.lock() = None;
+                self.session.live_frame_seen.store(false, Ordering::Relaxed);
+                *self.session.phase.lock() = StreamPhase::Idle;
+            }
+
+            {
+                let mut state = self.state.lock();
+                if let Some(prompt) = &state.pairing_prompt {
+                    if prompt.device_id == id {
+                        state.pairing_prompt = None;
+                        state.dismiss_notice("pair-request");
+                    }
+                }
+                state.settings.last_device_id = None;
+                let _ = crate::settings::save(&state.settings);
+            }
+        }
+
+        self.broadcast_state();
+        self.bump_state_version();
+    }
+
     pub fn set_notice(&self, code: FailureCode, values: Vec<(String, String)>, key: &str) {
         self.state.lock().add_notice(code, values, key.to_string());
         self.bump_state_version();
@@ -3669,6 +3738,54 @@ mod tests {
     }
 
     #[test]
+    fn phone_state_updates_desktop_state_and_battery() {
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+        runtime.broadcast_state();
+
+        let phone_state = phonecam_protocol::PhoneState {
+            streaming: false,
+            camera: "back".into(),
+            resolution: "1920x1080".into(),
+            fps: 30,
+            actual_resolution: "1920x1080".into(),
+            actual_fps: 30,
+            bitrate: 4_000_000,
+            battery: 85,
+            charging: true,
+            ..Default::default()
+        };
+
+        *runtime.session.phone_thermal.lock() = phone_state.thermal;
+        *runtime.session.phone_state.lock() = Some(phone_state);
+        runtime.broadcast_state();
+
+        let state = runtime.state.lock();
+        let core = state.core.as_ref().expect("core must be present");
+        let phone = core.phone.as_ref().expect("phone state must be present");
+        assert_eq!(phone.battery, 85);
+        assert!(phone.charging);
+        assert_eq!(phone.actual_resolution, "1920x1080");
+    }
+
+    #[test]
+    fn connection_disarms_pairing_state() {
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+        runtime.broadcast_state();
+        let _payloads = runtime.arm_pairing();
+        assert!(runtime.state.lock().core.as_ref().unwrap().pairing.open);
+
+        // When a connection is established, disarm_pairing resets pairing.open to false
+        runtime.disarm_pairing();
+        runtime.broadcast_state();
+
+        let state = runtime.state.lock();
+        assert!(!state.core.as_ref().unwrap().pairing.open);
+        assert!(state.core.as_ref().unwrap().pairing.qr_payloads.is_empty());
+    }
+
+    #[test]
     fn a_denied_request_clears_the_prompt_and_the_pending_entry() {
         let settings = phonecam_ui::views::state::Settings::default();
         let runtime = Runtime::new(&settings);
@@ -3706,6 +3823,91 @@ mod tests {
             token.is_some(),
             "approval must arm a token the retry can redeem"
         );
+    }
+
+    #[test]
+    fn forget_device_removes_from_registry_resets_session_and_clears_settings() {
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+
+        let device_id = "test-phone-99";
+        runtime
+            .registry
+            .lock()
+            .push(DeviceRecord::new(device_id, "Test Phone", now_ms()));
+        runtime.state.lock().settings.last_device_id = Some(device_id.to_string());
+        *runtime.session.device_id.lock() = device_id.to_string();
+        *runtime.session.device_name.lock() = "Test Phone".to_string();
+        *runtime.session.device_model.lock() = "Pixel 8".to_string();
+        runtime.session.android_version.store(14, Ordering::Relaxed);
+        *runtime.session.transport.lock() = "lan".into();
+        *runtime.session.phase.lock() = StreamPhase::Streaming;
+        runtime
+            .session
+            .live_frame_seen
+            .store(true, Ordering::Relaxed);
+        *runtime.session.phone_state.lock() = Some(phonecam_protocol::PhoneState::default());
+        runtime.pairing.lock().accept_nonce(device_id, 100);
+
+        runtime.broadcast_state();
+        assert!(runtime.state.lock().core.as_ref().unwrap().device.is_some());
+
+        let prev_ctrl_gen = runtime.control_generation.load(Ordering::SeqCst);
+        let prev_vid_gen = runtime.video_generation.load(Ordering::SeqCst);
+
+        runtime.forget_device(Some(device_id));
+
+        // Registry check
+        assert!(!runtime
+            .registry
+            .lock()
+            .iter()
+            .any(|r| r.device_id == device_id));
+
+        // Session reset check
+        assert!(runtime.session.device_id.lock().is_empty());
+        assert!(runtime.session.device_name.lock().is_empty());
+        assert!(runtime.session.device_model.lock().is_empty());
+        assert_eq!(runtime.session.android_version.load(Ordering::Relaxed), 0);
+        assert_eq!(*runtime.session.transport.lock(), "none");
+        assert!(runtime.session.phone_state.lock().is_none());
+        assert!(!runtime.session.live_frame_seen.load(Ordering::Relaxed));
+        assert_eq!(*runtime.session.phase.lock(), StreamPhase::Idle);
+
+        // Generations bumped
+        assert!(runtime.control_generation.load(Ordering::SeqCst) > prev_ctrl_gen);
+        assert!(runtime.video_generation.load(Ordering::SeqCst) > prev_vid_gen);
+
+        // Settings check
+        assert_eq!(runtime.state.lock().settings.last_device_id, None);
+
+        // State update check
+        let state = runtime.state.lock();
+        let core = state.core.as_ref().expect("core present");
+        assert!(core.device.is_none());
+        assert_eq!(core.phase, StreamPhase::Idle);
+    }
+
+    #[test]
+    fn forget_device_with_none_resolves_and_forgets() {
+        let settings = phonecam_ui::views::state::Settings::default();
+        let runtime = Runtime::new(&settings);
+
+        let device_id = "test-phone-none-target";
+        runtime
+            .registry
+            .lock()
+            .push(DeviceRecord::new(device_id, "Test Phone", now_ms()));
+        runtime.state.lock().settings.last_device_id = Some(device_id.to_string());
+
+        runtime.forget_device(None);
+
+        assert!(!runtime
+            .registry
+            .lock()
+            .iter()
+            .any(|r| r.device_id == device_id));
+        assert_eq!(runtime.state.lock().settings.last_device_id, None);
     }
 
     #[test]
