@@ -163,4 +163,61 @@ class VideoChannelTest {
         // 2 delta frames were evicted, but the codec config frame was preserved
         assertEquals(2L, channel.stats.droppedFrames)
     }
+
+    @Test
+    fun `eviction triggers onRequestKeyframe callback`() {
+        val writeBlocker = CountDownLatch(1)
+        val writtenBytes = ByteArrayOutputStream()
+        val blockingOut = object : OutputStream() {
+            private var first = true
+            override fun write(b: Int) {
+                if (first) {
+                    first = false
+                    writeBlocker.await(5, TimeUnit.SECONDS)
+                }
+                writtenBytes.write(b)
+            }
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                if (first) {
+                    first = false
+                    writeBlocker.await(5, TimeUnit.SECONDS)
+                }
+                writtenBytes.write(b, off, len)
+            }
+        }
+
+        var keyframeRequested = false
+        val channel = VideoChannel(
+            connection = testConnection(blockingOut),
+            onRequestKeyframe = { keyframeRequested = true },
+        )
+        channel.start()
+
+        fun makeFrame(isKey: Boolean): EncodedFrame {
+            val data = ByteArray(32) { 0x42 }
+            return EncodedFrame(
+                buffer = ByteBuffer.wrap(data),
+                offset = 0,
+                length = data.size,
+                ptsUs = 1000L,
+                isKeyframe = isKey,
+                isCodecConfig = false,
+            )
+        }
+
+        channel.submit(makeFrame(isKey = false))
+        Thread.sleep(50)
+
+        channel.submit(makeFrame(isKey = false))
+        channel.submit(makeFrame(isKey = false))
+        channel.submit(makeFrame(isKey = false))
+
+        channel.submit(makeFrame(isKey = true))
+
+        writeBlocker.countDown()
+        Thread.sleep(100)
+        channel.stop()
+
+        assertTrue("onRequestKeyframe should be called when frames are evicted", keyframeRequested)
+    }
 }

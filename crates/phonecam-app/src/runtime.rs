@@ -1091,6 +1091,7 @@ impl Runtime {
         let mut decoded: u64 = 0;
         let mut dropped: u64 = 0;
         let mut saw_keyframe = false;
+        let mut consecutive_decode_errors: u32 = 0;
         let mut scratch = PublishScratch::default();
         let mut packet_buf = Vec::with_capacity(256 * 1024);
 
@@ -1130,6 +1131,7 @@ impl Runtime {
             }
             if flags.is_keyframe() {
                 saw_keyframe = true;
+                consecutive_decode_errors = 0;
             }
             if !saw_keyframe {
                 // Nothing decodes before a keyframe, and feeding a delta first
@@ -1148,6 +1150,7 @@ impl Runtime {
 
             match decoded_result {
                 Ok(()) => {
+                    consecutive_decode_errors = 0;
                     decoded += 1;
                     self.last_frame_at_ms.store(now_ms(), Ordering::Relaxed);
                     if decoded == 1 || !self.session.live_frame_seen.load(Ordering::Relaxed) {
@@ -1165,11 +1168,14 @@ impl Runtime {
                     tracing::warn!("decode error: {error}");
                     self.note_stage(1, now_us() - decode_started);
                     dropped += 1;
-                    self.session
-                        .decode_struggling
-                        .store(true, Ordering::Relaxed);
-                    saw_keyframe = false;
-                    decoder.reset();
+                    consecutive_decode_errors += 1;
+                    if consecutive_decode_errors >= 3 {
+                        self.session
+                            .decode_struggling
+                            .store(true, Ordering::Relaxed);
+                        saw_keyframe = false;
+                        decoder.reset();
+                    }
                 }
             }
 

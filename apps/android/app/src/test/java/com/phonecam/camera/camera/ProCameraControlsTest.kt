@@ -182,4 +182,144 @@ class ProCameraControlsTest {
         assertTrue(CameraController.MAX_VIDEO_WIDTH >= 3840)
         assertTrue(CameraController.MAX_VIDEO_HEIGHT >= 2160)
     }
+
+    @Test
+    fun `selectAfModeFromModes prioritizes CONTINUOUS_PICTURE over CONTINUOUS_VIDEO, AUTO, and OFF`() {
+        val allModes = intArrayOf(
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_OFF,
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_AUTO,
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+            CameraController.selectAfModeFromModes(allModes),
+        )
+
+        val videoAndAuto = intArrayOf(
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_OFF,
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_AUTO,
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
+            CameraController.selectAfModeFromModes(videoAndAuto),
+        )
+
+        val autoOnly = intArrayOf(
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_OFF,
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_AUTO,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_AUTO,
+            CameraController.selectAfModeFromModes(autoOnly),
+        )
+
+        val offOnly = intArrayOf(
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_OFF,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_OFF,
+            CameraController.selectAfModeFromModes(offOnly),
+        )
+
+        val empty = intArrayOf()
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_OFF,
+            CameraController.selectAfModeFromModes(empty),
+        )
+    }
+
+    @Test
+    fun `noise reduction, edge mode, and hot pixel resolve HIGH_QUALITY with FAST fallback`() {
+        // Noise reduction
+        val nrBoth = intArrayOf(
+            android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_FAST,
+            android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY,
+            CameraController.resolveNoiseReductionModeFromModes(nrBoth),
+        )
+
+        val nrFastOnly = intArrayOf(
+            android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_FAST,
+            android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_OFF,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_FAST,
+            CameraController.resolveNoiseReductionModeFromModes(nrFastOnly),
+        )
+
+        val nrNone = intArrayOf(android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_OFF)
+        assertNull(CameraController.resolveNoiseReductionModeFromModes(nrNone))
+
+        // Edge mode
+        val edgeBoth = intArrayOf(
+            android.hardware.camera2.CaptureRequest.EDGE_MODE_FAST,
+            android.hardware.camera2.CaptureRequest.EDGE_MODE_HIGH_QUALITY,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.EDGE_MODE_HIGH_QUALITY,
+            CameraController.resolveEdgeModeFromModes(edgeBoth),
+        )
+
+        val edgeFastOnly = intArrayOf(android.hardware.camera2.CaptureRequest.EDGE_MODE_FAST)
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.EDGE_MODE_FAST,
+            CameraController.resolveEdgeModeFromModes(edgeFastOnly),
+        )
+
+        val edgeNone = intArrayOf(android.hardware.camera2.CaptureRequest.EDGE_MODE_OFF)
+        assertNull(CameraController.resolveEdgeModeFromModes(edgeNone))
+
+        // Hot pixel mode
+        val hpBoth = intArrayOf(
+            android.hardware.camera2.CaptureRequest.HOT_PIXEL_MODE_FAST,
+            android.hardware.camera2.CaptureRequest.HOT_PIXEL_MODE_HIGH_QUALITY,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.HOT_PIXEL_MODE_HIGH_QUALITY,
+            CameraController.resolveHotPixelModeFromModes(hpBoth),
+        )
+
+        val hpFastOnly = intArrayOf(android.hardware.camera2.CaptureRequest.HOT_PIXEL_MODE_FAST)
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.HOT_PIXEL_MODE_FAST,
+            CameraController.resolveHotPixelModeFromModes(hpFastOnly),
+        )
+
+        val hpNone = intArrayOf(android.hardware.camera2.CaptureRequest.HOT_PIXEL_MODE_OFF)
+        assertNull(CameraController.resolveHotPixelModeFromModes(hpNone))
+    }
+
+    @Test
+    fun `face detect mode resolves FULL then SIMPLE then null`() {
+        val faceBoth = intArrayOf(
+            android.hardware.camera2.CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF,
+            android.hardware.camera2.CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE,
+            android.hardware.camera2.CaptureRequest.STATISTICS_FACE_DETECT_MODE_FULL,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.STATISTICS_FACE_DETECT_MODE_FULL,
+            CameraController.resolveFaceDetectModeFromModes(faceBoth),
+        )
+
+        val faceSimpleOnly = intArrayOf(
+            android.hardware.camera2.CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF,
+            android.hardware.camera2.CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE,
+        )
+        assertEquals(
+            android.hardware.camera2.CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE,
+            CameraController.resolveFaceDetectModeFromModes(faceSimpleOnly),
+        )
+
+        val faceOffOnly = intArrayOf(
+            android.hardware.camera2.CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF,
+        )
+        assertNull(CameraController.resolveFaceDetectModeFromModes(faceOffOnly))
+
+        val faceEmpty = intArrayOf()
+        assertNull(CameraController.resolveFaceDetectModeFromModes(faceEmpty))
+    }
 }

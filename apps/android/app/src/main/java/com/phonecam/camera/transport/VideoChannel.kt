@@ -33,6 +33,7 @@ data class VideoChannelStats(
 class VideoChannel(
     private val connection: PeerConnection,
     private val onClosed: ((Throwable?) -> Unit)? = null,
+    private val onRequestKeyframe: (() -> Unit)? = null,
 ) {
 
     private val queue = ArrayBlockingQueue<PendingFrame>(QUEUE_CAPACITY)
@@ -145,16 +146,19 @@ class VideoChannel(
                 if (!queue.offer(pending)) {
                     droppedFrames.incrementAndGet()
                     recycleFrame(pending)
+                    onRequestKeyframe?.invoke()
                 }
             } else {
                 droppedFrames.incrementAndGet()
                 recycleFrame(pending)
+                onRequestKeyframe?.invoke()
             }
         }
     }
 
     private fun evictStaleFramesOnKeyframe() {
         val toKeep = mutableListOf<PendingFrame>()
+        var evictedCount = 0
         while (!queue.isEmpty()) {
             val evicted = queue.poll() ?: break
             if (evicted.codecConfig) {
@@ -162,10 +166,14 @@ class VideoChannel(
             } else {
                 droppedFrames.incrementAndGet()
                 recycleFrame(evicted)
+                evictedCount++
             }
         }
         for (saved in toKeep) {
             queue.offer(saved)
+        }
+        if (evictedCount > 0) {
+            onRequestKeyframe?.invoke()
         }
     }
 
@@ -271,7 +279,7 @@ class VideoChannel(
          * Deep enough to absorb a scheduling hiccup, shallow enough that a
          * congested link shows up as dropped frames rather than growing latency.
          */
-        const val QUEUE_CAPACITY = 15
+        const val QUEUE_CAPACITY = 30
         const val POOL_CAPACITY = QUEUE_CAPACITY + 2
         const val MIN_POOLED_FRAME_BYTES = 64 * 1024
         const val MAX_POOLED_FRAME_BYTES = 512 * 1024

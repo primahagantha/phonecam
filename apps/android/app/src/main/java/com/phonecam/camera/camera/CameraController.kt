@@ -461,15 +461,45 @@ class CameraController(private val context: Context) {
 
     /**
      * Safely selects autofocus mode based on camera capabilities.
-     * Front cameras are typically fixed-focus and don't support CONTINUOUS_VIDEO or AUTO.
+     * Prioritizes CONTINUOUS_PICTURE over CONTINUOUS_VIDEO, falling back to AUTO, then OFF.
+     * CONTINUOUS_PICTURE is far more responsive and locks sharp focus on subjects and human faces.
      */
-    private fun selectAfMode(characteristics: CameraCharacteristics): Int {
+    internal fun selectAfMode(characteristics: CameraCharacteristics): Int {
         val modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
-        return when {
-            modes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-            modes.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) -> CaptureRequest.CONTROL_AF_MODE_AUTO
-            else -> CaptureRequest.CONTROL_AF_MODE_OFF
-        }
+        return selectAfModeFromModes(modes)
+    }
+
+    /**
+     * Selects optimal noise reduction mode: HIGH_QUALITY with FAST fallback.
+     */
+    internal fun resolveNoiseReductionMode(characteristics: CameraCharacteristics): Int? {
+        val modes = characteristics.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES) ?: intArrayOf()
+        return resolveNoiseReductionModeFromModes(modes)
+    }
+
+    /**
+     * Selects optimal edge enhancement mode: HIGH_QUALITY with FAST fallback.
+     */
+    internal fun resolveEdgeMode(characteristics: CameraCharacteristics): Int? {
+        val modes = characteristics.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES) ?: intArrayOf()
+        return resolveEdgeModeFromModes(modes)
+    }
+
+    /**
+     * Selects optimal hot pixel correction mode: HIGH_QUALITY with FAST fallback.
+     */
+    internal fun resolveHotPixelMode(characteristics: CameraCharacteristics): Int? {
+        val modes = characteristics.get(CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES) ?: intArrayOf()
+        return resolveHotPixelModeFromModes(modes)
+    }
+
+    /**
+     * Selects hardware face detection mode: FULL if supported, falling back to SIMPLE.
+     * Instructs camera ISP to automatically route autofocus and autoexposure to detected human faces.
+     */
+    internal fun resolveFaceDetectMode(characteristics: CameraCharacteristics): Int? {
+        val modes = characteristics.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES) ?: intArrayOf()
+        return resolveFaceDetectModeFromModes(modes)
     }
 
     private fun createSession(
@@ -489,7 +519,7 @@ class CameraController(private val context: Context) {
             sessionRequest = SessionRequest(targetSurface, targetSize, resolved, onError)
 
             val characteristics = getCharacteristics(camera.id)
-            val afMode = characteristics?.let { selectAfMode(it) } ?: CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+            val afMode = characteristics?.let { selectAfMode(it) } ?: CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
             val antibandingMode = characteristics?.let { resolveAntibandingMode(it, configuredAntibanding) }
                 ?: resolveAntibandingModeFallback(configuredAntibanding)
             val hasValidPreview = previewSurface != null && previewSurface.isValid
@@ -571,6 +601,22 @@ class CameraController(private val context: Context) {
                 set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
                 if (torchEnabled) {
                     set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                }
+                // Minimize video noise: high quality noise reduction, edge enhancement, and hot pixel correction
+                if (characteristics != null) {
+                    resolveNoiseReductionMode(characteristics)?.let { mode ->
+                        set(CaptureRequest.NOISE_REDUCTION_MODE, mode)
+                    }
+                    resolveEdgeMode(characteristics)?.let { mode ->
+                        set(CaptureRequest.EDGE_MODE, mode)
+                    }
+                    resolveHotPixelMode(characteristics)?.let { mode ->
+                        set(CaptureRequest.HOT_PIXEL_MODE, mode)
+                    }
+                    // Hardware face detection: route ISP AF/AE to user's face in front of camera
+                    resolveFaceDetectMode(characteristics)?.let { mode ->
+                        set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, mode)
+                    }
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && characteristics != null) {
                     val zoomRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
@@ -810,13 +856,13 @@ class CameraController(private val context: Context) {
     /**
      * Sets manual focus distance in diopters (1 / distance in meters; 0.0f = infinity).
      * When [diopters] is provided, sets CONTROL_AF_MODE to OFF and applies LENS_FOCUS_DISTANCE.
-     * When [diopters] is null, returns CONTROL_AF_MODE to CONTINUOUS_VIDEO.
+     * When [diopters] is null, returns CONTROL_AF_MODE to CONTINUOUS_PICTURE or best supported AF mode.
      */
     fun setFocusDistance(diopters: Float?) {
         manualFocusDistance = diopters
         val builder = requestBuilder ?: return
         val characteristics = device?.id?.let { getCharacteristics(it) }
-        val defaultAfMode = characteristics?.let { selectAfMode(it) } ?: CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+        val defaultAfMode = characteristics?.let { selectAfMode(it) } ?: CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
         runCatching {
             if (diopters == null) {
                 builder.set(CaptureRequest.CONTROL_AF_MODE, defaultAfMode)
@@ -1201,6 +1247,37 @@ class CameraController(private val context: Context) {
             "60hz", "60" -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ
             "off" -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
             else -> CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+        }
+
+        fun selectAfModeFromModes(modes: IntArray): Int = when {
+            modes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+            modes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+            modes.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) -> CaptureRequest.CONTROL_AF_MODE_AUTO
+            else -> CaptureRequest.CONTROL_AF_MODE_OFF
+        }
+
+        fun resolveNoiseReductionModeFromModes(modes: IntArray): Int? = when {
+            modes.contains(CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY) -> CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
+            modes.contains(CaptureRequest.NOISE_REDUCTION_MODE_FAST) -> CaptureRequest.NOISE_REDUCTION_MODE_FAST
+            else -> null
+        }
+
+        fun resolveEdgeModeFromModes(modes: IntArray): Int? = when {
+            modes.contains(CaptureRequest.EDGE_MODE_HIGH_QUALITY) -> CaptureRequest.EDGE_MODE_HIGH_QUALITY
+            modes.contains(CaptureRequest.EDGE_MODE_FAST) -> CaptureRequest.EDGE_MODE_FAST
+            else -> null
+        }
+
+        fun resolveHotPixelModeFromModes(modes: IntArray): Int? = when {
+            modes.contains(CaptureRequest.HOT_PIXEL_MODE_HIGH_QUALITY) -> CaptureRequest.HOT_PIXEL_MODE_HIGH_QUALITY
+            modes.contains(CaptureRequest.HOT_PIXEL_MODE_FAST) -> CaptureRequest.HOT_PIXEL_MODE_FAST
+            else -> null
+        }
+
+        fun resolveFaceDetectModeFromModes(modes: IntArray): Int? = when {
+            modes.contains(CaptureRequest.STATISTICS_FACE_DETECT_MODE_FULL) -> CaptureRequest.STATISTICS_FACE_DETECT_MODE_FULL
+            modes.contains(CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE) -> CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE
+            else -> null
         }
     }
 }

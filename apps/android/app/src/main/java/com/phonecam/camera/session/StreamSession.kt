@@ -1161,6 +1161,8 @@ class StreamSession(
             thermal = healthSnapshot.thermal,
         )
 
+        handleThermalState(healthSnapshot.thermal)
+
         sendControlMessage(
             PhoneMessage.Stats(
                 fps = fps,
@@ -1177,6 +1179,68 @@ class StreamSession(
         )
 
         if (batteryChanged) {
+            sendState()
+        }
+    }
+
+    private var thermalThrottled = false
+    private var preThermalBitrate: Int? = null
+    private var preThermalFps: Int? = null
+
+    /**
+     * When thermal is moderate or above, prefer lowering bitrate/FPS on the fly
+     * via encoder.updateBitrate() and camera.setFrameRate() without tearing down the stream session.
+     */
+    internal fun handleThermalState(thermalState: String) {
+        if (!_state.value.isStreaming) return
+        val isHot = thermalState == "moderate" || thermalState == "severe" ||
+            thermalState == "critical" || thermalState == "emergency"
+
+        if (isHot && !thermalThrottled) {
+            val currentBitrate = _state.value.bitrate
+            val currentFps = _state.value.actualFps ?: 30
+            preThermalBitrate = currentBitrate
+            preThermalFps = currentFps
+            thermalThrottled = true
+
+            // Lower FPS to 30 if running at 60fps, and reduce bitrate to prevent thermal congestion
+            val targetFps = if (currentFps > 30) 30 else currentFps
+            val targetBitrate = if (currentBitrate > 2_500_000) {
+                (currentBitrate * 6 / 10).coerceAtLeast(1_500_000)
+            } else {
+                currentBitrate
+            }
+
+            Log.i("thermal is $thermalState: lowering bitrate on the fly ($currentBitrate -> $targetBitrate) and fps ($currentFps -> $targetFps)")
+            if (targetFps != currentFps) {
+                camera.setFrameRate(targetFps)
+            }
+            if (targetBitrate != currentBitrate) {
+                encoder?.updateBitrate(targetBitrate)
+            }
+            _state.value = _state.value.copy(
+                actualFps = targetFps,
+                bitrate = targetBitrate,
+            )
+            sendState()
+        } else if (!isHot && thermalThrottled) {
+            val restoredBitrate = preThermalBitrate ?: _state.value.bitrate
+            val restoredFps = preThermalFps ?: (_state.value.actualFps ?: 30)
+            thermalThrottled = false
+            preThermalBitrate = null
+            preThermalFps = null
+
+            Log.i("thermal returned to $thermalState: restoring bitrate ($restoredBitrate) and fps ($restoredFps)")
+            if (restoredFps != _state.value.actualFps) {
+                camera.setFrameRate(restoredFps)
+            }
+            if (restoredBitrate != _state.value.bitrate) {
+                encoder?.updateBitrate(restoredBitrate)
+            }
+            _state.value = _state.value.copy(
+                actualFps = restoredFps,
+                bitrate = restoredBitrate,
+            )
             sendState()
         }
     }
@@ -1414,6 +1478,9 @@ class StreamSession(
                 // A substitution, so it goes back to the default heading.
                 noticeKind = NoticeKind.Substitution,
             )
+            thermalThrottled = false
+            preThermalBitrate = null
+            preThermalFps = null
             sendState()
         } else {
             stopStreaming(notifyPeer = false, keepVideoChannel = true)
@@ -1631,6 +1698,9 @@ class StreamSession(
                                 }
                             }
                         },
+                        onRequestKeyframe = {
+                            encoder?.requestSyncFrame()
+                        },
                     ).also { it.start() }
                     attemptChannel = opened
                     videoChannel = opened
@@ -1775,6 +1845,9 @@ class StreamSession(
         // second, which is what the notification de-duplication below now also
         // guards against.
         stopStatsLoop()
+        thermalThrottled = false
+        preThermalBitrate = null
+        preThermalFps = null
         // Stop Camera2 capture session first so no requests are delivered
         // into a surface that is about to be released by MediaCodec.
         camera.stop()

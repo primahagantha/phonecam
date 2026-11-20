@@ -243,6 +243,11 @@ class H264Encoder(
         }
     }
 
+    /** Requests an immediate sync frame (IDR keyframe). */
+    fun requestSyncFrame() {
+        requestKeyframe()
+    }
+
     fun stop() {
         running = false
         runCatching { drainThread?.interrupt() }
