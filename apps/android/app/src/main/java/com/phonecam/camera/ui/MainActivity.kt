@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
 import android.view.Surface
 import androidx.activity.ComponentActivity
@@ -12,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -52,6 +54,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -74,6 +77,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -192,13 +196,26 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
     val notificationNoteDismissed by viewModel.notificationNoteDismissed.collectAsState()
     val previewEnabled by viewModel.previewEnabled.collectAsState()
 
-    // The desktop's `set_screen` choice, applied to this window. Active only
-    // while streaming, so opening the app never pins the screen on.
+    // The desktop's `set_screen` choice or local phone blackout, applied to this window.
+    // Active only while streaming, so opening the app never pins the screen on.
     val screenMode = ScreenMode.fromWire(state.screenMode)
-    ApplyScreenMode(mode = screenMode, active = state.phase == SessionState.Phase.STREAMING)
+    var localBlackoutActive by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(state.phase) {
+        if (state.phase != SessionState.Phase.STREAMING) {
+            localBlackoutActive = false
+        }
+    }
+
+    val isStreaming = state.phase == SessionState.Phase.STREAMING
+    val isBlackoutMode = (screenMode == ScreenMode.BLACK || localBlackoutActive)
+    ApplyScreenMode(
+        mode = if (localBlackoutActive) ScreenMode.BLACK else screenMode,
+        active = isStreaming,
+    )
 
     // In `black` mode, a tap uncovers the UI until the mode changes again.
-    var blackoutPeeked by remember(screenMode) { mutableStateOf(false) }
+    var blackoutPeeked by remember(screenMode, localBlackoutActive) { mutableStateOf(false) }
 
     // The selected destination survives rotation. Held as an ordinal because the
     // saveable registry takes primitives, not enums.
@@ -441,6 +458,10 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         onAcknowledgeNotice = { viewModel.acknowledgeNotice() },
                         previewEnabled = previewEnabled,
                         onPreviewEnabled = { enabled -> viewModel.setPreviewEnabled(enabled) },
+                        onEnableBlackout = {
+                            localBlackoutActive = true
+                            blackoutPeeked = false
+                        },
                     )
 
                     ScreenDestination.Camera -> CameraScreen(
@@ -452,6 +473,10 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         state = state,
                         previewEnabled = previewEnabled,
                         onPreviewEnabled = { enabled -> viewModel.setPreviewEnabled(enabled) },
+                        onEnableBlackout = {
+                            localBlackoutActive = true
+                            blackoutPeeked = false
+                        },
                     )
 
                     ScreenDestination.Diagnostics -> DiagnosticsScreen(
@@ -469,7 +494,7 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
             }
         }
 
-        if (state.phase == SessionState.Phase.STREAMING && screenMode == ScreenMode.BLACK && blackoutPeeked) {
+        if (isStreaming && isBlackoutMode && blackoutPeeked) {
             // When peeked, tapping outside the controls returns back to black ambient mode
             Box(
                 modifier = Modifier
@@ -482,7 +507,7 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
             )
         }
 
-        if (state.phase == SessionState.Phase.STREAMING) {
+        if (isStreaming) {
             // What the user sees when the phone is face-down next to the
             // keyboard: proof the stream is alive, and a way to end it.
             StreamingOverlay(
@@ -492,7 +517,7 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
             )
         }
 
-        if (state.phase == SessionState.Phase.STREAMING && screenMode == ScreenMode.BLACK && !blackoutPeeked) {
+        if (isStreaming && isBlackoutMode && !blackoutPeeked) {
             // OLED Pure-Black Ambient Mode: true-black #000000 with minimal dim clock,
             // anti-burn-in offset, battery, and live badge. Tapping reveals controls.
             BlackoutSurface(state = state, onTap = { blackoutPeeked = true })
@@ -574,17 +599,27 @@ private fun StatusStrip(
 
 /** The scrolling body every screen shares, so the gaps and margins cannot drift. */
 @Composable
-private fun ScreenScroll(content: @Composable ColumnScope.() -> Unit) {
+private fun ScreenScroll(
+    modifier: Modifier = Modifier,
+    horizontalPadding: androidx.compose.ui.unit.Dp = 16.dp,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.TopCenter,
     ) {
         Column(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxSize()
-                .widthIn(max = 720.dp)
+                .then(if (isLandscape && horizontalPadding == 0.dp) Modifier.fillMaxWidth() else Modifier.widthIn(max = 720.dp))
                 .verticalScroll(rememberScrollState())
-                .padding(PaddingValues(horizontal = 16.dp, vertical = 16.dp)),
+                .padding(
+                    PaddingValues(
+                        horizontal = horizontalPadding,
+                        vertical = if (isLandscape) 8.dp else 16.dp,
+                    ),
+                ),
             // The gaps carry the grouping. A card, a banner and a section are three
             // different weights of thing, so they get three different gaps instead of
             // one uniform stack of boxes.
@@ -627,43 +662,53 @@ private fun StatusScreen(
     onAcknowledgeNotice: () -> Unit,
     previewEnabled: Boolean,
     onPreviewEnabled: (Boolean) -> Unit,
+    onEnableBlackout: () -> Unit,
 ) {
     val context = LocalContext.current
-    ScreenScroll {
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    ScreenScroll(horizontalPadding = if (isLandscape) 0.dp else 16.dp) {
         // The things that block everything else.
         if (!cameraGranted) {
-            // A permanent denial gets the Settings route, because the platform
-            // will no longer show a dialog (PRD §39: explain, do not nag).
-            if (permissionRequested && !context.shouldShowCameraRationale()) {
-                PermissionDeniedCard(onOpenSettings = { context.openAppSettings() })
-            } else {
-                CameraPermissionCard(onRequest = onRequestCamera)
+            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
+                // A permanent denial gets the Settings route, because the platform
+                // will no longer show a dialog (PRD §39: explain, do not nag).
+                if (permissionRequested && !context.shouldShowCameraRationale()) {
+                    PermissionDeniedCard(onOpenSettings = { context.openAppSettings() })
+                } else {
+                    CameraPermissionCard(onRequest = onRequestCamera)
+                }
             }
         } else if (!notificationGranted && !notificationNoteDismissed) {
-            NotificationPermissionNote(onDismiss = onDismissNotificationNote)
+            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
+                NotificationPermissionNote(onDismiss = onDismissNotificationNote)
+            }
         }
 
         // A failure is calm prose with a way out, never a wall (PRD §38).
         if (state.phase == SessionState.Phase.ERROR && state.error != null) {
-            ErrorCard(
-                message = state.error,
-                onRetry = onRetry,
-                secondaryLabel = stringResource(R.string.action_scan_qr),
-                onSecondary = onScanQr,
-                onReportIssue = {
-                    val reportText = buildReport()
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Diagnostics Report", reportText))
-                    val intent = com.phonecam.camera.protocol.CrashReporter.buildGitHubIssueIntent(
-                        context = context,
-                        title = "[Error] Stream error: ${state.error}",
-                        bodyMarkdown = "### Error Message\n${state.error}\n\n### System Diagnostics\n```\n$reportText\n```",
-                    )
-                    runCatching { context.startActivity(intent) }
-                },
-            )
+            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
+                ErrorCard(
+                    message = state.error,
+                    onRetry = onRetry,
+                    secondaryLabel = stringResource(R.string.action_scan_qr),
+                    onSecondary = onScanQr,
+                    onReportIssue = {
+                        val reportText = buildReport()
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Diagnostics Report", reportText))
+                        val intent = com.phonecam.camera.protocol.CrashReporter.buildGitHubIssueIntent(
+                            context = context,
+                            title = "[Error] Stream error: ${state.error}",
+                            bodyMarkdown = "### Error Message\n${state.error}\n\n### System Diagnostics\n```\n$reportText\n```",
+                        )
+                        runCatching { context.startActivity(intent) }
+                    },
+                )
+            }
         } else if (state.phase == SessionState.Phase.CONNECTING || state.phase == SessionState.Phase.RECONNECTING) {
-            ConnectingCard()
+            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
+                ConnectingCard()
+            }
         }
 
         // A capability substitution is normal operation, so it is an inline
@@ -671,16 +716,20 @@ private fun StatusScreen(
         // notice too but not a substitution, so it gets an accurate heading while
         // staying in the same blue container.
         notice?.let { text ->
-            val title = when (noticeKind) {
-                NoticeKind.Approval -> stringResource(R.string.banner_approval_title)
-                NoticeKind.Substitution -> stringResource(R.string.banner_notice_title)
+            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
+                val title = when (noticeKind) {
+                    NoticeKind.Approval -> stringResource(R.string.banner_approval_title)
+                    NoticeKind.Substitution -> stringResource(R.string.banner_notice_title)
+                }
+                InfoBanner(text = text, title = title, onDismiss = onAcknowledgeNotice)
             }
-            InfoBanner(text = text, title = title, onDismiss = onAcknowledgeNotice)
         }
 
         // Advice about the phone itself. Renders nothing when there is none, so
         // it costs no space in the common case.
-        HealthCard(state = state)
+        Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
+            HealthCard(state = state)
+        }
 
         // The picture itself, once there is one. Idle, it is absent rather than
         // blank: a black rectangle on a screen that is not streaming looks like a
@@ -693,32 +742,159 @@ private fun StatusScreen(
             // it. With the setting off there is no surface at all, so the capture
             // session is built without the preview output.
             if (previewEnabled) {
-                // The display correction is the camera's own sensor orientation, not
-                // the desktop's `set_image.rotation`. That rotation is a transform the
-                // desktop applies to its output frame (protocol.md §8) and says
-                // nothing about the phone's panel; applying it here turned the
-                // viewfinder to the PC's chosen orientation instead of the phone's.
+                // The display correction combines sensor orientation and display rotation.
                 val sensorOrientation = state.activeCamera?.orientationDegrees ?: 0
-                CameraPreview(
-                    onSurfaceAvailable = onSurfaceAvailable,
-                    aspectRatio = aspectRatioOf(state.actualResolution, sensorOrientation),
-                    mirror = state.mirror,
-                    orientationDegrees = sensorOrientation,
+                val displayRotation = getDisplayRotationDegrees(context)
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    CameraPreview(
+                        onSurfaceAvailable = onSurfaceAvailable,
+                        aspectRatio = aspectRatioOf(state.actualResolution, sensorOrientation, displayRotation),
+                        mirror = state.mirror,
+                        orientationDegrees = sensorOrientation,
+                        displayRotationDegrees = displayRotation,
+                    )
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Surface(
+                            onClick = onEnableBlackout,
+                            shape = CircleShape,
+                            color = Color(0xBB000000),
+                            border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(text = "🌙", fontSize = 12.sp)
+                                Text(
+                                    text = "Layar Hitam",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
+                        }
+
+                        Surface(
+                            onClick = { onPreviewEnabled(false) },
+                            shape = CircleShape,
+                            color = Color(0xBB000000),
+                            border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(text = "👁️", fontSize = 12.sp)
+                                Text(
+                                    text = "Matikan Preview",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                PowerSavingCard(
+                    onEnablePreview = { onPreviewEnabled(true) },
+                    onEnableBlackout = onEnableBlackout,
+                    modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier,
                 )
             }
         }
 
-        ConnectionCard(
-            state = state,
-            isRunning = isRunning,
-            pairedServerName = pairedServerName,
-            pairedAddress = pairedAddress,
-            onScanQr = onScanQr,
-            onSearch = onSearch,
-            onConnectDiscovered = onConnectDiscovered,
-            onConnectManual = onConnectManual,
-            onForget = onForget,
+        Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
+            ConnectionCard(
+                state = state,
+                isRunning = isRunning,
+                pairedServerName = pairedServerName,
+                pairedAddress = pairedAddress,
+                onScanQr = onScanQr,
+                onSearch = onSearch,
+                onConnectDiscovered = onConnectDiscovered,
+                onConnectManual = onConnectManual,
+                onForget = onForget,
+            )
+        }
+    }
+}
+
+/**
+ * Elegant card displayed when preview is disabled during streaming to save battery and reduce heat.
+ */
+@Composable
+private fun PowerSavingCard(
+    onEnablePreview: () -> Unit,
+    onEnableBlackout: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(PhoneCamShapes.Panel)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PhoneCamShapes.Panel)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "⚡",
+                    fontSize = 18.sp,
+                )
+            }
+            Text(
+                text = "Preview Dimatikan (Hemat Baterai & Suhu)",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+
+        Text(
+            text = "Kamera tetap streaming ke PC dengan performa penuh. Rendering layar dimatikan untuk menghemat baterai & menjaga suhu HP tetap dingin.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(
+                onClick = onEnablePreview,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Nyalakan Preview")
+            }
+            OutlinedButton(
+                onClick = onEnableBlackout,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Layar Hitam (OLED 0-nit)")
+            }
+        }
     }
 }
 
@@ -751,6 +927,7 @@ private fun OutputScreen(
     state: SessionState,
     previewEnabled: Boolean,
     onPreviewEnabled: (Boolean) -> Unit,
+    onEnableBlackout: () -> Unit = {},
 ) {
     ScreenScroll {
         StatusCard(state = state)
@@ -759,6 +936,7 @@ private fun OutputScreen(
             previewEnabled = previewEnabled,
             streaming = state.isStreaming,
             onPreviewEnabled = onPreviewEnabled,
+            onEnableBlackout = onEnableBlackout,
         )
     }
 }
@@ -783,6 +961,7 @@ private fun PreviewSettingsCard(
     previewEnabled: Boolean,
     streaming: Boolean,
     onPreviewEnabled: (Boolean) -> Unit,
+    onEnableBlackout: () -> Unit = {},
 ) {
     SectionCard(title = stringResource(R.string.section_phone_preview)) {
         Row(
@@ -807,6 +986,14 @@ private fun PreviewSettingsCard(
         // receiving a picture is the question the user is actually asking.
         if (streaming) {
             Hint(stringResource(R.string.preview_toggle_streaming_note))
+            OutlinedButton(
+                onClick = onEnableBlackout,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
+            ) {
+                Text("🌙 Layar Hitam (OLED 0-nit)")
+            }
         }
     }
 }
@@ -947,18 +1134,60 @@ private fun BlackoutSurface(state: SessionState, onTap: () -> Unit) {
 }
 
 /**
- * The stream's aspect ratio from its reported size, so the viewfinder matches it.
+ * The stream's aspect ratio from its reported size and net orientation.
  *
- * Falls back to 16:9, which every resolution the resolver chooses uses, and to
- * that same value while the string is still empty.
+ * When net rotation is 90 or 270 (portrait), aspect ratio is height/width (9:16).
+ * When net rotation is 0 or 180 (landscape), aspect ratio is width/height (16:9).
  */
-private fun aspectRatioOf(resolution: String?, rotation: Int = 0): Float {
-    val parts = resolution?.split("x") ?: return 16f / 9f
-    val width = parts.getOrNull(0)?.toFloatOrNull() ?: return 16f / 9f
-    val height = parts.getOrNull(1)?.toFloatOrNull() ?: return 16f / 9f
-    if (width <= 0f || height <= 0f) return 16f / 9f
-    val ratio = width / height
-    return if (rotation == 90 || rotation == 270) 1f / ratio else ratio
+internal fun aspectRatioOf(
+    resolution: String?,
+    sensorOrientation: Int = 0,
+    displayRotation: Int = 0,
+): Float {
+    val netRotation = (sensorOrientation - displayRotation + 360) % 360
+    val isPortrait = netRotation == 90 || netRotation == 270
+
+    val parts = resolution?.split("x")
+    val rawWidth = parts?.getOrNull(0)?.toFloatOrNull()
+    val rawHeight = parts?.getOrNull(1)?.toFloatOrNull()
+
+    return if (rawWidth != null && rawHeight != null && rawWidth > 0f && rawHeight > 0f) {
+        val width = maxOf(rawWidth, rawHeight)
+        val height = minOf(rawWidth, rawHeight)
+        if (isPortrait) height / width else width / height
+    } else {
+        if (isPortrait) 9f / 16f else 16f / 9f
+    }
+}
+
+/**
+ * Resolves current display rotation in degrees (0, 90, 180, 270).
+ */
+internal fun getDisplayRotationDegrees(context: Context): Int {
+    val rotation = runCatching {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            context.findActivity()?.display?.rotation ?: context.display?.rotation
+        } else {
+            @Suppress("DEPRECATION")
+            (context.findActivity()?.windowManager ?: context.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager)?.defaultDisplay?.rotation
+        }
+    }.getOrNull()
+
+    return when (rotation) {
+        Surface.ROTATION_90 -> 90
+        Surface.ROTATION_180 -> 180
+        Surface.ROTATION_270 -> 270
+        else -> 0
+    }
+}
+
+private fun Context.findActivity(): android.app.Activity? {
+    var current: Context? = this
+    while (current is android.content.ContextWrapper) {
+        if (current is android.app.Activity) return current
+        current = current.baseContext
+    }
+    return null
 }
 
 /**
