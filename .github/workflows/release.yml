@@ -29,6 +29,7 @@ jobs:
     outputs:
       release_enabled: ${{ steps.gate.outputs.release_enabled }}
       tag_name: ${{ steps.gate.outputs.tag_name }}
+      is_prerelease: ${{ steps.gate.outputs.is_prerelease }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -45,6 +46,7 @@ jobs:
             TAG="${{ github.event.inputs.tag_name || 'v1.0.0' }}"
             echo "release_enabled=true" >> $GITHUB_OUTPUT
             echo "tag_name=$TAG" >> $GITHUB_OUTPUT
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -52,11 +54,19 @@ jobs:
             echo "::warning::release-gate.json not found! Release publishing is disabled by default."
             echo "release_enabled=false" >> $GITHUB_OUTPUT
             echo "tag_name=v1.0.0" >> $GITHUB_OUTPUT
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
           ENABLED=$(jq -r '.release_enabled // false' release-gate.json)
           VERSION=$(jq -r '.version // "1.0.0"' release-gate.json)
+          IS_PRERELEASE=$(jq -r '.allow_prerelease // false' release-gate.json)
+          if [[ "$VERSION" =~ - ]] || [ "$IS_PRERELEASE" = "true" ]; then
+            PRERELEASE="true"
+          else
+            PRERELEASE="false"
+          fi
+
           if [[ ! "$VERSION" =~ ^v ]]; then
             VERSION="v$VERSION"
           fi
@@ -65,9 +75,10 @@ jobs:
             VERSION="${{ github.ref_name }}"
           fi
 
-          echo "Evaluated release gate: release_enabled=$ENABLED, target_version=$VERSION"
+          echo "Evaluated release gate: release_enabled=$ENABLED, target_version=$VERSION, is_prerelease=$PRERELEASE"
           echo "release_enabled=$ENABLED" >> $GITHUB_OUTPUT
           echo "tag_name=$VERSION" >> $GITHUB_OUTPUT
+          echo "is_prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
 
           if [ "$ENABLED" != "true" ]; then
             echo "=========================================================================="
@@ -358,9 +369,9 @@ jobs:
             release-assets/PhoneCam-*-windows-x64.zip
             release-assets/PhoneCam-*-linux-x64.tar.gz
             release-assets/PhoneCam*.apk
-          name: PhoneCam Release ${{ needs.check-gate.outputs.tag_name }}
+          name: ${{ needs.check-gate.outputs.is_prerelease == 'true' && format('PhoneCam Pre-Release {0}', needs.check-gate.outputs.tag_name) || format('PhoneCam Release {0}', needs.check-gate.outputs.tag_name) }}
           tag_name: ${{ needs.check-gate.outputs.tag_name }}
           body_path: release-notes.md
           generate_release_notes: true
           draft: false
-          prerelease: false
+          prerelease: ${{ needs.check-gate.outputs.is_prerelease == 'true' }}
