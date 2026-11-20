@@ -140,13 +140,23 @@ class ProCameraControlsTest {
         assertEquals(60, selected3060.second)
         assertEquals(30, selected3060.first)
 
-        // Device with 30fps max
+        // Device with 30fps max: must pick fixed [30, 30] over variable [15, 30]
         val ranges30Max = listOf(
             15 to 30,
             30 to 30,
         )
         val selected30 = CameraController.selectFpsRangeFromPairs(ranges30Max, 30)
         assertEquals(30, selected30.second)
+        assertEquals(30, selected30.first)
+
+        // Device with only variable 30fps ranges: falls back to highest lower bound
+        val rangesOnlyVariable = listOf(
+            15 to 30,
+            24 to 30,
+        )
+        val selectedVariable = CameraController.selectFpsRangeFromPairs(rangesOnlyVariable, 30)
+        assertEquals(30, selectedVariable.second)
+        assertEquals(24, selectedVariable.first)
     }
 
     @Test

@@ -14,7 +14,10 @@
 //! moves bytes and state between them.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
@@ -44,6 +47,37 @@ pub struct Frame {
 
 /// The mailbox the decoder writes and the window reads.
 pub type FrameMailbox = Arc<Mutex<Option<Frame>>>;
+
+fn lut_to_u8(p: phonecam_media::LutPreset) -> u8 {
+    match p {
+        phonecam_media::LutPreset::None => 0,
+        phonecam_media::LutPreset::Natural => 1,
+        phonecam_media::LutPreset::WarmStudio => 2,
+        phonecam_media::LutPreset::CoolCorporate => 3,
+        phonecam_media::LutPreset::VibrantStreamer => 4,
+        phonecam_media::LutPreset::Monochrome => 5,
+    }
+}
+
+fn u8_to_lut(v: u8) -> phonecam_media::LutPreset {
+    match v {
+        0 => phonecam_media::LutPreset::None,
+        1 => phonecam_media::LutPreset::Natural,
+        2 => phonecam_media::LutPreset::WarmStudio,
+        3 => phonecam_media::LutPreset::CoolCorporate,
+        4 => phonecam_media::LutPreset::VibrantStreamer,
+        5 => phonecam_media::LutPreset::Monochrome,
+        _ => phonecam_media::LutPreset::None,
+    }
+}
+
+/// A framed H.264 video packet queued from TCP ingest to the in-process decoder.
+struct IngestPacket {
+    flags: VideoFlags,
+    pts: i64,
+    total_len: usize,
+    buf: Vec<u8>,
+}
 
 /// The size the shared buffer should publish at.
 ///
@@ -213,6 +247,16 @@ pub struct Runtime {
     output_height: AtomicU32,
     /// Atomic mirror of `settings.output_follows_stream` for lock-free writer init.
     output_follows_stream: AtomicBool,
+    /// Atomic mirror of `settings.lut_preset` for lock-free per-frame reads in effects pipeline.
+    lut_preset: AtomicU8,
+    /// Atomic mirror of `settings.portrait_blur` for lock-free per-frame reads in effects pipeline.
+    portrait_blur: AtomicBool,
+    /// Atomic mirror of `settings.portrait_blur_intensity` (f32::to_bits) for lock-free reads.
+    portrait_blur_intensity: AtomicU32,
+    /// Atomic mirror of `settings.auto_framing` for lock-free per-frame reads.
+    auto_framing: AtomicBool,
+    /// Atomic mirror of `settings.hand_gestures` for lock-free per-frame reads.
+    hand_gestures: AtomicBool,
     /// Whether the desktop window is visible (false when minimized or hidden in tray).
     window_visible: AtomicBool,
     /// Whether `state.toast_expires_at_ms` is currently `Some(_)`.
@@ -303,6 +347,11 @@ impl Runtime {
             output_width: AtomicU32::new(settings.output_width),
             output_height: AtomicU32::new(settings.output_height),
             output_follows_stream: AtomicBool::new(settings.output_follows_stream),
+            lut_preset: AtomicU8::new(lut_to_u8(settings.lut_preset)),
+            portrait_blur: AtomicBool::new(settings.portrait_blur),
+            portrait_blur_intensity: AtomicU32::new(settings.portrait_blur_intensity.to_bits()),
+            auto_framing: AtomicBool::new(settings.auto_framing),
+            hand_gestures: AtomicBool::new(settings.hand_gestures),
             window_visible: AtomicBool::new(true),
             has_active_toast: AtomicBool::new(false),
             toast_check_needed: AtomicBool::new(false),
@@ -346,6 +395,18 @@ impl Runtime {
             .store(state.settings.output_height, Ordering::Relaxed);
         self.output_follows_stream
             .store(state.settings.output_follows_stream, Ordering::Relaxed);
+        self.lut_preset
+            .store(lut_to_u8(state.settings.lut_preset), Ordering::Relaxed);
+        self.portrait_blur
+            .store(state.settings.portrait_blur, Ordering::Relaxed);
+        self.portrait_blur_intensity.store(
+            state.settings.portrait_blur_intensity.to_bits(),
+            Ordering::Relaxed,
+        );
+        self.auto_framing
+            .store(state.settings.auto_framing, Ordering::Relaxed);
+        self.hand_gestures
+            .store(state.settings.hand_gestures, Ordering::Relaxed);
         self.has_active_toast
             .store(state.toast_expires_at_ms.is_some(), Ordering::Relaxed);
     }
@@ -1074,8 +1135,9 @@ impl Runtime {
     /// The video channel: H.264 packets in, decoded frames out.
     fn run_video(self: &Arc<Self>, conn: Connection) {
         let video_gen = self.video_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        conn.set_read_timeout(Some(std::time::Duration::from_millis(2000)))
+        conn.set_read_timeout(Some(std::time::Duration::from_millis(500)))
             .ok();
+        let conn = Arc::new(conn);
         self.session.note_video_channel_opened();
         self.session.live_frame_seen.store(false, Ordering::Relaxed);
         self.broadcast_state();
@@ -1093,7 +1155,63 @@ impl Runtime {
         let mut saw_keyframe = false;
         let mut consecutive_decode_errors: u32 = 0;
         let mut scratch = PublishScratch::default();
-        let mut packet_buf = Vec::with_capacity(256 * 1024);
+
+        // Decoupled TCP ingest pipeline:
+        // A dedicated reader thread drains the socket into a bounded queue (depth 16)
+        // using recycled buffers, ensuring zero-copy throughput and eliminating
+        // lock contention and socket backpressure when decode or effects run.
+        let (packet_tx, packet_rx) = sync_channel::<IngestPacket>(16);
+        let (buf_return_tx, buf_return_rx) = sync_channel::<Vec<u8>>(16);
+        for _ in 0..16 {
+            let _ = buf_return_tx.send(Vec::with_capacity(256 * 1024));
+        }
+        let decode_queue_len = Arc::new(AtomicI64::new(0));
+
+        let reader_handle = {
+            let this = Arc::clone(self);
+            let reader_conn = Arc::clone(&conn);
+            let q_len = Arc::clone(&decode_queue_len);
+            std::thread::Builder::new()
+                .name("phonecam-video-rx".to_string())
+                .spawn(move || {
+                    while this.running.load(Ordering::Relaxed)
+                        && this.video_generation.load(Ordering::SeqCst) == video_gen
+                    {
+                        let mut packet_buf = buf_return_rx
+                            .try_recv()
+                            .unwrap_or_else(|_| Vec::with_capacity(256 * 1024));
+                        let read_started = now_us();
+                        let Some((flags, pts, total_len)) =
+                            read_video_packet_into(&reader_conn, &mut packet_buf)
+                        else {
+                            if reader_conn.is_closed() {
+                                break;
+                            }
+                            continue;
+                        };
+                        this.bytes_in
+                            .fetch_add(4 + total_len as u64, Ordering::Relaxed);
+
+                        let read_us = now_us() - read_started;
+                        this.note_stage(0, read_us);
+
+                        q_len.fetch_add(1, Ordering::Relaxed);
+                        if packet_tx
+                            .send(IngestPacket {
+                                flags,
+                                pts,
+                                total_len,
+                                buf: packet_buf,
+                            })
+                            .is_err()
+                        {
+                            q_len.fetch_sub(1, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                    reader_conn.close();
+                })
+        };
 
         loop {
             if !self.running.load(Ordering::Relaxed) {
@@ -1103,50 +1221,74 @@ impl Runtime {
                 tracing::info!(
                     "newer video connection active; gracefully stopping stale video loop"
                 );
-                return;
+                break;
             }
-            // A video channel that goes quiet is a stalled stream, but a read
-            // timeout is not proof the socket closed.
-            let read_started = now_us();
-            let Some((flags, pts, total_len)) = read_video_packet_into(&conn, &mut packet_buf)
-            else {
-                if conn.is_closed() {
+
+            let packet = match packet_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(pkt) => {
+                    decode_queue_len.fetch_sub(1, Ordering::Relaxed);
+                    pkt
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if conn.is_closed() {
+                        break;
+                    }
+                    if stats_window.elapsed_us(now_us()) >= 1_000_000 {
+                        let mut stats = stats_window.take(
+                            now_us(),
+                            self.session.rtt_us.load(Ordering::Relaxed),
+                            decoded,
+                            dropped,
+                        );
+                        stats.decode_queue_depth = decode_queue_len.load(Ordering::Relaxed).max(0);
+                        *self.session.stats.lock() = stats;
+                        self.sync_stage_stats();
+                    }
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
                     break;
                 }
-                continue;
             };
-            let payload = &packet_buf[VIDEO_HEADER_SIZE..total_len];
-            self.bytes_in
-                .fetch_add(4 + total_len as u64, Ordering::Relaxed);
 
-            let read_us = now_us() - read_started;
-            self.note_stage(0, read_us);
+            let payload = &packet.buf[VIDEO_HEADER_SIZE..packet.total_len];
             stats_window.note_frame(payload.len());
 
-            if flags.is_codec_config() {
+            if packet.flags.is_codec_config() {
                 if !decoder.set_parameter_sets(payload) {
                     tracing::warn!("ignored a codec-config packet with no readable parameter sets");
                 }
+                let mut buf = packet.buf;
+                buf.clear();
+                let _ = buf_return_tx.try_send(buf);
                 continue;
             }
-            if flags.is_keyframe() {
+            if packet.flags.is_keyframe() {
                 saw_keyframe = true;
                 consecutive_decode_errors = 0;
             }
             if !saw_keyframe {
                 // Nothing decodes before a keyframe, and feeding a delta first
                 // only makes the decoder log an error.
+                let mut buf = packet.buf;
+                buf.clear();
+                let _ = buf_return_tx.try_send(buf);
                 continue;
             }
 
             let decode_started = now_us();
-            let pts_us = pts.max(0) as u64;
+            let pts_us = packet.pts.max(0) as u64;
             let decoded_result = decoder.decode_and_process(payload, pts_us, |planes, p_pts| {
                 self.note_stage(1, now_us() - decode_started);
                 let publish_started = now_us();
                 self.publish_planes(planes, p_pts, &mut scratch);
                 self.note_stage(2, now_us() - publish_started);
             });
+
+            // Return buffer to pool for reuse
+            let mut buf = packet.buf;
+            buf.clear();
+            let _ = buf_return_tx.try_send(buf);
 
             match decoded_result {
                 Ok(()) => {
@@ -1180,15 +1322,21 @@ impl Runtime {
             }
 
             if stats_window.elapsed_us(now_us()) >= 1_000_000 {
-                let stats = stats_window.take(
+                let mut stats = stats_window.take(
                     now_us(),
                     self.session.rtt_us.load(Ordering::Relaxed),
                     decoded,
                     dropped,
                 );
+                stats.decode_queue_depth = decode_queue_len.load(Ordering::Relaxed).max(0);
                 *self.session.stats.lock() = stats;
                 self.sync_stage_stats();
             }
+        }
+
+        conn.close();
+        if let Ok(handle) = reader_handle {
+            let _ = handle.join();
         }
 
         self.sync_stage_stats();
@@ -1407,16 +1555,11 @@ impl Runtime {
             return;
         }
 
-        let (lut_preset, portrait_blur, blur_amt, auto_framing, hand_gestures) = {
-            let state = self.state.lock();
-            (
-                state.settings.lut_preset,
-                state.settings.portrait_blur,
-                state.settings.portrait_blur_intensity,
-                state.settings.auto_framing,
-                state.settings.hand_gestures,
-            )
-        };
+        let lut_preset = u8_to_lut(self.lut_preset.load(Ordering::Relaxed));
+        let portrait_blur = self.portrait_blur.load(Ordering::Relaxed);
+        let blur_amt = f32::from_bits(self.portrait_blur_intensity.load(Ordering::Relaxed));
+        let auto_framing = self.auto_framing.load(Ordering::Relaxed);
+        let hand_gestures = self.hand_gestures.load(Ordering::Relaxed);
 
         let face = if auto_framing || hand_gestures {
             scratch.tracker.process_frame(
@@ -1931,6 +2074,7 @@ impl Runtime {
 
     /// Sets the color grading LUT filter preset.
     pub fn set_lut_filter(&self, preset: phonecam_media::LutPreset) {
+        self.lut_preset.store(lut_to_u8(preset), Ordering::Relaxed);
         {
             let mut state = self.state.lock();
             state.settings.lut_preset = preset;
@@ -1941,6 +2085,9 @@ impl Runtime {
 
     /// Configures portrait bokeh background blur.
     pub fn set_portrait_blur(&self, enabled: bool, intensity: f32) {
+        self.portrait_blur.store(enabled, Ordering::Relaxed);
+        self.portrait_blur_intensity
+            .store(intensity.to_bits(), Ordering::Relaxed);
         {
             let mut state = self.state.lock();
             state.settings.portrait_blur = enabled;
@@ -1952,6 +2099,7 @@ impl Runtime {
 
     /// Configures digital pan/crop auto-framing.
     pub fn set_auto_framing(&self, enabled: bool) {
+        self.auto_framing.store(enabled, Ordering::Relaxed);
         {
             let mut state = self.state.lock();
             state.settings.auto_framing = enabled;
@@ -1962,6 +2110,7 @@ impl Runtime {
 
     /// Configures OBSBOT hand gesture recognition.
     pub fn set_hand_gestures(&self, enabled: bool) {
+        self.hand_gestures.store(enabled, Ordering::Relaxed);
         {
             let mut state = self.state.lock();
             state.settings.hand_gestures = enabled;

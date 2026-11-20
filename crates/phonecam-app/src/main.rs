@@ -40,11 +40,47 @@ use phonecam_ui::views::{AppView, SideEffect, Tab};
 
 use runtime::Runtime;
 
+#[cfg(windows)]
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(uPeriod: u32) -> u32;
+    fn timeEndPeriod(uPeriod: u32) -> u32;
+}
+
+#[cfg(windows)]
+struct MultimediaTimerGuard;
+
+#[cfg(windows)]
+impl MultimediaTimerGuard {
+    fn new() -> Self {
+        // SAFETY: timeBeginPeriod is a standard Win32 multimedia API call to request 1ms timer resolution.
+        // It does not dereference pointers, does not race with Rust memory, and operates safely across threads.
+        unsafe {
+            timeBeginPeriod(1);
+        }
+        Self
+    }
+}
+
+#[cfg(windows)]
+impl Drop for MultimediaTimerGuard {
+    fn drop(&mut self) {
+        // SAFETY: timeEndPeriod is paired 1:1 with the earlier timeBeginPeriod(1) call on application exit,
+        // restoring the OS timer resolution safely without memory hazards.
+        unsafe {
+            timeEndPeriod(1);
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let _single_instance = match tray::acquire_single_instance_or_focus() {
         Some(guard) => guard,
         None => return Ok(()),
     };
+
+    #[cfg(windows)]
+    let _timer_guard = MultimediaTimerGuard::new();
 
     let settings = settings::load();
     logging::init(settings.log_level);

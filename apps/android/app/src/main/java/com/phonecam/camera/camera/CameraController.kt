@@ -357,15 +357,10 @@ class CameraController(private val context: Context) {
     /**
      * Chooses the optimal AE target FPS range for [targetFps].
      *
-     * The upper bound is the target, so good light gives exactly the rate asked
-     * for. The lower bound is chosen as wide as the device allows down to half
-     * the target: pinning the range to `fps..fps` forbids the camera from
-     * lengthening its exposure, and a webcam is used indoors far more often than
-     * in daylight. When the room dims, a locked range leaves AE no headroom, so
-     * it hunts — which reaches the viewer as flicker — or holds frames back,
-     * which reaches them as a stutter. A floor at half the target lets AE trade
-     * rate for exposure only when it must, the same choice a phone camera makes
-     * for video.
+     * Prioritizes exact fixed ranges (e.g. [30, 30] or [60, 60]) so the sensor
+     * maintains a rock-solid framerate without dropping to 15 FPS during motion
+     * or indoor lighting. Falls back to variable ranges only if the sensor
+     * does not support a fixed target rate.
      */
     internal fun selectFpsRange(characteristics: CameraCharacteristics, targetFps: Int): Range<Int> {
         val ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
@@ -1225,8 +1220,13 @@ class CameraController(private val context: Context) {
 
             val matchingUpper = ranges.filter { it.second == targetFps }
             if (matchingUpper.isNotEmpty()) {
-                val withHeadroom = matchingUpper.filter { it.first >= targetFps / 2 }
-                return withHeadroom.minByOrNull { it.first } ?: matchingUpper.minByOrNull { it.first }!!
+                // Prioritize fixed range [targetFps, targetFps] (e.g. [30, 30])
+                val exact = matchingUpper.firstOrNull { it.first == targetFps }
+                if (exact != null) {
+                    return exact
+                }
+                // Fallback to closest variable range (highest lower bound)
+                return matchingUpper.maxByOrNull { it.first } ?: matchingUpper.first()
             }
 
             val containing = ranges.filter { targetFps in it.first..it.second }

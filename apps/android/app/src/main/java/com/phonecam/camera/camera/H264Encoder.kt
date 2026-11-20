@@ -141,7 +141,7 @@ class H264Encoder(
             val caps = runCatching { created.codecInfo.getCapabilitiesForType(MIME) }.getOrNull()
             val isCbr = caps?.encoderCapabilities?.isBitrateModeSupported(
                 MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
-            ) == true
+            ) ?: true
 
             val format = configureMediaFormat(cand, isCbr = isCbr, specificCodecName = specificCodecName)
 
@@ -354,7 +354,7 @@ class H264Encoder(
 
     private fun configureMediaFormat(
         cand: EncodeCandidate,
-        isCbr: Boolean = false,
+        isCbr: Boolean = true,
         specificCodecName: String? = null,
         iFrameInterval: Int = I_FRAME_INTERVAL_SECONDS,
     ): MediaFormat = configureMediaFormat(
@@ -371,7 +371,7 @@ class H264Encoder(
         private const val TAG = "H264Encoder"
         private const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
         private const val I_FRAME_INTERVAL_SECONDS = 1
-        private const val DEQUEUE_TIMEOUT_US = 100_000L
+        private const val DEQUEUE_TIMEOUT_US = 10_000L
         private const val DRAIN_JOIN_TIMEOUT_MS = 500L
 
         internal fun createBasicMediaFormat(
@@ -389,6 +389,16 @@ class H264Encoder(
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                 setInteger(MediaFormat.KEY_CAPTURE_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                setInteger(
+                    MediaFormat.KEY_PROFILE,
+                    MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
+                )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    setInteger(MediaFormat.KEY_LATENCY, 0)
+                }
             }
         }
 
@@ -397,7 +407,7 @@ class H264Encoder(
             height: Int,
             fps: Int,
             bitrate: Int,
-            isCbr: Boolean = false,
+            isCbr: Boolean = true,
             specificCodecName: String? = null,
             iFrameInterval: Int = I_FRAME_INTERVAL_SECONDS,
         ): MediaFormat {
@@ -410,10 +420,31 @@ class H264Encoder(
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                 setInteger(MediaFormat.KEY_CAPTURE_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
+
+                // Constant Bitrate (CBR) or fallback to VBR if CBR unsupported
+                val bitrateMode = if (isCbr) {
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                } else {
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                }
+                setInteger(MediaFormat.KEY_BITRATE_MODE, bitrateMode)
+
+                // Set AVC Baseline profile to strictly forbid B-frames and eliminate frame reordering latency across all OEMs
+                setInteger(
+                    MediaFormat.KEY_PROFILE,
+                    MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
+                )
+
                 // Disallow B-frames to prevent reordering latency (API 29+)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
                 }
+
+                // In API 30+ (Build.VERSION_CODES.R), set KEY_LATENCY = 0 for real-time low latency
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    setInteger(MediaFormat.KEY_LATENCY, 0)
+                }
+
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
             }
             return format

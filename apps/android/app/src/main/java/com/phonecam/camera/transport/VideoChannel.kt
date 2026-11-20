@@ -180,7 +180,6 @@ class VideoChannel(
     private fun writeLoop() {
         var frameId = 0L
         val headerScratch = ByteArray(Proto.VIDEO_FRAME_PREFIX_SIZE)
-        var unflushed = 0
         while (running.get()) {
             val pending = try {
                 queue.take()
@@ -195,8 +194,6 @@ class VideoChannel(
                 if (pending.codecConfig) flags = flags or VideoFlags.CODEC_CONFIG
 
                 val length = pending.length
-                unflushed++
-                val shouldFlush = queue.isEmpty() || unflushed >= FLUSH_BATCH_LIMIT
                 Framing.writeVideoPacket(
                     output = connection.output,
                     frameId = frameId++,
@@ -207,9 +204,8 @@ class VideoChannel(
                     payloadOffset = 0,
                     payloadLength = length,
                     headerScratch = headerScratch,
-                    flush = shouldFlush,
+                    flush = true,
                 )
-                if (shouldFlush) unflushed = 0
                 recycleFrame(pending)
                 sentFrames.incrementAndGet()
                 bytesSent.addAndGet(length.toLong())
@@ -276,13 +272,12 @@ class VideoChannel(
         const val REPORT_INTERVAL_MS = 1_000L
 
         /**
-         * Deep enough to absorb a scheduling hiccup, shallow enough that a
-         * congested link shows up as dropped frames rather than growing latency.
+         * Deep enough to absorb a scheduling hiccup (~266ms at 30 FPS), shallow enough that a
+         * congested link shows up as dropped frames rather than accumulating stale latency.
          */
-        const val QUEUE_CAPACITY = 30
+        const val QUEUE_CAPACITY = 8
         const val POOL_CAPACITY = QUEUE_CAPACITY + 2
-        const val MIN_POOLED_FRAME_BYTES = 64 * 1024
+        const val MIN_POOLED_FRAME_BYTES = 192 * 1024
         const val MAX_POOLED_FRAME_BYTES = 512 * 1024
-        const val FLUSH_BATCH_LIMIT = 4
     }
 }
