@@ -14,7 +14,10 @@ members = [
 version = "1.2.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/RegenadeJester/phonecam"
+repository = "https://github.com/primahagantha/phonecam"
+description = "Ultra-low latency, 60 FPS Android-to-PC webcam companion in native Rust + GPUI"
+keywords = ["webcam", "android", "virtual-camera", "gpui", "streaming"]
+categories = ["multimedia::video", "gui"]
 
 [workspace.dependencies]
 # Internal
