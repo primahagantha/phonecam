@@ -15,6 +15,9 @@ pub use state::{
     CoreStatus, FailureCode, LogLine, LogSource, Notice, NoticeAction, PairingPrompt, Settings,
 };
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use gpui::prelude::*;
 use gpui::{div, px, Context, IntoElement, Render, Window};
 
@@ -28,6 +31,14 @@ pub struct AppView {
     /// F11 gives the picture the whole window, because that is what an operator
     /// framing a shot actually wants.
     pub focus_preview: bool,
+    /// Top-bar Preferences drawer open/closed state (UI-local).
+    pub show_preferences: bool,
+    /// Capture -> Experimental (Labs) card expanded/collapsed state (default collapsed).
+    pub labs_expanded: bool,
+    /// Labs -> Supported gestures reference collapsed/expanded state.
+    pub gesture_ref_expanded: bool,
+    /// Auto-arm QR pairing once on first run when no device has paired yet.
+    auto_armed_first_run: bool,
     /// Which network's code the user picked, when the PC is on several.
     pub pairing_network: usize,
     /// The one image handle for the picture.
@@ -39,12 +50,11 @@ pub struct AppView {
     /// Double-buffered preview handle held for one extra frame so the GPU texture
     /// atlas eviction can safely drop the frame from 2 frames ago without flickering.
     pub previous_preview_image: Option<std::sync::Arc<gpui::RenderImage>>,
-    preview_capacity: usize,
-    previous_preview_capacity: usize,
     /// The pairing code, regenerated only when its payload changes.
     pub qr_image: Option<std::sync::Arc<gpui::RenderImage>>,
     qr_payload_cached: Option<String>,
     pub focus_handle: Option<gpui::FocusHandle>,
+    focus_handles: HashMap<String, gpui::FocusHandle>,
     pub scroll_handle: gpui::ScrollHandle,
     pub scroll_handles: [gpui::ScrollHandle; 4],
 }
@@ -55,14 +65,17 @@ impl AppView {
             state: AppState::default(),
             tab: Tab::Setup,
             focus_preview: false,
+            show_preferences: false,
+            labs_expanded: false,
+            gesture_ref_expanded: false,
+            auto_armed_first_run: false,
             pairing_network: 0,
             preview_image: None,
             previous_preview_image: None,
-            preview_capacity: 0,
-            previous_preview_capacity: 0,
             qr_image: None,
             qr_payload_cached: None,
             focus_handle: None,
+            focus_handles: HashMap::new(),
             scroll_handle: gpui::ScrollHandle::new(),
             scroll_handles: [
                 gpui::ScrollHandle::new(),
@@ -111,18 +124,30 @@ impl AppView {
         {
             self.tab = Tab::Setup;
         }
+        // First-run onboarding: auto-arm QR pairing once when connected to core
+        // with no previously paired phone so users get an immediate QR code.
+        let pairing_open = state.core.as_ref().is_some_and(|c| c.pairing.open);
+        if state.status.connected
+            && !state.has_device()
+            && state.settings.last_device_id.is_none()
+            && !pairing_open
+            && !self.auto_armed_first_run
+        {
+            self.auto_armed_first_run = true;
+            push_effect(SideEffect::ArmPairing);
+        }
         self.state = state;
     }
 
     /// Installs a decoded picture. The pixels are BGRA.
     ///
-    /// Returns the previously consumed preview buffer if it can be recycled.
+    /// Returns `None` because `gpui::RenderImage` owns its pixel frames safely.
     pub fn set_preview(&mut self, pixels: Vec<u8>, width: u32, height: u32) -> Option<Vec<u8>> {
         self.set_preview_in(pixels, width, height, None)
     }
 
-    /// Installs a decoded picture into the preview slot. Reclaims the frame from
-    /// 2 frames ago and drops its texture from the GPU atlas to eliminate VRAM leak.
+    /// Installs a decoded picture into the preview slot and drops the GPU atlas
+    /// texture from two frames ago so VRAM remains bounded without unsafe aliasing.
     pub fn set_preview_in(
         &mut self,
         pixels: Vec<u8>,
@@ -130,33 +155,22 @@ impl AppView {
         height: u32,
         mut window: Option<&mut Window>,
     ) -> Option<Vec<u8>> {
-        // If self.previous_preview_image has a frame from 2 frames ago:
-        let recycled = if let Some(frame_2_ago) = self.previous_preview_image.take() {
+        if let Some(frame_2_ago) = self.previous_preview_image.take() {
             if let Some(w) = window.as_mut() {
                 let _ = w.drop_image(frame_2_ago.clone());
             }
-            reclaim_render_image_buffer(
-                frame_2_ago,
-                std::mem::take(&mut self.previous_preview_capacity),
-            )
-        } else {
-            None
-        };
+            drop(frame_2_ago);
+        }
 
-        // Move self.previous_preview_image = self.preview_image.take().
         self.previous_preview_image = self.preview_image.take();
-        self.previous_preview_capacity = self.preview_capacity;
 
-        // Install new frame into self.preview_image.
-        let cap = pixels.capacity();
         if let Some(buffer) = image::RgbaImage::from_raw(width, height, pixels) {
-            self.preview_capacity = cap;
             self.preview_image = Some(std::sync::Arc::new(gpui::RenderImage::new(vec![
                 image::Frame::new(buffer),
             ])));
         }
 
-        recycled
+        None
     }
 
     pub fn clear_preview(&mut self) -> Option<Vec<u8>> {
@@ -165,25 +179,21 @@ impl AppView {
 
     /// Clears both active and previous preview images, dropping GPU textures from `window`.
     pub fn clear_preview_in(&mut self, mut window: Option<&mut Window>) -> Option<Vec<u8>> {
-        let recycled_prev = if let Some(prev) = self.previous_preview_image.take() {
+        if let Some(prev) = self.previous_preview_image.take() {
             if let Some(w) = window.as_mut() {
                 let _ = w.drop_image(prev.clone());
             }
-            reclaim_render_image_buffer(prev, std::mem::take(&mut self.previous_preview_capacity))
-        } else {
-            None
-        };
+            drop(prev);
+        }
 
-        let recycled_curr = if let Some(curr) = self.preview_image.take() {
+        if let Some(curr) = self.preview_image.take() {
             if let Some(w) = window.as_mut() {
                 let _ = w.drop_image(curr.clone());
             }
-            reclaim_render_image_buffer(curr, std::mem::take(&mut self.preview_capacity))
-        } else {
-            None
-        };
+            drop(curr);
+        }
 
-        recycled_curr.or(recycled_prev)
+        None
     }
 
     /// Renders the pairing code once per payload, not once per frame.
@@ -228,60 +238,172 @@ impl Render for AppView {
             }
         }
 
-        let narrow = f32::from(window.viewport_size().width) < crate::theme::NARROW_WINDOW;
+        let viewport = window.viewport_size();
+        let narrow = f32::from(viewport.width) < crate::theme::NARROW_WINDOW;
+        let viewport_height = f32::from(viewport.height);
 
-        let stage: gpui::AnyElement = match &content {
-            StageContent::Picture => {
-                let picture: gpui::AnyElement = if !self.state.settings.preview_enabled {
-                    preview::preview_off_card()
-                } else {
-                    match &self.preview_image {
-                        Some(image) => div()
-                            .flex_1()
-                            .min_h(px(0.0))
-                            .child(
-                                gpui::img(image.clone())
-                                    .w_full()
-                                    .h_full()
-                                    .object_fit(gpui::ObjectFit::Contain),
-                            )
-                            .into_any_element(),
-                        None => preview::preview_waiting_card(self.state.device_name().as_deref()),
-                    }
-                };
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .min_w(px(0.0))
-                    .rounded(px(Radius::LG))
-                    .border_1()
-                    .border_color(SHELL.border.alpha(0.6))
-                    .bg(gpui::rgb(0x000000))
-                    .overflow_hidden()
-                    .child(picture)
-                    .child(preview::stage_gesture_feedback(&self.state))
-                    .child(preview::telemetry(
-                        self.state.device_name(),
-                        self.state.has_notice(FailureCode::DecoderFailed)
-                            || self.state.has_notice(FailureCode::DecoderUnsupported),
-                        self.state.frame_size,
-                        self.state.core.as_ref().map(|c| c.stats.fps).unwrap_or(0.0),
-                        self.state
-                            .core
-                            .as_ref()
-                            .map(|c| c.stats.latency_ms)
-                            .filter(|ms| *ms >= 0.0),
-                        self.state.settings.output_rotation,
-                    ))
-                    .into_any_element()
-            }
-            StageContent::Pairing { .. } => {
-                preview::pairing_stage(&content, self.qr_image.as_ref())
-            }
-            StageContent::Empty { .. } => preview::stage_frame(&content),
+        let view = cx.entity();
+        let on_toggle_preferences: Rc<dyn Fn(&mut Window, &mut gpui::App) + 'static> = {
+            let view = view.clone();
+            Rc::new(move |_window, app| {
+                view.update(app, |this, cx| {
+                    this.show_preferences = !this.show_preferences;
+                    cx.notify();
+                });
+            })
         };
+        let on_open_preferences: Box<dyn Fn(&mut Window, &mut gpui::App) + 'static> = {
+            let view = view.clone();
+            Box::new(move |_window, app| {
+                view.update(app, |this, cx| {
+                    this.show_preferences = true;
+                    cx.notify();
+                });
+            })
+        };
+        let on_close_preferences: Rc<dyn Fn(&mut Window, &mut gpui::App) + 'static> = {
+            let view = view.clone();
+            Rc::new(move |_window, app| {
+                view.update(app, |this, cx| {
+                    this.show_preferences = false;
+                    cx.notify();
+                });
+            })
+        };
+        let on_toggle_labs: Rc<dyn Fn(&mut Window, &mut gpui::App) + 'static> = {
+            let view = view.clone();
+            Rc::new(move |_window, app| {
+                view.update(app, |this, cx| {
+                    this.labs_expanded = !this.labs_expanded;
+                    cx.notify();
+                });
+            })
+        };
+        let on_toggle_gesture_ref: Rc<dyn Fn(&mut Window, &mut gpui::App) + 'static> = {
+            let view = view.clone();
+            Rc::new(move |_window, app| {
+                view.update(app, |this, cx| {
+                    this.gesture_ref_expanded = !this.gesture_ref_expanded;
+                    cx.notify();
+                });
+            })
+        };
+
+        let ui_state = panels::RailUiState {
+            show_preferences: self.show_preferences,
+            labs_expanded: self.labs_expanded,
+            gesture_ref_expanded: self.gesture_ref_expanded,
+        };
+        let callbacks = panels::PanelCallbacks {
+            on_toggle_preferences: Some(on_toggle_preferences),
+            on_toggle_labs: Some(on_toggle_labs),
+            on_toggle_gesture_ref: Some(on_toggle_gesture_ref),
+        };
+
+        let mut focus_handles = std::mem::take(&mut self.focus_handles);
+        let (status_strip_el, stage, rail_el, prefs_overlay_el) = {
+            let mut focus_ctx = widgets::FocusContext::new(&mut focus_handles, cx);
+
+            let status_strip_el = panels::status_strip_with_ui(
+                &self.state,
+                ui_state,
+                &callbacks,
+                Some(&mut focus_ctx),
+            );
+
+            let stage: gpui::AnyElement = match &content {
+                StageContent::Picture => {
+                    let picture: gpui::AnyElement = if !self.state.settings.preview_enabled {
+                        preview::preview_off_card_with_action(
+                            Some(on_open_preferences),
+                            Some(&mut focus_ctx),
+                        )
+                    } else {
+                        match &self.preview_image {
+                            Some(image) => div()
+                                .flex_1()
+                                .min_h(px(0.0))
+                                .child(
+                                    gpui::img(image.clone())
+                                        .w_full()
+                                        .h_full()
+                                        .object_fit(gpui::ObjectFit::Contain),
+                                )
+                                .into_any_element(),
+                            None => preview::preview_waiting_card_with_focus(
+                                self.state.device_name().as_deref(),
+                                Some(&mut focus_ctx),
+                            ),
+                        }
+                    };
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .min_w(px(0.0))
+                        .rounded(px(Radius::LG))
+                        .border_1()
+                        .border_color(SHELL.border.alpha(0.6))
+                        .bg(gpui::rgb(0x000000))
+                        .overflow_hidden()
+                        .child(picture)
+                        .child(preview::stage_gesture_feedback(&self.state))
+                        .child(preview::telemetry(
+                            self.state.device_name(),
+                            self.state.has_notice(FailureCode::DecoderFailed)
+                                || self.state.has_notice(FailureCode::DecoderUnsupported),
+                            self.state.frame_size,
+                            self.state.core.as_ref().map(|c| c.stats.fps).unwrap_or(0.0),
+                            self.state
+                                .core
+                                .as_ref()
+                                .map(|c| c.stats.latency_ms)
+                                .filter(|ms| *ms >= 0.0),
+                            self.state.settings.output_rotation,
+                        ))
+                        .into_any_element()
+                }
+                StageContent::Pairing { .. } => preview::pairing_stage_with_context(
+                    &content,
+                    self.qr_image.as_ref(),
+                    viewport_height,
+                    Some(&mut focus_ctx),
+                ),
+                StageContent::Empty { .. } => {
+                    preview::stage_frame_with_focus(&content, Some(&mut focus_ctx))
+                }
+            };
+
+            let rail_el = if !self.focus_preview {
+                let handle = &self.scroll_handles[self.tab.index()];
+                Some(panels::rail_with_ui(
+                    &self.state,
+                    self.tab,
+                    narrow,
+                    handle,
+                    ui_state,
+                    &callbacks,
+                    Some(&mut focus_ctx),
+                ))
+            } else {
+                None
+            };
+
+            let prefs_overlay_el = if self.show_preferences {
+                Some(panels::preferences_drawer(
+                    &self.state,
+                    Some(on_close_preferences),
+                    Some(&mut focus_ctx),
+                ))
+            } else {
+                None
+            };
+
+            (status_strip_el, stage, rail_el, prefs_overlay_el)
+        };
+        self.focus_handles = focus_handles;
 
         let mut content_row = div()
             .flex()
@@ -294,13 +416,13 @@ impl Render for AppView {
             .p(px(Space::XL))
             .child(stage);
 
-        if !self.focus_preview {
-            let handle = &self.scroll_handles[self.tab.index()];
-            content_row = content_row.child(panels::rail(&self.state, self.tab, narrow, handle));
+        if let Some(rail_el) = rail_el {
+            content_row = content_row.child(rail_el);
         }
 
         let mut root = div()
             .id("phonecam-root")
+            .relative()
             .track_focus(&focus_handle)
             .on_action(cx.listener(|this, _: &ToggleStream, _window, cx| {
                 this.toggle_stream();
@@ -311,7 +433,10 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ExitFocusPreview, _window, cx| {
-                if this.focus_preview {
+                if this.show_preferences {
+                    this.show_preferences = false;
+                    cx.notify();
+                } else if this.focus_preview {
                     this.focus_preview = false;
                     cx.notify();
                 }
@@ -351,10 +476,10 @@ impl Render for AppView {
             .size_full()
             .overflow_hidden()
             .bg(SHELL.base)
-            .font_family(Fonts::SANS)
+            .font(Fonts::sans())
             .text_size(px(Type::TWO_SM))
             .text_color(Text::PRIMARY)
-            .child(panels::status_strip(&self.state))
+            .child(status_strip_el)
             .child(panels::notice_bar(&self.state));
 
         if let Some(toast) = self.state.toast.clone() {
@@ -363,34 +488,16 @@ impl Render for AppView {
 
         root = root.child(content_row);
 
+        if let Some(prefs) = prefs_overlay_el {
+            root = root.child(prefs);
+        }
+
         if self.state.pairing_prompt.is_some() {
             root = root.child(panels::pair_request_prompt(&self.state));
         }
 
         root
     }
-}
-
-/// Reclaims the backing BGRA allocation with its original capacity.
-fn reclaim_render_image_buffer(
-    arc_img: std::sync::Arc<gpui::RenderImage>,
-    stored_cap: usize,
-) -> Option<Vec<u8>> {
-    std::sync::Arc::try_unwrap(arc_img)
-        .ok()
-        .and_then(|render_img| {
-            let (ptr, len) = if let Some(bytes) = render_img.as_bytes(0) {
-                (bytes.as_ptr() as *mut u8, bytes.len())
-            } else {
-                return None;
-            };
-            std::mem::forget(render_img);
-            let cap = stored_cap.max(len);
-            // SAFETY: The memory was originally allocated via Vec<u8> (when RgbaImage was created)
-            // with capacity at least `cap`. `render_img` has been forgotten via std::mem::forget,
-            // ensuring exclusive ownership and preventing double-free.
-            Some(unsafe { Vec::from_raw_parts(ptr, len, cap) })
-        })
 }
 
 /// The window title, which names the phone so a screenshot is self-describing.
@@ -499,49 +606,44 @@ mod tests {
     }
 
     #[test]
-    fn set_preview_recycles_previous_buffer() {
+    fn set_preview_drops_previous_frame_safely() {
         let mut view = AppView::new();
         let buf1 = vec![42u8; 100];
-        let r1 = view.set_preview(buf1, 5, 5);
-        assert!(r1.is_none());
+        assert!(view.set_preview(buf1, 5, 5).is_none());
+        assert!(view.preview_image.is_some());
+        assert!(view.previous_preview_image.is_none());
 
         let buf2 = vec![99u8; 100];
-        let r2 = view.set_preview(buf2, 5, 5);
-        assert!(r2.is_none());
+        assert!(view.set_preview(buf2, 5, 5).is_none());
+        assert!(view.preview_image.is_some());
+        assert!(view.previous_preview_image.is_some());
 
         let buf3 = vec![77u8; 100];
-        let r3 = view.set_preview(buf3, 5, 5);
-        assert!(r3.is_some());
-        let recycled = r3.unwrap();
-        assert_eq!(recycled.len(), 100);
-        assert_eq!(recycled[0], 42);
+        assert!(view.set_preview(buf3, 5, 5).is_none());
+        assert!(view.preview_image.is_some());
+        assert!(view.previous_preview_image.is_some());
 
-        let r4 = view.clear_preview();
-        assert!(r4.is_some());
-        let recycled4 = r4.unwrap();
-        assert_eq!(recycled4.len(), 100);
-        assert_eq!(recycled4[0], 77);
+        assert!(view.clear_preview().is_none());
+        assert!(view.preview_image.is_none());
+        assert!(view.previous_preview_image.is_none());
     }
 
     #[test]
-    fn set_preview_preserves_original_vec_capacity() {
+    fn first_run_auto_arms_pairing_once_and_ui_drawers_default_closed() {
+        drain_effects();
         let mut view = AppView::new();
-        let mut buf1 = Vec::with_capacity(256);
-        buf1.resize(100, 7);
-        assert!(view.set_preview(buf1, 5, 5).is_none());
+        assert!(!view.show_preferences);
+        assert!(!view.labs_expanded);
+        assert!(!view.gesture_ref_expanded);
 
-        let buf2 = vec![1u8; 100];
-        assert!(view.set_preview(buf2, 5, 5).is_none());
+        let mut state = AppState::default();
+        state.status.connected = true;
+        view.set_state(state.clone());
+        assert_eq!(drain_effects(), vec![SideEffect::ArmPairing]);
 
-        let buf3 = vec![2u8; 100];
-        let recycled = view.set_preview(buf3, 5, 5).expect("buffer should recycle");
-        assert_eq!(recycled.len(), 100);
-        assert_eq!(recycled[0], 7);
-        assert!(
-            recycled.capacity() >= 256,
-            "capacity should be preserved, got {}",
-            recycled.capacity()
-        );
+        // Subsequent state snapshots do not re-arm automatically.
+        view.set_state(state);
+        assert!(drain_effects().is_empty());
     }
 
     #[test]

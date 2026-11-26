@@ -49,6 +49,8 @@ pub enum SideEffect {
     SetAutoConnectUsb(bool),
     SetMinimizeToTray(bool),
     SetAudioStream(bool),
+    SetAutoStartStream(bool),
+    SetAutoRotate(bool),
     SetLogLevel(phonecam_protocol::LogLevel),
     SetLogFilterLevel(Option<phonecam_protocol::LogLevel>),
     SetLogFilterSource(Option<crate::views::state::LogSource>),
@@ -170,6 +172,20 @@ mod tests {
             vec![
                 SideEffect::SetOutputFollowsStream(false),
                 SideEffect::CopyPairingPayload,
+            ]
+        );
+    }
+
+    #[test]
+    fn new_preference_and_framing_effects_queue_and_drain() {
+        drain_effects();
+        push_effect(SideEffect::SetAutoStartStream(true));
+        push_effect(SideEffect::SetAutoRotate(true));
+        assert_eq!(
+            drain_effects(),
+            vec![
+                SideEffect::SetAutoStartStream(true),
+                SideEffect::SetAutoRotate(true),
             ]
         );
     }

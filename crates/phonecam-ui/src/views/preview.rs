@@ -22,7 +22,7 @@ use gpui::{div, px, AnyElement, IntoElement};
 use crate::theme::{Fonts, Radius, Space, Status, Text, Tone, Type, EMPTY_VALUE, SHELL};
 use crate::views::effects::{push_effect, SideEffect};
 use crate::views::state::AppState;
-use crate::views::widgets::{chip, Button};
+use crate::views::widgets::{chip, numeric_font, Button, FocusContext};
 
 /// What the stage should draw.
 #[derive(Debug, Clone, PartialEq)]
@@ -182,9 +182,17 @@ fn network_host(payload: &str) -> Option<String> {
 
 /// Renders the stage chrome around the empty state.
 pub fn stage_frame(content: &StageContent) -> AnyElement {
+    stage_frame_with_focus(content, None)
+}
+
+/// Renders the stage chrome around the empty state with optional keyboard focus tracking.
+pub fn stage_frame_with_focus(
+    content: &StageContent,
+    focus: Option<&mut FocusContext<'_>>,
+) -> AnyElement {
     let inner: AnyElement = match content {
         StageContent::Pairing { .. } => div().into_any_element(),
-        StageContent::Empty { .. } => empty_body(content),
+        StageContent::Empty { .. } => empty_body(content, focus),
         StageContent::Picture => div().into_any_element(),
     };
 
@@ -198,7 +206,7 @@ pub fn stage_frame(content: &StageContent) -> AnyElement {
         .justify_center()
         .rounded(px(Radius::LG))
         .border_1()
-        .border_color(SHELL.border.alpha(0.6))
+        .border_color(SHELL.border.alpha(0.45))
         // The stage is recessed, not lifted: the one place a pure-black
         // background is correct, because it is the letterbox around the picture.
         .bg(gpui::rgb(0x000000))
@@ -208,12 +216,19 @@ pub fn stage_frame(content: &StageContent) -> AnyElement {
 }
 
 /// The pairing stage, with the code already rendered.
-///
-/// The image is passed in rather than drawn here so the view owns exactly one
-/// QR texture and regenerates it only when the payload changes.
 pub fn pairing_stage(
     content: &StageContent,
     qr: Option<&std::sync::Arc<gpui::RenderImage>>,
+) -> AnyElement {
+    pairing_stage_with_context(content, qr, 840.0, None)
+}
+
+/// Responsive, scrollable pairing stage with viewport height awareness and focus tracking.
+pub fn pairing_stage_with_context(
+    content: &StageContent,
+    qr: Option<&std::sync::Arc<gpui::RenderImage>>,
+    viewport_height: f32,
+    mut focus: Option<&mut FocusContext<'_>>,
 ) -> AnyElement {
     let StageContent::Pairing {
         payload,
@@ -246,6 +261,12 @@ pub fn pairing_stage(
         }
     };
 
+    let qr_display_size = if viewport_height < 720.0 {
+        200.0
+    } else {
+        crate::theme::QR_SIZE as f32
+    };
+
     let code: AnyElement = match qr {
         Some(image) => div()
             .mt(px(Space::LG))
@@ -254,14 +275,14 @@ pub fn pairing_stage(
             .p(px(Space::XL))
             .child(
                 gpui::img(image.clone())
-                    .w(px(crate::theme::QR_SIZE as f32))
-                    .h(px(crate::theme::QR_SIZE as f32)),
+                    .w(px(qr_display_size))
+                    .h(px(qr_display_size)),
             )
             .into_any_element(),
         None => div()
             .mt(px(Space::LG))
-            .w(px(crate::theme::QR_SIZE as f32))
-            .h(px(crate::theme::QR_SIZE as f32))
+            .w(px(qr_display_size))
+            .h(px(qr_display_size))
             .into_any_element(),
     };
 
@@ -270,21 +291,22 @@ pub fn pairing_stage(
         .flex_col()
         .items_center()
         .justify_center()
+        .my_auto()
         .px(px(24.0))
         .py(px(16.0))
         .child(
             div()
-                .font_family(Fonts::DISPLAY)
+                .font(Fonts::display())
                 .text_size(px(Type::TITLE))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .line_height(px(Type::LINE_TITLE))
                 .text_color(Text::PRIMARY)
                 .child(title),
         )
         .child(
             div()
                 .mt(px(Space::SM))
-                .font_family(Fonts::SANS)
-                .text_size(px(Type::TWO_XS))
+                .font(numeric_font(Fonts::MONO))
+                .text_size(px(Type::XS))
                 .text_color(Text::MUTED)
                 .child(sub),
         )
@@ -325,8 +347,9 @@ pub fn pairing_stage(
             .child(
                 div()
                     .mt(px(Space::LG))
-                    .font_family(Fonts::SANS)
+                    .font(Fonts::sans())
                     .text_size(px(Type::XS))
+                    .line_height(px(Type::LINE_XS))
                     .text_color(Text::MUTED)
                     .child("This PC is on more than one network. Pick the one your phone is on."),
             );
@@ -340,14 +363,45 @@ pub fn pairing_stage(
                 .child(crate::views::widgets::tinted_box(
                     Tone::Warn,
                     vec![div()
-                        .font_family(Fonts::SANS)
+                        .font(Fonts::sans())
                         .text_size(px(Type::XS))
+                        .line_height(px(Type::LINE_XS))
                         .text_color(Status::WARN)
                         .child("No phone is broadcasting on this network yet. Open PhoneCam on your phone and check it is on the same Wi-Fi as this PC.")
                         .into_any_element()],
                 )),
         );
     }
+
+    let copy_btn = (!*expired && !payload.is_empty()).then(|| {
+        Button::new("Copy pairing code")
+            .id("pairing-copy-code")
+            .focus_with(focus.as_deref_mut(), "pairing-copy-code")
+            .on_click(|_window, _cx| {
+                crate::views::effects::push_effect(
+                    crate::views::effects::SideEffect::CopyPairingPayload,
+                )
+            })
+            .into_any_element()
+    });
+
+    let primary_btn = if *expired {
+        Button::primary("Show a new code")
+            .id("pairing-new-code")
+            .focus_with(focus.as_deref_mut(), "pairing-new-code")
+            .on_click(|_window, _cx| {
+                crate::views::effects::push_effect(crate::views::effects::SideEffect::ArmPairing)
+            })
+            .into_any_element()
+    } else {
+        Button::new("Cancel")
+            .id("pairing-cancel")
+            .focus_with(focus, "pairing-cancel")
+            .on_click(|_window, _cx| {
+                crate::views::effects::push_effect(crate::views::effects::SideEffect::DisarmPairing)
+            })
+            .into_any_element()
+    };
 
     column = column.child(
         div()
@@ -357,51 +411,28 @@ pub fn pairing_stage(
             .flex_wrap()
             .justify_center()
             .gap(px(Space::LG))
-            .children((!*expired && !payload.is_empty()).then(|| {
-                crate::views::widgets::Button::new("Copy pairing code")
-                    .on_click(|_window, _cx| {
-                        crate::views::effects::push_effect(
-                            crate::views::effects::SideEffect::CopyPairingPayload,
-                        )
-                    })
-                    .into_any_element()
-            }))
-            .child(if *expired {
-                crate::views::widgets::Button::primary("Show a new code")
-                    .on_click(|_window, _cx| {
-                        crate::views::effects::push_effect(
-                            crate::views::effects::SideEffect::ArmPairing,
-                        )
-                    })
-                    .into_any_element()
-            } else {
-                crate::views::widgets::Button::new("Cancel")
-                    .on_click(|_window, _cx| {
-                        crate::views::effects::push_effect(
-                            crate::views::effects::SideEffect::DisarmPairing,
-                        )
-                    })
-                    .into_any_element()
-            }),
+            .children(copy_btn)
+            .child(primary_btn),
     );
 
     div()
+        .id("pairing-stage-scroll")
         .flex()
         .flex_col()
         .flex_1()
         .min_h(px(0.0))
         .min_w(px(0.0))
+        .overflow_y_scroll()
         .items_center()
-        .justify_center()
         .rounded(px(Radius::LG))
         .border_1()
-        .border_color(SHELL.border.alpha(0.6))
+        .border_color(SHELL.border.alpha(0.45))
         .bg(gpui::rgb(0x000000))
         .child(column)
         .into_any_element()
 }
 
-fn empty_body(content: &StageContent) -> AnyElement {
+fn empty_body(content: &StageContent, mut focus: Option<&mut FocusContext<'_>>) -> AnyElement {
     let StageContent::Empty {
         title,
         body,
@@ -425,14 +456,22 @@ fn empty_body(content: &StageContent) -> AnyElement {
             .justify_center()
             .gap(px(Space::LG))
             .child(
-                crate::views::widgets::Button::primary("Start streaming")
+                Button::primary("Start streaming")
+                    .id("stage-start-stream")
+                    .focus_with(focus.as_deref_mut(), "stage-start-stream")
                     .disabled(!enabled)
-                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::StartStream))
+                    .on_click(|_window, _cx| {
+                        push_effect(SideEffect::StartStream)
+                    })
                     .into_any_element(),
             )
             .child(
-                crate::views::widgets::Button::new("Pair another phone")
-                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::ArmPairing))
+                Button::new("Pair another phone")
+                    .id("stage-pair-another")
+                    .focus_with(focus.as_deref_mut(), "stage-pair-another")
+                    .on_click(|_window, _cx| {
+                        push_effect(SideEffect::ArmPairing)
+                    })
                     .into_any_element(),
             )
             .into_any_element(),
@@ -443,17 +482,25 @@ fn empty_body(content: &StageContent) -> AnyElement {
             .items_center()
             .gap(px(Space::LG))
             .child(
-                crate::views::widgets::Button::primary("Show a pairing code")
-                    .on_click(|_window, _cx| crate::views::effects::push_effect(crate::views::effects::SideEffect::ArmPairing))
+                Button::primary("Show a pairing code")
+                    .id("stage-show-pairing")
+                    .focus_with(focus, "stage-show-pairing")
+                    .on_click(|_window, _cx| push_effect(SideEffect::ArmPairing))
                     .into_any_element(),
             )
-            .children(remembered.then(|| {
+            .child(
                 div()
-                    .font_family(Fonts::SANS)
+                    .font(Fonts::sans())
                     .text_size(px(Type::XS))
+                    .line_height(px(Type::LINE_XS))
+                    .text_center()
                     .text_color(Text::MUTED)
-                    .child("This PC already knows a phone. Open PhoneCam on it and it reconnects by itself.")
-            }))
+                    .child(if *remembered {
+                        "This PC already knows a phone. Open PhoneCam on it and it reconnects by itself."
+                    } else {
+                        "Next: select 'PhoneCam Camera' in Zoom, OBS, or Discord."
+                    }),
+            )
             .into_any_element(),
     };
 
@@ -466,17 +513,19 @@ fn empty_body(content: &StageContent) -> AnyElement {
         .px(px(32.0))
         .child(
             div()
-                .font_family(Fonts::DISPLAY)
+                .font(Fonts::display())
                 .text_size(px(Type::DISPLAY))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_center()
                 .text_color(Text::PRIMARY)
                 .child(title.clone()),
         )
         .child(
             div()
                 .mt(px(Space::LG))
-                .font_family(Fonts::SANS)
+                .font(Fonts::sans())
                 .text_size(px(Type::TWO_SM))
+                .line_height(px(Type::LINE_TWO_SM))
+                .text_center()
                 .text_color(Text::MUTED)
                 .child(body.clone()),
         )
@@ -484,7 +533,7 @@ fn empty_body(content: &StageContent) -> AnyElement {
         .children(output_note.as_ref().map(|note| {
             div()
                 .mt(px(Space::SECTION))
-                .font_family(Fonts::MONO)
+                .font(numeric_font(Fonts::MONO))
                 .text_size(px(Type::TWO_XS))
                 .text_color(Text::MUTED)
                 .child(note.clone())
@@ -492,40 +541,47 @@ fn empty_body(content: &StageContent) -> AnyElement {
         .into_any_element()
 }
 
+pub(crate) fn clean_gesture_text(raw: &str) -> String {
+    raw.trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
+        .trim()
+        .to_string()
+}
+
 /// Renders visual feedback toast/chip on the stage when gestures are detected
-/// or face tracking is locked (OBSBOT style).
+/// or face tracking is locked.
 pub fn stage_gesture_feedback(state: &AppState) -> AnyElement {
     let mut chips = Vec::new();
 
-    // 1. If tracking is locked via Open Palm gesture, show persistent feedback chip
     if state.settings.auto_framing && state.tracking_locked {
-        chips.push(chip("✋ Tracking Locked", Tone::Warn));
+        chips.push(chip("Tracking locked", Tone::Warn));
     }
 
-    // 2. If a hand gesture action toast or active gesture is present, show visual feedback chip
     if let Some(action) = &state.gesture_action {
         if state.toast.as_ref() == Some(action) || state.active_gesture.is_some() {
-            chips.push(chip(action.clone(), Tone::Ok));
+            let cleaned = clean_gesture_text(action);
+            if !cleaned.is_empty() {
+                chips.push(chip(cleaned, Tone::Ok));
+            }
         }
     } else if let Some(gesture) = state.active_gesture {
         match gesture {
             phonecam_media::HandGesture::OpenPalm => {
-                chips.push(chip("✋ Open Palm: Lock Tracking", Tone::Ok));
+                chips.push(chip("Palm: Lock tracking", Tone::Ok));
             }
             phonecam_media::HandGesture::PeaceV => {
-                chips.push(chip("✌ Peace / V-Sign: Zoom 2.0x", Tone::Ok));
+                chips.push(chip("V-Sign: Zoom 2.0x", Tone::Ok));
             }
             phonecam_media::HandGesture::IndexPoint => {
-                chips.push(chip("☝ Index: 1.5x Zoom", Tone::Ok));
+                chips.push(chip("Index: 1.5x zoom", Tone::Ok));
             }
             phonecam_media::HandGesture::ShakaCall => {
-                chips.push(chip("🤙 Shaka: Framing & Zoom Reset", Tone::Ok));
+                chips.push(chip("Shaka: Reset framing", Tone::Ok));
             }
             phonecam_media::HandGesture::PinchOk => {
-                chips.push(chip("🤏 Pinch: 2.2x Macro", Tone::Ok));
+                chips.push(chip("Pinch: 2.2x macro", Tone::Ok));
             }
             phonecam_media::HandGesture::ThumbsUp => {
-                chips.push(chip("👍 Thumbs Up: Confirmed", Tone::Ok));
+                chips.push(chip("Thumbs up: Confirmed", Tone::Ok));
             }
             phonecam_media::HandGesture::None => {}
         }
@@ -567,11 +623,12 @@ pub fn telemetry(
     let mut left = div()
         .flex()
         .flex_row()
+        .min_w(px(0.0))
         .items_center()
         .gap(px(Space::MD))
         .rounded(px(Radius::MD))
         .border_1()
-        .border_color(SHELL.border.alpha(0.6))
+        .border_color(SHELL.border.alpha(0.45))
         .bg(SHELL.recessed.alpha(0.85))
         .px(px(Space::LG))
         .py(px(Space::SM));
@@ -584,7 +641,9 @@ pub fn telemetry(
     if let Some(name) = device_name {
         left = left.child(
             div()
-                .font_family(Fonts::SANS)
+                .min_w(px(0.0))
+                .truncate()
+                .font(Fonts::sans())
                 .text_size(px(Type::TWO_XS))
                 .text_color(Text::BODY)
                 .child(name),
@@ -594,15 +653,16 @@ pub fn telemetry(
     let mut right = div()
         .flex()
         .flex_row()
+        .flex_shrink_0()
         .items_center()
         .gap(px(Space::XL))
         .rounded(px(Radius::MD))
         .border_1()
-        .border_color(SHELL.border.alpha(0.6))
+        .border_color(SHELL.border.alpha(0.45))
         .bg(SHELL.recessed.alpha(0.85))
         .px(px(Space::LG))
         .py(px(Space::SM))
-        .font_family(Fonts::MONO)
+        .font(numeric_font(Fonts::MONO))
         .text_size(px(Type::TWO_XS))
         .text_color(Text::BODY);
 
@@ -711,6 +771,25 @@ pub fn empty_value() -> &'static str {
 
 /// Card shown on the stage when streaming is active but window preview is disabled.
 pub fn preview_off_card() -> AnyElement {
+    preview_off_card_with_action(None, None)
+}
+
+/// Interactive `preview_off_card` with an `"Open Preferences"` action button.
+pub fn preview_off_card_with_action(
+    on_open_preferences: Option<Box<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
+    focus: Option<&mut FocusContext<'_>>,
+) -> AnyElement {
+    let pref_button = Button::new("Open Preferences")
+        .id("preview-off-open-prefs")
+        .focus_with(focus, "preview-off-open-prefs")
+        .on_click(move |window, cx| {
+            if let Some(ref handler) = on_open_preferences {
+                handler(window, cx);
+            } else {
+                push_effect(SideEffect::SetPreviewEnabled(true));
+            }
+        });
+
     div()
         .flex()
         .flex_col()
@@ -727,27 +806,28 @@ pub fn preview_off_card() -> AnyElement {
                 .max_w(px(416.0))
                 .rounded(px(Radius::LG))
                 .border_1()
-                .border_color(SHELL.border.alpha(0.6))
+                .border_color(SHELL.border.alpha(0.45))
                 .bg(SHELL.recessed)
                 .px(px(24.0))
                 .py(px(20.0))
                 .child(
                     div()
-                        .font_family(Fonts::DISPLAY)
+                        .font(Fonts::display())
                         .text_size(px(Type::DISPLAY))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(Text::PRIMARY)
                         .child("Preview is off"),
                 )
                 .child(
                     div()
                         .mt(px(Space::MD))
-                        .font_family(Fonts::SANS)
+                        .font(Fonts::sans())
                         .text_size(px(Type::TWO_SM))
+                        .line_height(px(Type::LINE_TWO_SM))
                         .text_color(Text::MUTED)
                         .text_center()
                         .child("The phone is still streaming and the virtual camera is still publishing. Turn the preview back on in Preferences."),
-                ),
+                )
+                .child(div().mt(px(Space::XL)).child(pref_button)),
         )
         .into_any_element()
 }
@@ -755,6 +835,14 @@ pub fn preview_off_card() -> AnyElement {
 /// Shown when the stream is active or starting but the first decoded GPU frame has not yet arrived.
 /// This prevents a jarring pitch-black void on the stage.
 pub fn preview_waiting_card(device_name: Option<&str>) -> AnyElement {
+    preview_waiting_card_with_focus(device_name, None)
+}
+
+/// `preview_waiting_card` with optional focus tracking on the Cancel / Stop button.
+pub fn preview_waiting_card_with_focus(
+    device_name: Option<&str>,
+    focus: Option<&mut FocusContext<'_>>,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -771,23 +859,23 @@ pub fn preview_waiting_card(device_name: Option<&str>) -> AnyElement {
                 .max_w(px(416.0))
                 .rounded(px(Radius::LG))
                 .border_1()
-                .border_color(SHELL.border.alpha(0.6))
+                .border_color(SHELL.border.alpha(0.45))
                 .bg(SHELL.recessed)
                 .px(px(24.0))
                 .py(px(20.0))
                 .child(
                     div()
-                        .font_family(Fonts::DISPLAY)
+                        .font(Fonts::display())
                         .text_size(px(Type::DISPLAY))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(Text::PRIMARY)
                         .child("Waiting for video feed..."),
                 )
                 .child(
                     div()
                         .mt(px(Space::MD))
-                        .font_family(Fonts::SANS)
+                        .font(Fonts::sans())
                         .text_size(px(Type::TWO_SM))
+                        .line_height(px(Type::LINE_TWO_SM))
                         .text_color(Text::MUTED)
                         .text_center()
                         .child(format!(
@@ -798,6 +886,8 @@ pub fn preview_waiting_card(device_name: Option<&str>) -> AnyElement {
                 .child(
                     div().mt(px(Space::XL)).child(
                         Button::danger("Cancel / Stop Camera")
+                            .id("waiting-stop-camera")
+                            .focus_with(focus, "waiting-stop-camera")
                             .on_click(|_window, _cx| push_effect(SideEffect::StopStream)),
                     ),
                 ),
@@ -1000,7 +1090,7 @@ mod tests {
         let state = state_with_device();
         let empty = stage_content(&state, 0);
         assert!(matches!(empty, StageContent::Empty { .. }));
-        let _el = empty_body(&empty);
+        let _el = empty_body(&empty, None);
 
         let mut pairing_state = AppState::default();
         pairing_state.status.connected = true;
@@ -1062,5 +1152,31 @@ mod tests {
         state.gesture_action = Some("👍 Thumbs Up: Confirmed".into());
         state.toast = Some("👍 Thumbs Up: Confirmed".into());
         let _feedback_thumbs = stage_gesture_feedback(&state);
+
+        assert_eq!(
+            clean_gesture_text("✋ Open Palm: Tracking Locked"),
+            "Open Palm: Tracking Locked"
+        );
+        assert_eq!(
+            clean_gesture_text("✌ V-Sign: 2.0x Zoom"),
+            "V-Sign: 2.0x Zoom"
+        );
+    }
+
+    #[test]
+    fn preview_off_card_and_responsive_pairing_render() {
+        let _off = preview_off_card();
+        let mut pairing_state = AppState::default();
+        pairing_state.status.connected = true;
+        pairing_state.core = Some(phonecam_protocol::CoreState {
+            pairing: phonecam_protocol::PairingStatus {
+                open: true,
+                qr_payloads: vec![r#"{"protocol":"phonecam","version":1,"host":"10.0.0.2","port":48721,"token":"0123456789abcdef0123456789abcdef","name":"PC","serverId":"pc-2"}"#.into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let pairing = stage_content(&pairing_state, 0);
+        let _compact = pairing_stage_with_context(&pairing, None, 680.0, None);
     }
 }

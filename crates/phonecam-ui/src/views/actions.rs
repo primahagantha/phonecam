@@ -32,7 +32,7 @@ gpui::actions!(
 /// * Shift+Tab: Move focus to previous tab stop
 pub fn default_keybindings() -> Vec<KeyBinding> {
     vec![
-        KeyBinding::new("space", ToggleStream, None),
+        KeyBinding::new("space", ToggleStream, Some("!Control")),
         KeyBinding::new("f11", ToggleFocusPreview, None),
         KeyBinding::new("escape", ExitFocusPreview, None),
         KeyBinding::new("ctrl-1", SelectTabSetup, None),

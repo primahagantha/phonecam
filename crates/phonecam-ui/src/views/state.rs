@@ -291,6 +291,8 @@ pub struct Settings {
     pub auto_connect_usb: bool,
     pub minimize_to_tray: bool,
     pub stream_audio: bool,
+    pub auto_start_stream: bool,
+    pub auto_rotate: bool,
 }
 
 impl Default for Settings {
@@ -325,10 +327,12 @@ impl Default for Settings {
             portrait_blur: false,
             portrait_blur_intensity: 0.70,
             auto_framing: false,
-            hand_gestures: true,
+            hand_gestures: false,
             auto_connect_usb: true,
             minimize_to_tray: true,
             stream_audio: false,
+            auto_start_stream: false,
+            auto_rotate: false,
         }
     }
 }
@@ -912,5 +916,16 @@ mod tests {
         assert_eq!(screen_mode_label(ScreenMode::KeepOn), "Keep on");
         assert_eq!(screen_mode_label(ScreenMode::Dim), "Dim");
         assert_eq!(screen_mode_label(ScreenMode::Black), "Off");
+    }
+
+    #[test]
+    fn experimental_and_opt_in_settings_default_to_off() {
+        let s = Settings::default();
+        assert!(!s.hand_gestures);
+        assert!(!s.auto_framing);
+        assert!(!s.portrait_blur);
+        assert!(!s.stream_audio);
+        assert!(!s.auto_start_stream);
+        assert!(!s.auto_rotate);
     }
 }

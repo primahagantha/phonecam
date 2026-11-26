@@ -111,7 +111,7 @@ pub const SHELL: ShellColors = ShellColors {
     raised: hsla_from_hex(0x11161d),
     hover: hsla_from_hex(0x171e27),
     control: hsla_from_hex(0x1f2733),
-    border: hsla_from_hex(0x2b3543),
+    border: hsla_from_hex(0x64748b),
 };
 
 /// The one accent. Means "active, selected, or actionable". Never "healthy".
@@ -163,9 +163,62 @@ impl Fonts {
     /// Anything compared character by character: addresses, ids, log lines.
     pub const MONO: &str = "Cascadia Mono";
 
-    pub const SANS_FALLBACK: &str = "Segoe UI";
-    pub const DISPLAY_FALLBACK: &str = "Bahnschrift";
-    pub const MONO_FALLBACK: &str = "Cascadia Code";
+    pub const SANS_FALLBACKS: [&str; 4] = ["Inter", "Segoe UI", "Liberation Sans", "Noto Sans"];
+    pub const MONO_FALLBACKS: [&str; 4] = [
+        "JetBrains Mono",
+        "Cascadia Code",
+        "Consolas",
+        "DejaVu Sans Mono",
+    ];
+
+    /// Cross-platform fallback stack for the given primary family.
+    pub fn fallbacks_for(family: &str) -> gpui::FontFallbacks {
+        let list = if family == Self::MONO {
+            Self::MONO_FALLBACKS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        } else {
+            Self::SANS_FALLBACKS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        };
+        gpui::FontFallbacks::from_fonts(list)
+    }
+
+    /// Standard UI sans font with cross-platform fallbacks.
+    pub fn sans() -> gpui::Font {
+        gpui::Font {
+            family: Self::SANS.into(),
+            features: gpui::FontFeatures::default(),
+            fallbacks: Some(Self::fallbacks_for(Self::SANS)),
+            weight: gpui::FontWeight::NORMAL,
+            style: gpui::FontStyle::Normal,
+        }
+    }
+
+    /// Display heading font with semibold weight and cross-platform fallbacks.
+    pub fn display() -> gpui::Font {
+        gpui::Font {
+            family: Self::DISPLAY.into(),
+            features: gpui::FontFeatures::default(),
+            fallbacks: Some(Self::fallbacks_for(Self::DISPLAY)),
+            weight: gpui::FontWeight::SEMIBOLD,
+            style: gpui::FontStyle::Normal,
+        }
+    }
+
+    /// Monospace font with cross-platform fallbacks.
+    pub fn mono() -> gpui::Font {
+        gpui::Font {
+            family: Self::MONO.into(),
+            features: gpui::FontFeatures::default(),
+            fallbacks: Some(Self::fallbacks_for(Self::MONO)),
+            weight: gpui::FontWeight::NORMAL,
+            style: gpui::FontStyle::Normal,
+        }
+    }
 }
 
 /// Six sizes, each with one job. Tailwind is 16px-rooted, so these are the
@@ -186,6 +239,11 @@ impl Type {
     /// 26px â€” the stage's empty state only, which appears when the window is
     /// otherwise blank.
     pub const DISPLAY: f32 = 26.0;
+
+    /// Line heights matching the type scale for multi-line prose readability.
+    pub const LINE_XS: f32 = 18.0;
+    pub const LINE_TWO_SM: f32 = 19.0;
+    pub const LINE_TITLE: f32 = 21.0;
 }
 
 /// The shape lock. Four radii, no others.
@@ -515,5 +573,47 @@ mod tests {
         assert!(Type::TWO_SM < Type::TITLE);
         assert!(Type::TITLE < Type::STATUS);
         assert!(Type::STATUS < Type::DISPLAY);
+    }
+
+    #[test]
+    fn border_passes_non_text_contrast_on_controls_and_panels() {
+        assert!(
+            contrast(SHELL.border, SHELL.control) >= 3.0,
+            "interactive control borders must reach >= 3.0:1 WCAG non-text contrast"
+        );
+        assert!(
+            contrast(SHELL.border, SHELL.panel) >= 3.0,
+            "panel borders must reach >= 3.0:1 contrast"
+        );
+    }
+
+    #[test]
+    fn fonts_wire_cross_platform_fallbacks() {
+        let sans = Fonts::sans();
+        let display = Fonts::display();
+        let mono = Fonts::mono();
+
+        let sans_list = sans.fallbacks.expect("sans fallbacks wired");
+        assert_eq!(
+            sans_list.fallback_list(),
+            &["Inter", "Segoe UI", "Liberation Sans", "Noto Sans"]
+        );
+
+        let display_list = display.fallbacks.expect("display fallbacks wired");
+        assert_eq!(
+            display_list.fallback_list(),
+            &["Inter", "Segoe UI", "Liberation Sans", "Noto Sans"]
+        );
+
+        let mono_list = mono.fallbacks.expect("mono fallbacks wired");
+        assert_eq!(
+            mono_list.fallback_list(),
+            &[
+                "JetBrains Mono",
+                "Cascadia Code",
+                "Consolas",
+                "DejaVu Sans Mono"
+            ]
+        );
     }
 }
