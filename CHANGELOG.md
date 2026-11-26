@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Opt-In GitHub Update Checker (Desktop & Android)** (`6073fc4`, `29715d7`, `af2ade9`):
+  - Added user-initiated GitHub Releases update checkers (`crates/phonecam-app/src/updater.rs`, `apps/android/.../update/GitHubUpdateChecker.kt`) with SemVer 2.0.0 comparison, inline release changelog preview, EN/ID Android localization, and strict `https://github.com/primahagantha/phonecam` URL validation. Strictly opt-in: never executes on startup or background timers.
+- **Bundled Typography & Studio UI Overhaul** (`29715d7`, `af2ade9`):
+  - Embedded Inter (`Regular`, `Medium`, `SemiBold`, `Bold`) and JetBrains Mono (`Regular`, `Medium`) fonts under `crates/phonecam-ui/assets/fonts/` and registered them at startup via GPUI `text_system().add_fonts()`, eliminating DirectWrite `No matching font found` errors.
+  - Polished both Desktop GPUI and Android Jetpack Compose dark obsidian Studio UI with refined spacing, bordered control wells, legible typography, and improved action ergonomics.
+- **Android Release Signing Helper & APK Signature Recovery** (`6073fc4`, `af2ade9`):
+  - Added `scripts/setup-android-signing.ps1` to generate a persistent 4096-bit RSA PKCS12 release keystore outside the repository and configure GitHub Actions secrets.
+  - Added automatic `INSTALL_FAILED_UPDATE_INCOMPATIBLE` recovery in desktop USB APK installation (`crates/phonecam-app/src/adb.rs`).
+- **Live Demo Media & README Refresh**:
+  - Added live desktop + Android showcase (`assets/hero-showcase.png`), real streaming motion clip (`assets/demo.gif`), competitor comparison table, and FAQ in `README.md`.
+
+### Fixed & Optimized
+- **Desktop UI Layout & Release-APK USB Auto-Connect**:
+  - Fixed GPUI/Taffy zero-width `.truncate()` text collapse (`...`) across `Toggle`, `key_value`, pairing dialog, USB device card, gesture, and resolution preset rows (`crates/phonecam-ui/src/views/widgets.rs`, `panels.rs`), and capitalized the disconnected paired-phone panel heading (`Paired phone`).
+  - Added non-exported service detection (`is_service_not_exported`) in `crates/phonecam-app/src/adb.rs` so USB auto-connect cleanly falls back to launching exported `MainActivity` on hardened release APKs where `CameraStreamService` sets `android:exported="false"`.
+- **60 FPS Constrained High-Speed Camera2 Session** (`6073fc4`):
+  - Fixed Android Camera2 60 FPS high-speed capture setup by omitting mismatched preview surfaces, preferring `[60,60]` / `[30,60]` / `[30,120]` AE FPS ranges, and resolving the largest high-speed resolution `<=` the requested preset.
+- **End-to-End Video Latency Reduction** (`6073fc4`, `5b45f07`, `af2ade9`):
+  - Cut glass-to-glass streaming latency via `TCP_NODELAY`, bounded 128 KB TCP send/receive buffers, Android `H264Encoder` `KEY_OPERATING_RATE` + 2 ms dequeue timeout, 3-frame drop-oldest video channel queue, low-latency desktop decode/frame-drop pacing, and a zero-allocation `PhoneCamVirtualCamera.dll` shared-memory reader.
+
 ---
 
 ## [1.4.0] - 2026-11-26

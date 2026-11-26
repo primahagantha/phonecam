@@ -315,6 +315,22 @@ impl Adb {
                 Duration::from_secs(10),
             )?;
 
+            if is_service_not_exported(&output) {
+                // Release APKs keep CameraStreamService non-exported for security.
+                // Launch the exported MainActivity so the phone opens PhoneCam over the USB tunnel.
+                let activity = build_activity_component(package);
+                let act_out = self.run_for_serial(
+                    serial,
+                    &["shell", "am", "start", "-n", &activity],
+                    Duration::from_secs(10),
+                )?;
+                if !act_out.contains("Error") && !act_out.contains("Exception") {
+                    return Ok(());
+                }
+                last_error = act_out.trim().to_string();
+                continue;
+            }
+
             if is_foreground_service_not_found(&output) {
                 let activity = build_activity_component(package);
                 let _ = self.run_for_serial(
@@ -475,6 +491,13 @@ pub fn parse_devices(output: &str) -> Vec<AdbDevice> {
 /// Returns true if `pm path` output indicates the package is installed.
 pub fn is_pm_path_installed(output: &str) -> bool {
     output.contains("package:")
+}
+
+/// Returns true if `start-foreground-service` failed because the service is not exported
+/// (hardened release APKs set `android:exported="false"` on `CameraStreamService`).
+pub fn is_service_not_exported(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("not exported") || lower.contains("securityexception")
 }
 
 /// Returns true if `start-foreground-service` failed because the service was not found,
@@ -771,5 +794,18 @@ mod tests {
             "Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]"
         ));
         assert!(!is_signature_mismatch_error("Success\n"));
+    }
+
+    #[test]
+    fn service_not_exported_detection() {
+        assert!(is_service_not_exported(
+            "Starting service: Intent { cmp=com.phonecam.camera/.service.CameraStreamService }\nError: Requires permission not exported from uid 10419"
+        ));
+        assert!(is_service_not_exported(
+            "java.lang.SecurityException: Permission Denial: startForegroundService"
+        ));
+        assert!(!is_service_not_exported(
+            "Starting service: Intent { cmp=com.phonecam.camera/.service.CameraStreamService }\n"
+        ));
     }
 }

@@ -603,8 +603,7 @@ pub fn pair_request_prompt(state: &AppState) -> AnyElement {
                         .py(px(Space::XL))
                         .child(
                             div()
-                                .min_w(px(0.0))
-                                .truncate()
+                                .w_full()
                                 .font(Fonts::sans())
                                 .text_size(px(Type::TWO_SM))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -613,9 +612,8 @@ pub fn pair_request_prompt(state: &AppState) -> AnyElement {
                         )
                         .child(
                             div()
+                                .w_full()
                                 .mt(px(Space::XS))
-                                .min_w(px(0.0))
-                                .truncate()
                                 .font(Fonts::sans())
                                 .text_size(px(Type::XS))
                                 .text_color(Text::MUTED)
@@ -623,9 +621,8 @@ pub fn pair_request_prompt(state: &AppState) -> AnyElement {
                         )
                         .child(
                             div()
+                                .w_full()
                                 .mt(px(Space::SM))
-                                .min_w(px(0.0))
-                                .truncate()
                                 .font(Fonts::mono())
                                 .text_size(px(Type::TWO_XS))
                                 .text_color(Text::MUTED)
@@ -1270,8 +1267,7 @@ fn usb_list_with_ui(
                             .gap(px(2.0))
                             .child(
                                 div()
-                                    .min_w(px(0.0))
-                                    .truncate()
+                                    .w_full()
                                     .font(Fonts::sans())
                                     .text_size(px(Type::TWO_SM))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -1280,8 +1276,7 @@ fn usb_list_with_ui(
                             )
                             .child(
                                 div()
-                                    .min_w(px(0.0))
-                                    .truncate()
+                                    .w_full()
                                     .font(Fonts::mono())
                                     .text_size(px(Type::TWO_XS))
                                     .text_color(Text::MUTED)
@@ -1509,6 +1504,9 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
         return div().into_any_element();
     }
 
+    let panel_title = device
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "Paired phone".to_string());
     let name = device
         .map(|d| d.name.clone())
         .unwrap_or_else(|| "this phone".to_string());
@@ -1516,7 +1514,7 @@ pub fn paired_phone_panel(state: &AppState) -> AnyElement {
     let connected = device.is_some();
     let streaming = state.is_streaming();
 
-    let panel = Panel::new(name.clone()).action(chip(
+    let panel = Panel::new(panel_title).action(chip(
         if connected {
             "Connected"
         } else {
@@ -1915,7 +1913,7 @@ fn hand_gesture_guide_card_with_ui(
                                         .flex_1()
                                         .child(
                                             div()
-                                                .truncate()
+                                                .w_full()
                                                 .font(Fonts::sans())
                                                 .text_size(px(Type::TWO_SM))
                                                 .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -1924,7 +1922,7 @@ fn hand_gesture_guide_card_with_ui(
                                         )
                                         .child(
                                             div()
-                                                .truncate()
+                                                .w_full()
                                                 .font(Fonts::sans())
                                                 .text_size(px(Type::TWO_XS))
                                                 .font_weight(gpui::FontWeight::MEDIUM)
@@ -3335,10 +3333,11 @@ fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &s
                     div()
                         .flex()
                         .flex_col()
+                        .flex_1()
                         .min_w(px(0.0))
                         .child(
                             div()
-                                .truncate()
+                                .w_full()
                                 .font(Fonts::sans())
                                 .text_size(px(Type::TWO_SM))
                                 .font_weight(if is_selected {
@@ -3355,7 +3354,7 @@ fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &s
                         )
                         .child(
                             div()
-                                .truncate()
+                                .w_full()
                                 .font(numeric_font(Fonts::MONO))
                                 .text_size(px(Type::TWO_XS))
                                 .text_color(Text::MUTED)

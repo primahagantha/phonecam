@@ -529,6 +529,7 @@ pub fn key_value(
 ) -> AnyElement {
     let value: SharedString = value.into();
     div()
+        .w_full()
         .flex()
         .flex_row()
         .items_baseline()
@@ -681,6 +682,7 @@ impl IntoElement for Toggle {
         let elem_id = self.id.unwrap_or_else(|| self.label.clone());
         let mut row = div()
             .id(gpui::ElementId::Name(elem_id))
+            .w_full()
             .flex()
             .flex_row()
             .items_center()
@@ -702,8 +704,7 @@ impl IntoElement for Toggle {
                     .gap(px(2.0))
                     .child(
                         div()
-                            .min_w(px(0.0))
-                            .truncate()
+                            .w_full()
                             .font(Fonts::sans())
                             .text_size(px(Type::TWO_SM))
                             .font_weight(gpui::FontWeight::MEDIUM)
@@ -712,10 +713,10 @@ impl IntoElement for Toggle {
                     )
                     .children(self.detail.map(|detail| {
                         div()
-                            .min_w(px(0.0))
-                            .truncate()
+                            .w_full()
                             .font(Fonts::sans())
                             .text_size(px(Type::TWO_XS))
+                            .line_height(px(Type::LINE_XS))
                             .text_color(Text::MUTED)
                             .child(detail)
                     })),
