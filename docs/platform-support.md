@@ -8,14 +8,14 @@ This document reflects the **verified current status** of each platform and outp
 
 | Platform | Minimum Version | Architecture | Video Output Pipeline | Transport | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows 11** | Build 22621 (22H2)+ | `x86_64` | Windows Media Foundation Virtual Camera (`MFCreateVirtualCamera`) | USB (ADB) & Wi-Fi | **Supported** |
+| **Windows 11** | Build 22621 (22H2)+ | `x86_64` | Open-source C++ Media Foundation Virtual Camera (`MFCreateVirtualCamera`) | USB (ADB) & Wi-Fi | **Supported** |
 | **Android** | Android 8.0 (API 26)+ | `arm64-v8a`, `armeabi-v7a`, `x86_64` | Camera2 API + Hardware `MediaCodec` H.264 | USB (ADB) & Wi-Fi | **Supported** |
-| **Linux** | Ubuntu 20.04+ / Debian 11+ / Fedora 38+ / Arch | `x86_64` | `v4l2loopback` (writer in progress; `framebus` currently Windows-only) | USB (ADB) & Wi-Fi | **Experimental / In Progress** |
+| **Linux** | Ubuntu 20.04+ / Debian 11+ / Fedora 38+ / Arch | `x86_64` | `v4l2loopback` NV12 `FrameWriter` (`VIDIOC_S_FMT` + `write` to `/dev/video10` / `PHONECAM_V4L2_DEVICE`) | USB (ADB) & Wi-Fi | **Experimental** (CI-compiled; live Linux verification pending) |
 | **Windows 10** | Build 17763 (1809)+ | `x86_64` | DirectShow COM virtual camera (desktop preview runs on D3D11; no vcam yet) | USB (ADB) & Wi-Fi | **Roadmap** |
 | **macOS** | macOS 12.3 (Monterey)+ | `arm64`, `x86_64` | CoreMediaIO camera extension (core crates compile; no vcam/app release) | USB (ADB) & Wi-Fi | **Roadmap** |
 | **iOS** | — | `arm64` | Native iOS capture client | — | **Roadmap** |
 
-> **Virtual Camera Binary Note:** On Windows 11, `dist/unpacked/PhoneCamVirtualCamera.dll` and `dist/unpacked/phonecam-vcam-register.exe` are currently shipped as prebuilt Media Foundation binaries pending C++ source cleanup and open-sourcing.
+> **100% Open-Source Virtual Camera:** The Windows Media Foundation C++ source code (`native/virtual-camera/` and `native/shared/`) is open source in this repository. No prebuilt `.dll` or `.exe` binaries are tracked in Git — run `.\scripts\build-vcam.ps1` to compile `PhoneCamVirtualCamera.dll` and `phonecam-vcam-register.exe`, and `.\scripts\fetch-adb.ps1` to stage official Google ADB tools into `dist/unpacked/`.
 
 ---
 
@@ -24,8 +24,17 @@ This document reflects the **verified current status** of each platform and outp
 ### Requirements
 - **OS**: Windows 11 Build `22621` (22H2) or newer (`x86_64`). Required for `MFCreateVirtualCamera` used by `PhoneCamVirtualCamera.dll`.
 - **GPU**: DirectX 11 / Direct3D 11 compatible GPU for GPUI hardware-accelerated preview rendering.
-- **USB Mode**: Bundled `adb.exe`, `AdbWinApi.dll`, and `AdbWinUsbApi.dll` are included in the installer and portable zip. USB Debugging must be enabled on the Android device.
+- **USB Mode**: Official Google `adb.exe`, `AdbWinApi.dll`, and `AdbWinUsbApi.dll` (staged via `scripts/fetch-adb.ps1` for releases and portable zips). USB Debugging must be enabled on the Android device.
 - **Firewall**: Inbound TCP `48721` and UDP `48720` are needed for Wi-Fi pairing/streaming (configured automatically by the NSIS installer).
+
+### Building Native Virtual Camera & Staging ADB
+```powershell
+# Compile PhoneCamVirtualCamera.dll & phonecam-vcam-register.exe from native/ via CMake
+.\scripts\build-vcam.ps1
+
+# Stage adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll from local Android SDK or Google platform-tools
+.\scripts\fetch-adb.ps1
+```
 
 ### Virtual Camera Registration
 The NSIS installer (`PhoneCam-Setup-<version>.exe`) registers the virtual camera automatically. For the portable zip (`PhoneCam-<version>-windows-x64.zip`):
@@ -65,16 +74,17 @@ cd apps\android
 
 ---
 
-## 4. Linux (`x86_64`) — Experimental / In Progress
+## 4. Linux (`x86_64`) — Experimental
 
-The Rust core crates (`phonecam-protocol`, `phonecam-core`, `phonecam-media`, `phonecam-framebus`, `phonecam-android-core`) and `phonecam-app` compile on Linux, and `scripts/setup-linux.sh` installs build dependencies (`vulkan`, `x11`/`wayland`, `alsa`, `adb`) and loads `v4l2loopback` at `/dev/video10`.
+The Rust workspace including `phonecam-app` and `phonecam-ui` compiles on Ubuntu Linux in CI (`cargo check -p phonecam-app -p phonecam-ui`), and `scripts/setup-linux.sh` installs build dependencies (`vulkan`, `x11`/`wayland`, `alsa`, `adb`) and loads `v4l2loopback` at `/dev/video10`.
 
-**Current limitation:** `crates/phonecam-framebus/src/writer.rs` currently stubs non-Windows targets to return `Err(WriterError::NotWindows)`. Live virtual camera frame output to `/dev/video10` via `v4l2loopback` is not yet wired, so Linux virtual camera streaming is **experimental / in progress**.
+`crates/phonecam-framebus/src/writer.rs` (`#[cfg(target_os = "linux")]`) implements `v4l2loopback` output using `VIDIOC_S_FMT` (`V4L2_PIX_FMT_NV12`) and `libc::write` targeting `PHONECAM_V4L2_DEVICE` (defaulting to `/dev/video10`). Live end-to-end runtime verification on a physical Linux desktop with `v4l2loopback` loaded is still pending.
 
 ---
 
-## 5. macOS, iOS & Virtual Microphone — Roadmap
+## 5. Audio Routing, macOS & iOS — Status & Roadmap
 
+- **Windows Audio Routing (`waveOut` — Supported)**: `crates/phonecam-app/src/audio_out.rs` routes incoming 16-bit mono PCM (`48000 Hz` / `16000 Hz`, sample rate reported via `PhoneState.audioSampleRate`) through WinMM `waveOut` to a selected playback device (`"default"` or named devices such as VB-Audio Virtual Cable `"CABLE Input"`), while defaulting to `monitor_only` (VU meter only) to prevent speaker feedback.
+- **Native Kernel Virtual Microphone Driver (Roadmap)**: An OS-level kernel virtual microphone capture driver (exposing a standalone Windows mic device without VB-Audio Virtual Cable) remains on the Roadmap.
 - **macOS (`CoreMediaIO`)**: `phonecam-protocol`, `phonecam-core`, and `phonecam-media` compile and pass unit tests on macOS in CI, but no `CMIOExtensionProvider` virtual camera or packaged macOS app exists yet.
-- **Virtual Microphone Audio Routing**: PhoneCam currently streams Android microphone PCM over `ChannelRole::Audio = 3` to drive the desktop **Audio Monitor (16-segment LED VU meter)**. Routing audio to an OS Virtual Microphone or WASAPI loopback endpoint is on the Roadmap.
 - **iOS**: Planned for a future release after Windows/Linux desktop stabilization.

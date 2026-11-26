@@ -30,15 +30,16 @@ flowchart TD
     subgraph Desktop["PhoneCam Desktop (Single Native Process)"]
         Auth["Transport & Auth (HMAC-SHA256, Replay Guard)"]
         Dec["In-Process Single Decode (openh264)"]
-        Audio["Audio Monitor (16-Segment LED VU Meter)"]
+        Audio["Audio Monitor (dBFS VU Meter) + WinMM waveOut Routing"]
         Shm["Windows Shared Memory (68-byte Header, Seqlock)"]
         Labs["Labs BGRA Pipeline (Auto-Frame / Gestures / Bokeh / LUT)"]
         UI["GPUI GPU Preview (DirectX 11 Surface)"]
 
         Auth --> Dec
         Auth --> Audio
-        Dec -->|"NV12"| Shm
+        Dec -->|"NV12 (Zero-Copy when Labs Off)"| Shm
         Dec -->|"Premultiplied BGRA"| Labs --> UI
+        Labs -->|"bgra_to_nv12 (when Labs On)"| Shm
     end
 
     WiFi --> Auth
@@ -75,7 +76,7 @@ The legacy C++ core muxed each group of pictures into a fragmented MP4 on disk a
 
 Windows instantiates software camera sources **itself** inside the Camera Frame Server process (`svchost.exe -k Camera`, running as `NT AUTHORITY\LocalService`). `PhoneCamVirtualCamera.dll` is loaded there, not inside `phonecam.exe`, so it cannot share `phonecam.exe`'s heap.
 
-> **Transparency note:** `PhoneCamVirtualCamera.dll` and `phonecam-vcam-register.exe` are currently shipped as prebuilt C++ Media Foundation binaries pending C++ source cleanup and open-sourcing.
+> **100% Open-Source C++ Source:** The full C++17 source for `PhoneCamVirtualCamera.dll` and `phonecam-vcam-register.exe` lives in `native/virtual-camera/` and `native/shared/` and is compiled from source via CMake (`scripts/build-vcam.ps1`) in CI and local builds, with zero closed `.dll`/`.exe` blobs tracked in Git.
 
 Because the DLL runs out-of-process, the shared-memory framebus is a **second, independent wire contract**, pinned byte-for-byte in `phonecam-framebus`:
 
@@ -215,10 +216,11 @@ Only the virtual camera output layer is platform-specific; protocol, core sessio
 
 | Platform / Feature | Mechanism | Status |
 | --- | --- | --- |
-| Windows 11 (`22621+`, `x64`) | Media Foundation (`MFCreateVirtualCamera`) | **Supported** |
+| Windows 11 (`22621+`, `x64`) | Open-source C++ Media Foundation (`MFCreateVirtualCamera`) | **Supported** |
 | Android (`API 26+`) | Camera2 + `MediaCodec` + Rust JNI | **Supported** |
-| Linux (`x64`) | `v4l2loopback` (`/dev/video10`) | **Experimental / In Progress** (`framebus` writer pending) |
+| Windows Audio Output | WinMM `waveOut` (`crates/phonecam-app/src/audio_out.rs`) -> VB-Cable / playback devices + 16-segment dBFS VU meter | **Supported (Playback / VB-Cable)** |
+| Linux (`x64`) | `v4l2loopback` (`/dev/video10` / `PHONECAM_V4L2_DEVICE`) NV12 `ioctl`/`write` | **Experimental** (CI-compiled; live Linux test pending) |
 | Windows 10 | DirectShow COM virtual camera | **Roadmap** |
 | macOS (`12.3+`) | CoreMediaIO camera extension | **Roadmap** |
-| Virtual Microphone | WASAPI / virtual audio device | **Roadmap** (currently UI VU monitor only) |
+| Kernel Virtual Microphone | Native virtual audio capture driver | **Roadmap** (currently `waveOut` / VB-Cable + UI VU monitor) |
 | iOS | Native iOS capture client | **Roadmap** |

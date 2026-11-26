@@ -5,7 +5,7 @@
 <h1 align="center">PhoneCam</h1>
 
 <p align="center">
-  <strong>Free, open-source, watermark-free Android-to-PC webcam in native Rust + GPUI — no 480p paywall, no ads, ~50 MB RAM.</strong>
+  <strong>100% open-source, watermark-free Android-to-PC webcam in native Rust + GPUI + C++ Media Foundation — no 480p paywall, no ads, ~50 MB RAM.</strong>
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@
 ## Quick Start (Windows 11 + Android)
 
 1. **Windows Desktop** — download from [GitHub Releases](https://github.com/primahagantha/phonecam/releases):
-   - **Installer (`PhoneCam-Setup-<version>.exe`)**: installs `phonecam.exe`, bundles `adb.exe` + `PhoneCam.apk`, registers the Windows Media Foundation virtual camera, and adds inbound firewall rules (`TCP 48721`, `UDP 48720`).
+   - **Installer (`PhoneCam-Setup-<version>.exe`)**: installs `phonecam.exe`, `adb.exe`, `PhoneCam.apk`, registers the open-source Windows Media Foundation virtual camera, and adds inbound firewall rules (`TCP 48721`, `UDP 48720`).
    - **Portable Zip (`PhoneCam-<version>-windows-x64.zip`)**: extract, right-click `install-virtual-camera.bat` -> **Run as administrator**, then run `run-portable.bat`.
 2. **Android App (`PhoneCam.apk`)**:
    - Sideload `PhoneCam.apk` from Releases (Android 8.0 / API 26+), **or** plug in via USB with **USB Debugging** enabled and click **Install app on phone** in the desktop Setup tab.
@@ -38,36 +38,36 @@
 
 | Target / Capability | Status | Details |
 | :--- | :--- | :--- |
-| **Windows 11 (`22621+` x64)** | **Supported** | GPUI (DirectX 11) + `openh264` single decode + Media Foundation virtual camera (`MFCreateVirtualCamera`) via `C:\ProgramData\PhoneCam\framebuffer-v2.bin`. |
+| **Windows 11 (`22621+` x64)** | **Supported** | GPUI (DirectX 11) + `openh264` single decode + open-source C++ Media Foundation virtual camera (`native/virtual-camera/`, `MFCreateVirtualCamera`) via `C:\ProgramData\PhoneCam\framebuffer-v2.bin`. |
 | **Android (`API 26+`)** | **Supported** | Camera2 + hardware `MediaCodec` H.264 + `phonecam-android-core` (Rust JNI) over `arm64-v8a`, `armeabi-v7a`, `x86_64`. |
 | **USB & Wi-Fi Transport** | **Supported** | Unified TCP `48721` protocol (`adb reverse` on USB; UDP `48720` beacon + QR pairing on Wi-Fi), `HMAC-SHA256` auth, monotonic nonce replay guard. |
-| **Linux (`v4l2loopback`)** | **Experimental / In Progress** | Core crates and desktop app build on Linux (`scripts/setup-linux.sh` installs `v4l2loopback` deps), but `phonecam-framebus` currently returns `NotWindows` — `/dev/videoX` frame output is not wired yet. |
+| **Audio Output & VU Monitor** | **Supported (WinMM `waveOut`)** | Android PCM (`48kHz`/`16kHz` over `ChannelRole::Audio = 3`) drives the 16-segment dBFS VU meter and routes via `crates/phonecam-app/src/audio_out.rs` to VB-Audio Virtual Cable (`CABLE Input`) or Windows playback devices. Native kernel virtual mic driver is on the Roadmap. |
+| **Linux (`v4l2loopback`)** | **Experimental** | `phonecam-framebus` writes NV12 to `/dev/video10` (`PHONECAM_V4L2_DEVICE`) via `v4l2loopback` `ioctl`, and `phonecam-app`/`phonecam-ui` compile on Linux in CI; live Linux hardware verification is pending. |
 | **Windows 10 (DirectShow)** | **Roadmap** | Desktop preview runs on D3D11, but `PhoneCamVirtualCamera.dll` requires Windows 11 `MFCreateVirtualCamera`. DirectShow COM support is planned. |
 | **macOS (`CoreMediaIO`)** | **Roadmap** | Core libraries compile on macOS; no CoreMediaIO camera extension or packaged macOS app yet. |
-| **Virtual Microphone** | **Roadmap** | Android PCM (`ChannelRole::Audio = 3`) currently drives the desktop UI **Audio Monitor (16-segment LED VU meter)**; OS virtual mic / WASAPI routing is planned. |
 | **iOS Client** | **Roadmap** | Not started. |
 
-> **Virtual Camera Binaries Transparency Note:** `dist/unpacked/PhoneCamVirtualCamera.dll` and `dist/unpacked/phonecam-vcam-register.exe` are currently shipped as prebuilt C++ Windows Media Foundation binaries pending C++ source cleanup and open-sourcing. All Rust crates (`crates/`) and the Android client (`apps/android/`) are open source under MIT / Apache-2.0.
+> **100% Open-Source Virtual Camera & Zero Tracked Binaries:** All components—Rust crates (`crates/`), Windows Media Foundation C++ virtual camera (`native/virtual-camera/` & `native/shared/`), and Android client (`apps/android/`)—are open source under MIT / Apache-2.0. No `.dll` or `.exe` blobs are checked into Git; CI and local builds compile `PhoneCamVirtualCamera.dll` and `phonecam-vcam-register.exe` directly via CMake (`scripts/build-vcam.ps1`) and fetch official Google `adb.exe` via `scripts/fetch-adb.ps1`.
 
 ---
 
 ## Architecture at a Glance
 
 ```
-Android (Camera2 + MediaCodec H.264 + AudioRecord)
+Android (Camera2 + MediaCodec H.264 + AudioRecord PCM)
    └──► TCP 48721 (Wi-Fi LAN or USB adb reverse)
            └──► phonecam.exe (Single Rust + GPUI process)
-                   ├── openh264 single in-process decode
-                   ├── NV12 ──► Shared Memory Seqlock (68B header) ──► PhoneCamVirtualCamera.dll (svchost.exe)
-                   ├── BGRA ──► GPUI D3D11 Preview (+ optional Labs effects)
-                   └── PCM  ──► Audio Monitor (16-segment LED VU meter)
+                   ├── openh264 single in-process decode (BT.709 HD / BT.601 SD)
+                   ├── NV12 (direct or Labs FX) ──► 68B Seqlock SHM ──► PhoneCamVirtualCamera.dll (C++)
+                   ├── Premultiplied BGRA ──► GPUI D3D11 Preview
+                   └── 16-bit PCM ──► 16-Segment dBFS VU Meter + Windows waveOut (VB-Cable / Speakers)
 ```
 
 Key invariants (see [docs/architecture.md](docs/architecture.md) for full details):
 - **Single-decode pipeline**: H.264 Annex-B is decoded once per frame via `openh264`, avoiding dual-decode CPU overhead and preview/camera drift.
 - **Resilient virtual camera**: On disconnect, `phonecam-framebus` holds the last frame for 3 seconds before publishing a disconnected NV12 slate so OBS/Zoom/Meet never lose the camera device.
 - **Local-only security**: Zero cloud calls or telemetry. Pairing uses a 128-bit single-use QR token (5-minute TTL), persistent 256-bit secrets (`%APPDATA%\PhoneCam\devices.json`), `HMAC-SHA256`, monotonic replay nonces, and hex-token log redaction.
-- **Controls & Labs**: Supports hardware camera switching, manual EV / Kelvin WB / diopter focus, anti-flicker (`50Hz`/`60Hz`/`Auto`), mirror/rotation, pure-black OLED phone mode, and experimental local **Labs** toggles (heuristic YCbCr auto-framing, hand gestures, portrait bokeh, color LUTs). See [docs/pro-features.md](docs/pro-features.md).
+- **Controls & Labs**: Hardware lens switching (`0.5x` ultrawide when supported), manual EV / Kelvin WB / diopter focus, anti-flicker (`50Hz`/`60Hz`/`Auto`), mirror/rotation/auto-rotate, pure-black OLED mode, and **Labs** toggles (heuristic auto-framing, hand gestures, portrait bokeh, color LUTs—applied to **both** preview and Virtual Camera when enabled). See [docs/pro-features.md](docs/pro-features.md).
 
 ---
 
@@ -75,14 +75,21 @@ Key invariants (see [docs/architecture.md](docs/architecture.md) for full detail
 
 ### Prerequisites
 - Rust toolchain (`1.85+` stable)
-- **Windows 11 (x64)**: MSVC Build Tools + Windows SDK (for GPUI / `windows` crate) and [NSIS](https://nsis.sourceforge.io/) (optional, for installer packaging)
+- **Windows 11 (x64)**: MSVC Build Tools (C++17), CMake (`3.20+`), Windows 11 SDK (`10.0.26100+` for `mfvirtualcamera.h`), and [NSIS](https://nsis.sourceforge.io/) (optional, for installer packaging)
 - **Android**: JDK 17, Android SDK (API 34), Android NDK + `cargo-ndk` (if rebuilding `.so` JNI libs)
 
-### Desktop (Windows)
+### Desktop & Virtual Camera (Windows)
 ```powershell
+# 1. Build open-source C++ Media Foundation Virtual Camera DLL + registrar into dist/unpacked/
+.\scripts\build-vcam.ps1
+
+# 2. Fetch/stage official Google ADB tools (adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll)
+.\scripts\fetch-adb.ps1
+
+# 3. Check, lint, test, and run the Rust desktop app
 cargo check --workspace
-cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 cargo run -p phonecam-app
 ```
 
@@ -110,14 +117,15 @@ cd apps\android
 
 | Path | Role |
 | :--- | :--- |
-| `crates/phonecam-protocol` | Binary framing, control/video messages, `HMAC-SHA256` & log redaction |
-| `crates/phonecam-framebus` | Windows shared-memory 68-byte seqlock ring & NV12 writer/reader |
-| `crates/phonecam-media` | `openh264` decoder, YUV/NV12/BGRA conversion, Labs CV & effects |
+| `crates/phonecam-protocol` | Binary framing, control/video/audio messages, `HMAC-SHA256` & log redaction |
+| `crates/phonecam-framebus` | Windows 68-byte seqlock SHM + Linux `v4l2loopback` NV12 writer |
+| `crates/phonecam-media` | `openh264` decoder, SIMD YUV/NV12/BGRA conversion, Labs CV & effects |
 | `crates/phonecam-core` | TCP/UDP transport, pairing/session state machine, adaptive quality ladder |
-| `crates/phonecam-ui` | GPUI desktop views, preview stage, control rail, VU meter |
-| `crates/phonecam-app` | Windows binary, Win32 system tray, ADB supervisor, runtime orchestration |
+| `crates/phonecam-ui` | GPUI desktop views, preview stage, sliders, accessibility, dBFS VU meter |
+| `crates/phonecam-app` | Windows binary, Win32 tray, ADB supervisor, `waveOut` audio, runtime |
 | `crates/phonecam-android-core` | Rust JNI library (`cdylib`) shared with the Android app |
-| `apps/android` | Kotlin + Jetpack Compose Android client (Camera2 + MediaCodec) |
+| `native/virtual-camera` & `native/shared` | Open-source C++17 Windows Media Foundation virtual camera DLL & registrar |
+| `apps/android` | Kotlin + Jetpack Compose Android client (Camera2 + MediaCodec + AudioRecord) |
 | `docs/` | [Architecture](docs/architecture.md), [Platform Support](docs/platform-support.md), [Pro & Labs Features](docs/pro-features.md) |
 
 ---

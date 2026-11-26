@@ -9,12 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- **Documentation & Repo Hygiene**: Rewrote `README.md`, cleaned `docs/`, updated `dist/unpacked/README-QUICKSTART.txt`, and aligned all platform/feature claims (Windows 11 Media Foundation virtual camera, Linux `v4l2loopback` experimental status, Audio Monitor vs Roadmap virtual mic, and Labs visual effects) with verified codebase behavior.
-- **Installer & CI/CD**:
-  - Added automatic Windows Defender Firewall rules (TCP `48721`, UDP `48720`) on install and removal on uninstall in `scripts/installer.nsi`.
-  - Tightened Windows CI clippy checks (`cargo clippy --workspace --all-targets -- -D warnings`) and added Linux checks for `phonecam-framebus`.
-  - Added optional Android release keystore decoding from GitHub Secrets, optional `cargo-ndk` JNI build when `ANDROID_NDK_HOME` is present, and `SHA256SUMS.txt` checksum generation in `.github/workflows/release.yml`.
+### Added
+- **Open-Source C++ Virtual Camera & Build Automation** (`ba724b4`):
+  - Open-sourced the full C++17 Windows Media Foundation virtual camera and shared memory source under `native/virtual-camera/` and `native/shared/` (matching `phonecam-framebus` 68-byte seqlock layout).
+  - Added `scripts/build-vcam.ps1` (CMake x64 Release build for `PhoneCamVirtualCamera.dll` & `phonecam-vcam-register.exe`) and `scripts/fetch-adb.ps1` (stages official Google `adb.exe`, `AdbWinApi.dll`, `AdbWinUsbApi.dll`).
+  - Untracked prebuilt `.dll`/`.exe`/`.apk` blobs from Git and wired C++ vcam builds + Linux full-app checks into CI and release workflows.
+- **Windows `waveOut` Audio Playback Routing** (`11b0ce7`):
+  - Added `crates/phonecam-app/src/audio_out.rs` using WinMM `waveOut` with an 8-slot pre-allocated ring buffer to route 16-bit mono PCM audio to VB-Audio Virtual Cable (`CABLE Input`) or Windows playback devices while keeping `monitor_only` as the feedback-safe default.
+  - Added `audioSampleRate` reporting in `PhoneState` / `AudioStreamer.kt` and a playback device selector under Audio Monitor & Output (noting native kernel virtual mic driver remains on the Roadmap).
+- **Linux `v4l2loopback` Writer** (`ac3cd42`):
+  - Implemented `#[cfg(target_os = "linux")]` NV12 output (`VIDIOC_S_FMT` + `libc::write` to `/dev/video10` or `PHONECAM_V4L2_DEVICE`) in `crates/phonecam-framebus/src/writer.rs`.
+
+### Fixed
+- **Protocol, Core & Media Correctness** (`6450e0b`, `ac3cd42`):
+  - Fixed `PhoneStats.dropped` wire mismatch (`f64`), cross-thread `now_us()` `OnceLock` clock, `AdaptiveQuality` timeout handling, `StatsWindow::take` bitrate scaling (`* 8.0`), partial TCP frame timeout desync, and bounded `write_all` retries with TCP keepalive.
+  - Added zero-alloc separable $O(W \cdot H)$ portrait blur (`EffectsScratch`), BT.709 HD / BT.601 SD color conversion, `bgra_to_nv12` parity so Labs effects render to the Virtual Camera, bilinear scaling, SPS/PPS IDR-only prepending, and `LocalFree` RAII guard in `apply_acl`.
+- **Android Security, Camera2 & UI** (`7deb699`):
+  - Locked down `CameraStreamService` (`android:exported="false"` in release + internal `SecureRandom` token), acquired `PARTIAL_WAKE_LOCK` + `WIFI_MODE_FULL_LOW_LATENCY`, reported physical device `orientation`, fixed OLED blackout touch-trap & landscape layout, extracted localized strings, and wired release keystore signing.
+- **Desktop UI, Runtime, Tray & Installer** (`a100a2a`, `1aa24e1`, `cf31417`):
+  - Overhauled IA with single-source controls, collapsible `Experimental (Labs)` card, interactive sliders, segmented selectors, bundled font fallbacks with tabular figures, logarithmic dBFS VU meter, keyboard `FocusHandle` navigation, and removed `unsafe` `RenderImage` reclamation.
+  - Wired `minimize_to_tray`, `auto_connect_usb`, `auto_start_stream`, `auto_rotate`, ADB worker thread offloading, tray Start/Stop Stream, `windows_addresses()` overflow resize, `install_phone_app()` exe-relative APK lookup, single-publish 3s fail-safe latch, and NSIS Windows Defender Firewall rules (`TCP 48721`, `UDP 48720`).
+- **Documentation & Repo Hygiene**:
+  - Updated `README.md` (<250 lines), `docs/`, and `dist/unpacked/README-QUICKSTART.txt` to accurately reflect open-source C++ virtual camera builds, Windows `waveOut` audio routing, and current platform/roadmap status.
 
 ---
 

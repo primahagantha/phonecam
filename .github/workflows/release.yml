@@ -239,6 +239,14 @@ jobs:
       - name: Build PhoneCam Windows binary
         run: cargo build --release -p phonecam-app
 
+      - name: Build Windows Virtual Camera C++ binaries
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/build-vcam.ps1
+
+      - name: Fetch official Android platform-tools (adb.exe)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-adb.ps1
+
       - name: Prepare unpacked distribution folder
         shell: pwsh
         run: |

@@ -88,11 +88,20 @@ jobs:
         if: matrix.target == 'windows'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Build Windows Virtual Camera C++ binaries
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/build-vcam.ps1
+
       - name: Cargo test workspace (Windows)
         if: matrix.target == 'windows'
         run: cargo test --workspace
 
-      # Ubuntu-latest: cargo test for core/media/protocol/framebus/android-core
+      # Ubuntu-latest: cargo check full desktop app + test core/media/protocol/framebus/android-core
+      - name: Cargo check full desktop app & UI (Ubuntu)
+        if: matrix.target == 'linux'
+        run: cargo check -p phonecam-app -p phonecam-ui
+
       - name: Cargo test core, media, protocol, framebus, android-core (Ubuntu)
         if: matrix.target == 'linux'
         run: cargo test -p phonecam-core -p phonecam-media -p phonecam-protocol -p phonecam-framebus -p phonecam-android-core
