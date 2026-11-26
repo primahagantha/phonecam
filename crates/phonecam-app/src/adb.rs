@@ -382,7 +382,7 @@ impl Adb {
         false
     }
 
-    /// Installs a PhoneCam APK file onto the target device.
+    /// Installs a PhoneCam APK file onto the target device (replacing existing install).
     pub fn install_apk(&self, apk_path: &Path, serial: Option<&str>) -> Result<(), String> {
         let apk_str = apk_path
             .to_str()
@@ -393,6 +393,30 @@ impl Adb {
             Duration::from_secs(60),
         )?;
         if output.contains("Success") {
+            Ok(())
+        } else {
+            Err(output.trim().to_string())
+        }
+    }
+
+    /// Performs a clean `adb install <apk>` (used after uninstalling an incompatible signature).
+    pub fn install_apk_clean(&self, apk_path: &Path, serial: Option<&str>) -> Result<(), String> {
+        let apk_str = apk_path
+            .to_str()
+            .ok_or_else(|| "invalid APK path".to_string())?;
+        let output = self.run_for_serial(serial, &["install", apk_str], Duration::from_secs(60))?;
+        if output.contains("Success") {
+            Ok(())
+        } else {
+            Err(output.trim().to_string())
+        }
+    }
+
+    /// Uninstalls an Android package from the target device via `adb uninstall <package>`.
+    pub fn uninstall_package(&self, package: &str, serial: Option<&str>) -> Result<(), String> {
+        let output =
+            self.run_for_serial(serial, &["uninstall", package], Duration::from_secs(30))?;
+        if output.contains("Success") || output.to_lowercase().contains("unknown package") {
             Ok(())
         } else {
             Err(output.trim().to_string())
@@ -461,6 +485,13 @@ pub fn is_foreground_service_not_found(output: &str) -> bool {
         || lower.contains("foregroundservicestartnotallowedexception")
         || lower.contains("cannot start service when app is in background")
         || lower.contains("not allowed to start service")
+}
+
+/// Returns true if `adb install` failed due to a signing key mismatch on an existing install.
+pub fn is_signature_mismatch_error(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("install_failed_update_incompatible")
+        || lower.contains("signatures do not match")
 }
 
 /// Builds the component string to launch MainActivity for the given package.
@@ -723,5 +754,22 @@ mod tests {
             build_service_component("com.phonecam.camera.debug"),
             "com.phonecam.camera.debug/com.phonecam.camera.service.CameraStreamService"
         );
+    }
+
+    #[test]
+    fn signature_mismatch_error_detection() {
+        assert!(is_signature_mismatch_error(
+            "adb: failed to install PhoneCam.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.phonecam.camera signatures do not match newer version; ignoring!]"
+        ));
+        assert!(is_signature_mismatch_error(
+            "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]"
+        ));
+        assert!(is_signature_mismatch_error(
+            "Package com.phonecam.camera signatures do not match previously installed version"
+        ));
+        assert!(!is_signature_mismatch_error(
+            "Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]"
+        ));
+        assert!(!is_signature_mismatch_error("Success\n"));
     }
 }

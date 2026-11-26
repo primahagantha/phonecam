@@ -13,6 +13,7 @@
 //! `phonecam-core` and `phonecam-ui`, where they are unit tested; this file only
 //! moves bytes and state between them.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{
     AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
@@ -77,6 +78,27 @@ struct IngestPacket {
     pts: i64,
     total_len: usize,
     buf: Vec<u8>,
+}
+
+/// Elevates the calling thread's scheduling priority for low-latency video ingest/decode.
+#[cfg(windows)]
+fn elevate_video_thread_priority() {
+    use windows::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+    };
+    // SAFETY: `GetCurrentThread` returns a valid pseudo-handle for the calling thread, and
+    // `SetThreadPriority` only adjusts OS thread scheduling without touching Rust memory.
+    unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    }
+}
+
+#[cfg(not(windows))]
+fn elevate_video_thread_priority() {}
+
+/// Returns the index of the newest keyframe queued in `pending`, if any.
+fn latest_keyframe_index(pending: &VecDeque<IngestPacket>) -> Option<usize> {
+    pending.iter().rposition(|pkt| pkt.flags.is_keyframe())
 }
 
 /// The size the shared buffer should publish at.
@@ -1187,6 +1209,8 @@ impl Runtime {
 
     /// The video channel: H.264 packets in, decoded frames out.
     fn run_video(self: &Arc<Self>, conn: Connection) {
+        elevate_video_thread_priority();
+        conn.tune_for_low_latency_video();
         let video_gen = self.video_generation.fetch_add(1, Ordering::SeqCst) + 1;
         conn.set_read_timeout(Some(std::time::Duration::from_millis(500)))
             .ok();
@@ -1209,13 +1233,13 @@ impl Runtime {
         let mut consecutive_decode_errors: u32 = 0;
         let mut scratch = PublishScratch::default();
 
-        // Decoupled TCP ingest pipeline:
-        // A dedicated reader thread drains the socket into a bounded queue (depth 16)
-        // using recycled buffers, ensuring zero-copy throughput and eliminating
-        // lock contention and socket backpressure when decode or effects run.
-        let (packet_tx, packet_rx) = sync_channel::<IngestPacket>(16);
-        let (buf_return_tx, buf_return_rx) = sync_channel::<Vec<u8>>(16);
-        for _ in 0..16 {
+        // Decoupled ultra-low-latency TCP ingest pipeline:
+        // A dedicated reader thread drains the socket into a tight bounded queue (depth 3)
+        // using a 4-buffer pool, keeping worst-case ingest buffering minimal while
+        // eliminating socket stalls when decode or effects run.
+        let (packet_tx, packet_rx) = sync_channel::<IngestPacket>(3);
+        let (buf_return_tx, buf_return_rx) = sync_channel::<Vec<u8>>(4);
+        for _ in 0..4 {
             let _ = buf_return_tx.send(Vec::with_capacity(256 * 1024));
         }
         let decode_queue_len = Arc::new(AtomicI64::new(0));
@@ -1227,6 +1251,7 @@ impl Runtime {
             std::thread::Builder::new()
                 .name("phonecam-video-rx".to_string())
                 .spawn(move || {
+                    elevate_video_thread_priority();
                     while this.running.load(Ordering::Relaxed)
                         && this.video_generation.load(Ordering::SeqCst) == video_gen
                     {
@@ -1266,6 +1291,10 @@ impl Runtime {
                 })
         };
 
+        // Pre-allocated lookahead queue (capacity 4) for zero-allocation catch-up when
+        // a newer keyframe is already queued behind stale GOP frames.
+        let mut pending_packets: VecDeque<IngestPacket> = VecDeque::with_capacity(4);
+
         loop {
             if !self.running.load(Ordering::Relaxed) {
                 break;
@@ -1277,32 +1306,74 @@ impl Runtime {
                 break;
             }
 
-            let packet = match packet_rx.recv_timeout(std::time::Duration::from_millis(200)) {
-                Ok(pkt) => {
-                    decode_queue_len.fetch_sub(1, Ordering::Relaxed);
-                    pkt
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    if conn.is_closed() {
+            while let Ok(next) = packet_rx.try_recv() {
+                pending_packets.push_back(next);
+            }
+
+            if pending_packets.is_empty() {
+                match packet_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                    Ok(pkt) => {
+                        pending_packets.push_back(pkt);
+                        while let Ok(next) = packet_rx.try_recv() {
+                            pending_packets.push_back(next);
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        if conn.is_closed() {
+                            break;
+                        }
+                        if stats_window.elapsed_us(now_us()) >= 1_000_000 {
+                            let mut stats = stats_window.take(
+                                now_us(),
+                                self.session.rtt_us.load(Ordering::Relaxed),
+                                decoded,
+                                dropped,
+                            );
+                            stats.decode_queue_depth =
+                                decode_queue_len.load(Ordering::Relaxed).max(0);
+                            *self.session.stats.lock() = stats;
+                            self.sync_stage_stats();
+                        }
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
                         break;
                     }
-                    if stats_window.elapsed_us(now_us()) >= 1_000_000 {
-                        let mut stats = stats_window.take(
-                            now_us(),
-                            self.session.rtt_us.load(Ordering::Relaxed),
-                            decoded,
-                            dropped,
-                        );
-                        stats.decode_queue_depth = decode_queue_len.load(Ordering::Relaxed).max(0);
-                        *self.session.stats.lock() = stats;
-                        self.sync_stage_stats();
+                }
+            }
+
+            // Zero-latency catch-up: if a newer keyframe is already waiting in the queue,
+            // skip stale GOP frames ahead of it while preserving any SPS/PPS codec config.
+            if pending_packets.len() > 1 {
+                if let Some(latest_kf) = latest_keyframe_index(&pending_packets) {
+                    if latest_kf > 0 {
+                        for _ in 0..latest_kf {
+                            if let Some(stale) = pending_packets.pop_front() {
+                                decode_queue_len.fetch_sub(1, Ordering::Relaxed);
+                                if stale.flags.is_codec_config() {
+                                    let cfg_payload =
+                                        &stale.buf[VIDEO_HEADER_SIZE..stale.total_len];
+                                    if !decoder.set_parameter_sets(cfg_payload) {
+                                        tracing::warn!(
+                                            "ignored a codec-config packet with no readable parameter sets"
+                                        );
+                                    }
+                                } else {
+                                    self.skipped_frames.fetch_add(1, Ordering::Relaxed);
+                                }
+                                let mut buf = stale.buf;
+                                buf.clear();
+                                let _ = buf_return_tx.try_send(buf);
+                            }
+                        }
                     }
-                    continue;
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    break;
-                }
+            }
+
+            let Some(packet) = pending_packets.pop_front() else {
+                continue;
             };
+            decode_queue_len.fetch_sub(1, Ordering::Relaxed);
 
             let payload = &packet.buf[VIDEO_HEADER_SIZE..packet.total_len];
             stats_window.note_frame(payload.len());
@@ -3971,6 +4042,43 @@ impl Runtime {
                     }
                     self.connect_usb_device(serial);
                 }
+                Err(err) if crate::adb::is_signature_mismatch_error(&err) => {
+                    self.log_info(
+                        "Existing PhoneCam install has an incompatible signature; uninstalling com.phonecam.camera and retrying clean install",
+                    );
+                    if let Err(uninst_err) =
+                        adb.uninstall_package("com.phonecam.camera", serial.as_deref())
+                    {
+                        self.log_error(
+                            "uninstall_apk_failed",
+                            &format!(
+                                "Failed to uninstall existing PhoneCam before signature refresh: {uninst_err}"
+                            ),
+                        );
+                        return;
+                    }
+                    match adb.install_apk_clean(apk, serial.as_deref()) {
+                        Ok(()) => {
+                            const MSG: &str = "Updated PhoneCam on phone (refreshed app signature)";
+                            self.log_info(MSG);
+                            {
+                                let mut state = self.state.lock();
+                                state.dismiss_notice("core-error:phone_app_missing");
+                                state.set_toast(MSG, phonecam_ui::theme::Timing::TOAST_MS as i64);
+                            }
+                            self.bump_state_version();
+                            self.connect_usb_device(serial);
+                        }
+                        Err(retry_err) => {
+                            self.log_error(
+                                "install_apk_failed",
+                                &format!(
+                                    "Failed to install APK after refreshing signature: {retry_err}"
+                                ),
+                            );
+                        }
+                    }
+                }
                 Err(err) => {
                     self.log_error(
                         "install_apk_failed",
@@ -4025,6 +4133,56 @@ impl Runtime {
 
         self.poll_usb();
         self.broadcast_state();
+    }
+
+    /// User-initiated software update check against GitHub Releases.
+    ///
+    /// Never runs automatically in the background (preserves zero-telemetry invariant).
+    pub fn check_for_updates(self: &Arc<Self>) {
+        let current_version = {
+            let mut state = self.state.lock();
+            if matches!(state.update_status, phonecam_ui::UpdateStatus::Checking) {
+                return;
+            }
+            state.update_status = phonecam_ui::UpdateStatus::Checking;
+            state.current_version.clone()
+        };
+        self.bump_state_version();
+
+        let this = Arc::clone(self);
+        let _ = std::thread::Builder::new()
+            .name("phonecam-update-check".to_string())
+            .spawn(move || {
+                let status = crate::updater::check_latest_release(&current_version);
+                match &status {
+                    phonecam_ui::UpdateStatus::Available(info) => {
+                        this.log_info(&format!(
+                            "update available: {} (current v{current_version})",
+                            info.tag
+                        ));
+                    }
+                    phonecam_ui::UpdateStatus::UpToDate { current } => {
+                        this.log_info(&format!("PhoneCam v{current} is up to date"));
+                    }
+                    phonecam_ui::UpdateStatus::Failed(err) => {
+                        tracing::warn!("update check failed: {err}");
+                        this.log_info(&format!("update check failed: {err}"));
+                    }
+                    phonecam_ui::UpdateStatus::Idle | phonecam_ui::UpdateStatus::Checking => {}
+                }
+                {
+                    let mut state = this.state.lock();
+                    state.update_status = status;
+                }
+                this.bump_state_version();
+            });
+    }
+
+    /// Opens a validated GitHub Releases URL in the system's default browser.
+    pub fn open_update_url(&self, url: &str) {
+        if let Err(err) = crate::updater::open_update_url(url) {
+            self.log_error("open_update_url_failed", &err);
+        }
     }
 
     /// Closes the tunnel.
@@ -5298,5 +5456,30 @@ mod tests {
         assert!(gen2 > gen1);
 
         runtime.refresh_audio_devices();
+    }
+
+    #[test]
+    fn latest_keyframe_index_finds_newest_idr_for_catchup() {
+        let pkt = |flags: VideoFlags, pts: i64| IngestPacket {
+            flags,
+            pts,
+            total_len: VIDEO_HEADER_SIZE,
+            buf: Vec::new(),
+        };
+
+        let mut q = VecDeque::new();
+        q.push_back(pkt(VideoFlags::NONE, 1));
+        q.push_back(pkt(VideoFlags::NONE, 2));
+        assert_eq!(latest_keyframe_index(&q), None);
+
+        q.push_back(pkt(VideoFlags::KEYFRAME, 3));
+        assert_eq!(latest_keyframe_index(&q), Some(2));
+
+        q.push_back(pkt(VideoFlags::NONE, 4));
+        assert_eq!(latest_keyframe_index(&q), Some(2));
+
+        q.push_back(pkt(VideoFlags::CODEC_CONFIG, 5));
+        q.push_back(pkt(VideoFlags::KEYFRAME, 6));
+        assert_eq!(latest_keyframe_index(&q), Some(5));
     }
 }

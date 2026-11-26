@@ -87,6 +87,10 @@ fn main() -> anyhow::Result<()> {
     tracing::info!("PhoneCam starting");
 
     Application::new().run(move |cx: &mut App| {
+        if let Err(err) = cx.text_system().add_fonts(phonecam_ui::bundled_fonts()) {
+            tracing::warn!(?err, "failed to load bundled UI fonts");
+        }
+
         let runtime = Runtime::new(&settings);
         logging::bind_runtime(runtime.clone());
         runtime.set_preview_enabled(settings.preview_enabled);
@@ -209,7 +213,7 @@ fn start_ui_pump(
                 last_visible = visible;
                 runtime.set_window_visible(visible);
             }
-            let sleep_ms = if visible { 8 } else { 100 };
+            let sleep_ms = if visible { 4 } else { 100 };
             cx.background_executor()
                 .timer(Duration::from_millis(sleep_ms))
                 .await;
@@ -681,6 +685,8 @@ fn apply_effect(
             }
             runtime.bump_state_version();
         }
+        SideEffect::CheckForUpdates => runtime.check_for_updates(),
+        SideEffect::OpenUpdateUrl(url) => runtime.open_update_url(&url),
     }
 }
 

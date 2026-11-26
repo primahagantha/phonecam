@@ -20,4 +20,5 @@ pub mod logging;
 pub mod runtime;
 pub mod settings;
 pub mod tray;
+pub mod updater;
 pub mod vcam;
