@@ -122,15 +122,60 @@ jobs:
       - name: Build phonecam-android-core host library for JVM tests
         run: cargo build -p phonecam-android-core --release
 
+      - name: Build Android JNI libraries via cargo-ndk (if ANDROID_NDK_HOME is present)
+        shell: bash
+        run: |
+          if [ -n "${ANDROID_NDK_HOME:-}" ] && [ -d "$ANDROID_NDK_HOME" ]; then
+            echo "ANDROID_NDK_HOME detected at $ANDROID_NDK_HOME; rebuilding JNI libraries..."
+            rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+            if ! cargo ndk --version >/dev/null 2>&1; then
+              cargo install cargo-ndk --locked
+            fi
+            cargo ndk \
+              -t arm64-v8a \
+              -t armeabi-v7a \
+              -t x86_64 \
+              -o apps/android/app/src/main/jniLibs \
+              build -p phonecam-android-core --release
+          else
+            echo "ANDROID_NDK_HOME not present; using checked-in JNI libraries."
+          fi
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Grant execute permission for gradlew
         run: chmod +x apps/android/gradlew
 
+      - name: Decode Android release keystore (if configured)
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            KEYSTORE_PATH="${{ runner.temp }}/phonecam-release.keystore"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+            echo "PHONECAM_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+            echo "Decoded persistent Android release keystore to $KEYSTORE_PATH"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 secret not set; falling back to local debug signing."
+          fi
+
       - name: Build Android Release APKs
         working-directory: apps/android
+        env:
+          PHONECAM_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          PHONECAM_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          PHONECAM_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --stacktrace
+
+      - name: Clean up decoded release keystore
+        if: always()
+        shell: bash
+        run: rm -f "${{ runner.temp }}/phonecam-release.keystore"
 
       - name: Organize release APKs
         shell: bash
@@ -353,6 +398,14 @@ jobs:
           echo "Aggregated release assets:"
           ls -lh release-assets
 
+      - name: Generate SHA256 checksums for release assets
+        shell: bash
+        working-directory: release-assets
+        run: |
+          sha256sum PhoneCam-Setup-*.exe PhoneCam-*-windows-x64.zip PhoneCam-*-linux-x64.tar.gz PhoneCam*.apk > SHA256SUMS.txt
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+
       - name: Generate Release Notes with Contributor Avatars & Changelog
         shell: bash
         run: |
@@ -369,6 +422,7 @@ jobs:
             release-assets/PhoneCam-*-windows-x64.zip
             release-assets/PhoneCam-*-linux-x64.tar.gz
             release-assets/PhoneCam*.apk
+            release-assets/SHA256SUMS.txt
           name: ${{ needs.check-gate.outputs.is_prerelease == 'true' && format('PhoneCam Pre-Release {0}', needs.check-gate.outputs.tag_name) || format('PhoneCam Release {0}', needs.check-gate.outputs.tag_name) }}
           tag_name: ${{ needs.check-gate.outputs.tag_name }}
           body_path: release-notes.md

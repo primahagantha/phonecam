@@ -86,16 +86,16 @@ jobs:
 
       - name: Cargo clippy workspace (Windows)
         if: matrix.target == 'windows'
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Cargo test workspace (Windows)
         if: matrix.target == 'windows'
         run: cargo test --workspace
 
-      # Ubuntu-latest: cargo test for core/media/protocol/android-core
-      - name: Cargo test core, media, protocol, android-core (Ubuntu)
+      # Ubuntu-latest: cargo test for core/media/protocol/framebus/android-core
+      - name: Cargo test core, media, protocol, framebus, android-core (Ubuntu)
         if: matrix.target == 'linux'
-        run: cargo test -p phonecam-core -p phonecam-media -p phonecam-protocol -p phonecam-android-core
+        run: cargo test -p phonecam-core -p phonecam-media -p phonecam-protocol -p phonecam-framebus -p phonecam-android-core
 
       # macOS-latest: cargo test for core/media/protocol
       - name: Cargo test core, media, protocol (macOS)

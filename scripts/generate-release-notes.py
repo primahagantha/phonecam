@@ -131,10 +131,11 @@ def generate_markdown(version, commits):
     raw_ver = version.lstrip('v')
     # Highlights / Summary table
     md.append("### 📦 Release Assets & Artifacts")
-    md.append(f"- **Windows 11 / 10 Installer**: `PhoneCam-Setup-{raw_ver}.exe` (NSIS all-in-one installer including desktop app, virtual camera drivers, bundled ADB, and Android APK)")
-    md.append(f"- **Windows 64-bit Portable**: `PhoneCam-v{raw_ver}-windows-x64.zip` (Zero-install standalone bundle with `run-portable.bat` and 1-click driver registration scripts)")
-    md.append(f"- **Linux 64-bit Binary**: `PhoneCam-v{raw_ver}-linux-x64.tar.gz` (Native binary supporting Arch, Debian/Ubuntu, Fedora/DNF with `v4l2loopback`)")
-    md.append("- **Android APKs**: Universal package (`PhoneCam.apk`) + Multi-ABI splits (`arm64-v8a`, `armeabi-v7a`, `x86_64`)\n")
+    md.append(f"- **Windows 11 x64 Installer**: `PhoneCam-Setup-{raw_ver}.exe` (NSIS installer including desktop app, prebuilt Media Foundation virtual camera binaries, bundled ADB, firewall rules, and Android APK)")
+    md.append(f"- **Windows 64-bit Portable**: `PhoneCam-v{raw_ver}-windows-x64.zip` (Standalone bundle with `run-portable.bat` and virtual camera registration scripts)")
+    md.append(f"- **Linux 64-bit Binary (Experimental)**: `PhoneCam-v{raw_ver}-linux-x64.tar.gz` (Native binary; `v4l2loopback` virtual camera writer in progress)")
+    md.append("- **Android APKs**: Universal package (`PhoneCam.apk`) + Multi-ABI splits (`arm64-v8a`, `armeabi-v7a`, `x86_64`)")
+    md.append("- **Checksums**: `SHA256SUMS.txt`\n")
 
     # Categories
     categorized_rendered = set()

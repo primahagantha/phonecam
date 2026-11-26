@@ -21,8 +21,10 @@ Cargo.lock.orig
 /dist/PhoneCam.apk
 /dist/*.zip
 /dist/*.tar.gz
+/*.apk
 *.apk
 *.aab
+phone_installed.apk
 
 # Keep Android JNI libraries built from phonecam-android-core
 !apps/android/app/src/main/jniLibs/**/*.so
@@ -36,6 +38,13 @@ Cargo.lock.orig
 !dist/unpacked/AdbWinUsbApi.dll
 !dist/unpacked/*.bat
 !dist/unpacked/*.txt
+
+# Local agent / promo scratch directories
+.agents/
+skills-lock.json
+promos/
+__pycache__/
+*.pyc
 
 # OS & Editor files
 *.log

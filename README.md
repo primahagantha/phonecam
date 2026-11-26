@@ -1,941 +1,138 @@
 ﻿<p align="center">
-  <img src="assets/logo.png" alt="PhoneCam Logo" width="160" height="160" />
+  <img src="assets/logo.png" alt="PhoneCam Logo" width="112" height="112" />
 </p>
 
 <h1 align="center">PhoneCam</h1>
 
 <p align="center">
-  <strong>Turn any modern Android phone into an ultra-low latency, studio-grade 60 FPS webcam for PC.<br />The high-performance, 100% open-source native Rust &amp; GPUI alternative to DroidCam, Iriun, and Camo.</strong>
+  <strong>Free, open-source, watermark-free Android-to-PC webcam in native Rust + GPUI — no 480p paywall, no ads, ~50 MB RAM.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/primahagantha/phonecam/actions/workflows/release.yml"><img src="https://github.com/primahagantha/phonecam/actions/workflows/release.yml/badge.svg" alt="Release CI" /></a>
-  <a href="https://github.com/primahagantha/phonecam/releases/latest"><img src="https://img.shields.io/badge/release-v1.2.1-blue.svg" alt="Latest Release v1.2.1" /></a>
+  <a href="https://github.com/primahagantha/phonecam/actions/workflows/ci.yml"><img src="https://github.com/primahagantha/phonecam/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/primahagantha/phonecam/releases"><img src="https://img.shields.io/badge/release-v1.3.0%20%7C%201.4.0--nightly.1-blue.svg" alt="Release v1.3.0 | 1.4.0-nightly.1" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License" /></a>
-  <a href="#system-requirements"><img src="https://img.shields.io/badge/platform-Windows%2011%2F10%20%7C%20Linux%20%7C%20Android-lightgrey.svg" alt="Platform" /></a>
-  <a href="#prerequisites"><img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust Version" /></a>
+  <img src="https://img.shields.io/badge/platform-Windows%2011%20x64%20%7C%20Android%208%2B-lightgrey.svg" alt="Platform: Windows 11 x64 | Android 8+" />
+  <img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust 1.85+" />
 </p>
 
-<p align="center">
-  <a href="#key-features"><img src="https://img.shields.io/badge/framerate-60%20FPS%20%7C%204K-success.svg" alt="Framerate 60 FPS | 4K" /></a>
-  <a href="#security--privacy-guarantee-zero-telemetry"><img src="https://img.shields.io/badge/telemetry-zero%20%7C%20100%25%20local-brightgreen.svg" alt="Zero Telemetry | 100% Local" /></a>
-  <a href="#virtual-camera-registration"><img src="https://img.shields.io/badge/virtual%20camera-Media%20Foundation%20%2B%20v4l2-blueviolet.svg" alt="Media Foundation + v4l2" /></a>
-  <a href="#phonecam-pro-features"><img src="https://img.shields.io/badge/AI%20vision-face%20tracking%20%2B%20gestures-informational.svg" alt="AI Vision: Face Tracking + Gestures" /></a>
-</p>
-
-PhoneCam is a complete, native Rust rewrite of the desktop webcam companion. Engineered from the ground up with **GPUI**, **openh264**, **Windows Media Foundation**, and **Android Camera2 + MediaCodec**, PhoneCam delivers fluid 60 FPS streaming at minimal CPU and memory footprints (<65 MB RAM) with zero cloud dependencies.
+> **Preview / Demo Asset Placeholder:** No demo capture is committed yet. Drop a desktop + virtual-camera recording at `assets/demo.gif` (or `assets/screenshot.png`) and link it here once captured.
 
 ---
 
-## Table of Contents
+## Quick Start (Windows 11 + Android)
 
-- [Overview & Architecture](#overview--architecture)
-- [Why Native Rust & GPUI (Comparison)](#why-native-rust--gpui-comparison)
-- [PhoneCam vs DroidCam, Iriun & Camo (Feature Comparison)](#phonecam-vs-droidcam-iriun--camo-feature-comparison)
-- [Key Features](#key-features)
-- [Applications & Platform Compatibility](#applications--platform-compatibility)
-- [PhoneCam Pro Features](#phonecam-pro-features)
-  - [Real Computer Vision Face Detection & Smart Auto-Framing](#real-computer-vision-face-detection--smart-auto-framing)
-  - [OBSBOT-Style Hand Gesture Recognition](#obsbot-style-hand-gesture-recognition)
-  - [Low-Latency Audio Streaming with 16-Segment LED VU Meter](#low-latency-audio-streaming-with-16-segment-led-vu-meter)
-  - [Unlocked 60 FPS Camera2 & Robust Anti-Flicker](#unlocked-60-fps-camera2--robust-anti-flicker)
-  - [Dynamic Resolution Capabilities](#dynamic-resolution-capabilities)
-  - [Dedicated On/Off Toggles for All Pro Features](#dedicated-onoff-toggles-for-all-pro-features)
-  - [Portrait Bokeh Background Blur](#portrait-bokeh-background-blur)
-  - [Studio Color LUT Presets](#studio-color-lut-presets)
-  - [Pure-Black OLED Ambient Display Mode](#pure-black-oled-ambient-display-mode)
-  - [Multi-Lens Optical Camera Switching](#multi-lens-optical-camera-switching)
-  - [Pro Manual Camera Controls](#pro-manual-camera-controls)
-  - [USB Auto-Connect & ADB Background Supervisor](#usb-auto-connect--adb-background-supervisor)
-- [Dual Connection Modes](#dual-connection-modes)
-- [Network Protocol & Environment Variables](#network-protocol--environment-variables)
-- [System Requirements](#system-requirements)
-- [Installation & Quick Start (Pre-Built Binaries)](#installation--quick-start-pre-built-binaries)
-  - [1. Android APK Installation](#1-android-apk-installation)
-  - [2. Windows Desktop Installation](#2-windows-desktop-installation)
-  - [3. Linux Desktop Installation & Virtual Camera](#3-linux-desktop-installation--virtual-camera)
-- [Building from Source](#building-from-source)
-  - [Prerequisites](#prerequisites)
-  - [1. Windows Desktop Application](#1-windows-desktop-application)
-  - [2. Packaging the Windows NSIS Installer](#2-packaging-the-windows-nsis-installer)
-  - [3. Android Native Rust JNI Core](#3-android-native-rust-jni-core)
-  - [4. Android APK](#4-android-apk)
-  - [5. Linux Desktop Application](#5-linux-desktop-application)
-- [Testing & Quality Assurance](#testing--quality-assurance)
-  - [Automated Workspace Tests](#automated-workspace-tests)
-  - [Physical Live Device Test Suite](#physical-live-device-test-suite)
-  - [Environment Variables for Testing](#environment-variables-for-testing)
-- [Virtual Camera Registration](#virtual-camera-registration)
-- [Repository & Workspace Crates](#repository--workspace-crates)
-- [Security & Privacy Guarantee (Zero Telemetry)](#security--privacy-guarantee-zero-telemetry)
-- [Troubleshooting & FAQ](#troubleshooting--faq)
-- [Search & Discovery Index](#search--discovery-index)
-- [Contributing](#contributing)
-- [Changelog](#changelog)
-- [License](#license)
+1. **Windows Desktop** — download from [GitHub Releases](https://github.com/primahagantha/phonecam/releases):
+   - **Installer (`PhoneCam-Setup-<version>.exe`)**: installs `phonecam.exe`, bundles `adb.exe` + `PhoneCam.apk`, registers the Windows Media Foundation virtual camera, and adds inbound firewall rules (`TCP 48721`, `UDP 48720`).
+   - **Portable Zip (`PhoneCam-<version>-windows-x64.zip`)**: extract, right-click `install-virtual-camera.bat` -> **Run as administrator**, then run `run-portable.bat`.
+2. **Android App (`PhoneCam.apk`)**:
+   - Sideload `PhoneCam.apk` from Releases (Android 8.0 / API 26+), **or** plug in via USB with **USB Debugging** enabled and click **Install app on phone** in the desktop Setup tab.
+3. **Connect & Select Camera**:
+   - **USB**: plug in your cable (`adb reverse tcp:48721 tcp:48721` runs automatically).
+   - **Wi-Fi**: ensure both devices share a LAN and scan the desktop QR code from the Android app.
+   - Select **PhoneCam Camera** in OBS Studio, Zoom, Discord, Microsoft Teams, Google Meet, or any browser WebRTC app.
 
 ---
 
-## Overview & Architecture
+## Platform & Feature Status
 
-PhoneCam operates on a single-process, zero-copy philosophy. A connected Android device captures frames via Camera2 API (with unlocked 60 FPS auto-exposure ranges and dynamic resolution probing), records uncompressed 16-bit PCM microphone audio, and encodes video in hardware using `MediaCodec`. It streams H.264 Annex-B alongside audio and control frames over a unified high-throughput TCP socket (Port 48721). The native desktop process receives the multiplexed bitstream, executes a **single in-process decode** via `openh264`, performs zero-allocation Computer Vision face tracking and OBSBOT-style hand gesture recognition, and directly delivers the picture simultaneously to both the Windows Virtual Camera (via Shared Memory seqlock) and the local GPUI desktop preview window.
+| Target / Capability | Status | Details |
+| :--- | :--- | :--- |
+| **Windows 11 (`22621+` x64)** | **Supported** | GPUI (DirectX 11) + `openh264` single decode + Media Foundation virtual camera (`MFCreateVirtualCamera`) via `C:\ProgramData\PhoneCam\framebuffer-v2.bin`. |
+| **Android (`API 26+`)** | **Supported** | Camera2 + hardware `MediaCodec` H.264 + `phonecam-android-core` (Rust JNI) over `arm64-v8a`, `armeabi-v7a`, `x86_64`. |
+| **USB & Wi-Fi Transport** | **Supported** | Unified TCP `48721` protocol (`adb reverse` on USB; UDP `48720` beacon + QR pairing on Wi-Fi), `HMAC-SHA256` auth, monotonic nonce replay guard. |
+| **Linux (`v4l2loopback`)** | **Experimental / In Progress** | Core crates and desktop app build on Linux (`scripts/setup-linux.sh` installs `v4l2loopback` deps), but `phonecam-framebus` currently returns `NotWindows` — `/dev/videoX` frame output is not wired yet. |
+| **Windows 10 (DirectShow)** | **Roadmap** | Desktop preview runs on D3D11, but `PhoneCamVirtualCamera.dll` requires Windows 11 `MFCreateVirtualCamera`. DirectShow COM support is planned. |
+| **macOS (`CoreMediaIO`)** | **Roadmap** | Core libraries compile on macOS; no CoreMediaIO camera extension or packaged macOS app yet. |
+| **Virtual Microphone** | **Roadmap** | Android PCM (`ChannelRole::Audio = 3`) currently drives the desktop UI **Audio Monitor (16-segment LED VU meter)**; OS virtual mic / WASAPI routing is planned. |
+| **iOS Client** | **Roadmap** | Not started. |
 
-```mermaid
-flowchart TD
-    subgraph Android["Android Phone (Client)"]
-        Cam["Camera2 API (60 FPS AE Range, Dynamic Sizes)"]
-        Mic["Microphone AudioRecord (PCM 16-bit 48kHz)"]
-        Enc["Hardware MediaCodec (H.264 Annex-B)"]
-        JNI["phonecam-android-core (Rust JNI)"]
-        Cam --> Enc --> JNI
-        Mic --> JNI
-    end
+> **Virtual Camera Binaries Transparency Note:** `dist/unpacked/PhoneCamVirtualCamera.dll` and `dist/unpacked/phonecam-vcam-register.exe` are currently shipped as prebuilt C++ Windows Media Foundation binaries pending C++ source cleanup and open-sourcing. All Rust crates (`crates/`) and the Android client (`apps/android/`) are open source under MIT / Apache-2.0.
 
-    subgraph Link["Transport Channels (Unified Port 48721)"]
-        WiFi["Wi-Fi LAN (UDP 48720 Beacon + TCP 48721)"]
-        USB["USB Cable (ADB Reverse tcp:48721)"]
-    end
+---
 
-    JNI --> WiFi
-    JNI --> USB
+## Architecture at a Glance
 
-    subgraph Desktop["PhoneCam Desktop (Single Native Process)"]
-        Auth["Transport & Auth (HMAC-SHA256, Replay Guard)"]
-        Dec["In-Process Single Decode (openh264)"]
-        
-        subgraph CV["In-Process Vision & Effects (Zero Allocation)"]
-            Face["Face Detection & Auto-Framing (PTZ Smoothing)"]
-            Gest["OBSBOT Hand Gestures (6 Touchless Gestures)"]
-            Blur["Portrait Bokeh Blur (Hermite Feather)"]
-            LUT["5 Studio Color LUT Presets"]
-        end
-
-        Audio["Audio Engine (16-Segment LED VU Meter)"]
-        Shm["Windows Shared Memory (68-byte Header, Seqlock)"]
-        UI["GPUI GPU Preview (DirectX 11 Surface + Live HUD)"]
-
-        Auth --> Dec
-        Auth --> Audio
-        Dec --> Face --> Gest --> Blur --> LUT
-        LUT -->|"NV12 (Zero-Copy)"| Shm
-        LUT -->|"Premultiplied BGRA"| UI
-    end
-
-    WiFi --> Auth
-    USB --> Auth
-
-    subgraph VCamService["Windows Camera Frame Server (svchost.exe)"]
-        DLL["PhoneCamVirtualCamera.dll (Media Foundation)"]
-    end
-
-    Shm -->|"framebuffer-v2.bin"| DLL
-
-    subgraph Apps["Target Applications"]
-        Consumer["OBS Studio / Discord / Google Meet / Zoom / Teams"]
-        Spk["Virtual Audio Device / Playback"]
-    end
-
-    DLL -->|"Virtual Camera Stream"| Consumer
-    Audio -->|"Synchronized Audio"| Spk
+```
+Android (Camera2 + MediaCodec H.264 + AudioRecord)
+   └──► TCP 48721 (Wi-Fi LAN or USB adb reverse)
+           └──► phonecam.exe (Single Rust + GPUI process)
+                   ├── openh264 single in-process decode
+                   ├── NV12 ──► Shared Memory Seqlock (68B header) ──► PhoneCamVirtualCamera.dll (svchost.exe)
+                   ├── BGRA ──► GPUI D3D11 Preview (+ optional Labs effects)
+                   └── PCM  ──► Audio Monitor (16-segment LED VU meter)
 ```
 
-### Core Architecture Principles
-
-1. **Single Decode Pipeline**: Previous Electron-based implementations decoded H.264 twice (once in C++ for the virtual camera and once via WebCodecs for GUI preview). PhoneCam decodes the bitstream **exactly once**. From that single decode, the frame undergoes in-place zero-allocation computer vision effects, and the resulting NV12 pixels are copied to shared memory while premultiplied BGRA pixels are blitted directly to the GPUI texture surface.
-
-```mermaid
-flowchart LR
-    A["Android Sensor (Camera2)"] -->|"60 FPS YUV"| B["Hardware MediaCodec"]
-    B -->|"H.264 Annex-B (TCP 48721)"| C["openh264 In-Process Decoder"]
-    C -->|"In-Place BGRA Effects"| FX["CV Face Tracker + Gestures + Bokeh + LUTs"]
-    FX -->|"NV12 Zero-Copy"| D["Shared Memory (framebuffer-v2.bin)"]
-    FX -->|"Premultiplied BGRA"| E["GPUI D3D11 Texture Surface"]
-    D -->|"MF Source Reader"| F["Virtual Camera (svchost.exe)"]
-    E -->|"Immediate Render"| G["Desktop UI Preview Stage (with HUD Chips)"]
-    F -->|"IMFMediaStream"| H["OBS / Discord / WebRTC"]
-```
-
-2. **Windows Shared Memory Framebus**: Video frames are transferred to the Media Foundation virtual camera via a zero-latency memory-mapped file (`C:\ProgramData\PhoneCam\framebuffer-v2.bin`) protected by an atomic seqlock. The virtual camera DLL runs inside Windows' `svchost.exe -k Camera` service.
-3. **Hardware-Accelerated Android Capture**: The Android client hooks into the Android Camera2 NDK/Java APIs, binding directly to hardware `MediaCodec` encoders to stream Annex-B NAL units with low jitter.
-4. **Resilient Reconnection**: If a network glitch occurs or the USB cable is unplugged, the virtual camera never crashes or unregisters from Windows. It continuously serves the last valid frame, transitions gracefully to a clean disconnected slate after 3 seconds, and automatically recovers the moment the phone reconnects.
-
----
-
-## Why Native Rust & GPUI (Comparison)
-
-| Metric / Attribute | Legacy Electron App | PhoneCam (Native Rust + GPUI) | Advantage |
-| :--- | :--- | :--- | :--- |
-| **Process Count** | 3 (Renderer, Main, C++ Core) | **1** (Unified binary) | No cross-process IPC failure modes |
-| **Decodes per Stream**| 2 (WebCodecs + Media Foundation)| **1** (openh264 in-process) | **50% lower decode CPU load** |
-| **Preview Latency** | ~24 ms (Mux MP4 to disk + read)| **< 1 ms** (Direct buffer to texture) | Instantaneous visual feedback |
-| **Idle Memory (RAM)** | ~180 MB | **~40 MB** | **78% reduction in memory usage** |
-| **Active Stream RAM** | ~350 MB | **~65 MB** | Extremely lightweight |
-| **Installer Size** | ~140 MB (Chromium runtime) | **~9.5 MB** | Instant download and installation |
-| **Startup Time** | ~2.5 - 4.0 seconds | **< 200 milliseconds** | Instant-launch experience |
-
----
-
-<a id="phonecam-vs-droidcam-iriun--camo-feature-comparison"></a><a id="phonecam-vs-droidcam-iriun-camo-feature-comparison"></a><a id="feature-comparison"></a>
-## PhoneCam vs DroidCam, Iriun & Camo (Feature Comparison)
-
-If you have used Android phone webcam applications like **DroidCam**, **Iriun 4K Webcam**, or **Camo (Reincubate)**, you have likely encountered video watermarks, subscription paywalls, 30 FPS limits, high CPU/RAM usage, and closed-source binaries communicating with external servers.
-
-PhoneCam was engineered as an uncompromising, 100% open-source alternative built on native systems programming principles. Here is an exhaustive side-by-side comparison:
-
-| Feature / Capability | PhoneCam (Native Rust + GPUI) | DroidCam / DroidCamX | Iriun 4K Webcam | Camo (Reincubate) |
-| :--- | :--- | :--- | :--- | :--- |
-| **License & Pricing** | **100% Free & Open Source** (MIT / Apache-2.0)<br>No ads, subscriptions, or locked features | Freemium with in-app ads;<br>DroidCamX Pro ($4.99–$9.99) | Freemium with mandatory watermark;<br>Pro license (~$7.99) | Freemium ($4.99/mo, $49.99/yr, or $99 lifetime);<br>Free tier watermarked & capped |
-| **Source Code** | **100% Open Source** (Rust + GPUI + Kotlin) | Closed source / Proprietary | Closed source / Proprietary | Closed source / Proprietary |
-| **Max Framerate (FPS)** | **60 FPS Unlocked**<br>(Camera2 `[60,60]` target range) | 30 FPS default;<br>60 FPS only on select DroidCamX | Up to 60 FPS<br>(High thermal drop risk) | 30 FPS free;<br>60 FPS locked behind Pro subscription |
-| **Max Video Resolution** | **Up to 4K (`3840x2160`) & 1080p60**<br>Dynamic sensor capability negotiation | 480p free;<br>Up to 1080p on paid DroidCamX | Up to 4K<br>(With watermark in free tier) | 720p free;<br>1080p & 4K locked behind Pro |
-| **Desktop Preview Latency** | **< 1 ms**<br>(Direct buffer blit to GPUI D3D11 texture) | ~15–30 ms<br>(DirectShow pipeline lag) | ~20–40 ms<br>(Driver buffer queue) | ~25–60 ms<br>(Heavy composition layers) |
-| **Active Streaming RAM** | **< 65 MB** (~40 MB idle)<br>Strictly bounded static scratch memory | ~120–180 MB | ~140–220 MB | ~300–800+ MB<br>(Heavy GUI runtimes & daemons) |
-| **Installer Size** | **~9.5 MB**<br>(Single unified native binary) | ~15 MB | ~25 MB | ~120+ MB |
-| **AI Face Tracking & Auto-Framing** | **Pure Rust CV In-Process**<br>Zero heap allocation, PTZ smoothing ($\alpha=0.12$), spatial deadband, tracking pause/lock | ✗ Not available | ✗ Not available | ✓ Spotlight / Framing<br>(Locked behind Pro; high CPU/RAM) |
-| **Touchless Hand Gestures** | **6 OBSBOT-Style Gestures**<br>(✋ Lock/Unlock, ✌ 1x/2x Zoom, ☝ 1.5x Zoom, 🤙 Reset, 🤏 2.2x Macro, 👍 Confirm) with live HUD chips | ✗ Not available | ✗ Not available | ✗ Not available |
-| **Privacy & Telemetry** | **Zero Telemetry & 100% Local**<br>Zero cloud calls, offline/air-gapped ready, ephemeral QR pairing, HMAC-SHA256, monotonic replay guard | Closed source;<br>Ad network trackers in free tier | Closed source;<br>Proprietary closed blobs | Closed source;<br>Mandatory account login, active analytics & cloud telemetry |
-| **Microphone Audio & Metering** | **Uncompressed 16-bit PCM (48kHz)**<br>Multiplexed on TCP channel with sub-ms video sync + **16-segment broadcast LED VU meter** | Audio supported<br>(Requires virtual cable, compressed audio, no LED VU meter) | Basic audio driver<br>(Known lip-sync drift on long streams) | Virtual audio driver<br>(Limited on free tier, no broadcast LED VU meter) |
-| **Portrait Bokeh Background Blur** | **In-Process 2D Box Blur**<br>Hermite polynomial feathering ($3t^2 - 2t^3$), 3 calibrated presets + blend slider | ✗ Not available | ✗ Not available | ✓ Available<br>(Locked behind paid Pro subscription) |
-| **Studio Color LUT Presets** | **5 Studio LUT Presets**<br>(Natural, Warm Studio, Cool Corporate, Vibrant Streamer, Monochrome) + bypass | ✗ Basic manual sliders only | ✗ None | ✓ Available<br>(Locked behind paid Pro subscription) |
-| **Anti-Flicker Protection** | **50Hz / 60Hz / Auto Mains Antibanding**<br>Persisted across optical lens handoffs & reconnects | Basic manual setting | Basic | ✓ Available |
-| **AMOLED / OLED Battery Saver** | **0-Nit Pure-Black (`#000000`) Mode**<br>Pixel shutoff, anti-burn-in clock drift, 8°C–12°C cooling, tap-to-peek | Dim screen only | Dim screen only | Curtain mode |
-| **Multi-Lens Camera Switching** | **Instant One-Click Handoff**<br>(0.5x Ultra-Wide, 1.0x Wide, 3.0x Telephoto, Front) | Back / Front toggle only | Back / Front toggle only | Multi-lens switching |
-| **Virtual Camera Driver Architecture** | **Media Foundation + Shared Memory**<br>Packed 68-byte seqlock in `svchost.exe -k Camera` + DirectShow COM + Linux `v4l2loopback` | DirectShow filter driver<br>(Prone to freeze on disconnect) | DirectShow filter driver | Proprietary virtual camera extension |
-| **Connection Transport** | **Unified TCP (Port 48721)**<br>Automated ADB reverse over USB + UDP beacon Wi-Fi discovery; same protocol for both | Separate USB / Wi-Fi modes<br>(Manual ADB port forwarding if driver fails) | Automatic Wi-Fi / USB<br>(Minimal manual control) | Wi-Fi / USB via background daemon |
-
-### Why Switch from DroidCam to PhoneCam
-- **No Ads or Paid Upgrades**: DroidCam requires purchasing DroidCamX to remove banner ads and unlock resolutions above 480p. PhoneCam is 100% free and open source with 4K and 1080p60 available out of the box.
-- **True 60 FPS Without Dropped Frames**: DroidCam often locks to 30 FPS even over USB. PhoneCam negotiates unlocked Camera2 auto-exposure ranges (`[60,60]`) for fluid 60 FPS motion.
-- **Smart Framing & Gestures**: DroidCam offers no auto-framing or gesture control. PhoneCam includes zero-allocation pure Rust computer vision tracking and 6 OBSBOT-style touchless hand gestures.
-- **Broadcast Audio with VU Meter**: PhoneCam multiplexes uncompressed 48 kHz PCM audio with microsecond lip-sync alignment and an embedded 16-segment LED VU meter.
-
-### Why Switch from Iriun to PhoneCam
-- **No Watermarks**: Free Iriun places an intrusive watermark overlay directly onto your video output. PhoneCam will never overlay watermarks or branding on your feed.
-- **Pure-Black OLED Cooling**: PhoneCam's 0-nit AMOLED display mode shuts off phone display pixels, dropping device temperatures by up to 12°C to prevent thermal throttling and battery degradation during long streaming sessions.
-- **Open Source Security**: Unlike Iriun's opaque proprietary binaries, PhoneCam's complete codebase is open and audited, with strict zero-telemetry and cryptographic replay protection.
-
-### Why Switch from Camo to PhoneCam
-- **Zero Subscription Costs**: Camo costs $4.99/month, $49.99/year, or $99 for a lifetime license to access basic features like 1080p/4K, portrait blur, and color grading. PhoneCam provides all studio-grade Pro features for free.
-- **10x Lighter Resource Consumption**: Camo's desktop software consumes 300 MB to 800+ MB of RAM with multiple background processes. PhoneCam runs as a single native Rust binary utilizing under 65 MB of RAM while actively streaming at 1080p60.
-- **Sub-Millisecond Preview Latency**: While Camo's complex GUI compositing introduces 25–60 ms of preview lag, PhoneCam blits decoded frames directly to GPUI texture memory in under 1 ms.
-- **Touchless Hand Gestures**: Presenters can step away from their desk and control zoom (1.0x, 1.5x, 2.0x, 2.2x macro) or lock tracking using touchless hand gestures—a feature unavailable in Camo.
-
----
-
-## Key Features
-
-- **Unlocked 60 FPS Capture**: Automatic Camera2 `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` negotiation selecting `[60, 60]` or `[30, 60]`, fully unlocking 60 FPS streaming and eliminating legacy 30 FPS locking.
-- **Dynamic Multi-Resolution Probing**: Dynamically queries Android `StreamConfigurationMap` across sensor and hardware encoders, unlocking resolutions up to 4K (`3840x2160` @ 30 FPS), 1080p @ 60 FPS, 720p @ 60 FPS, and 480p @ 60 FPS with live UI badge indicators.
-- **Robust Anti-Flicker Protection**: Complete mains frequency antibanding (`Auto`, `50Hz`, `60Hz`, `Off`) protecting against cyclic AC lighting hum, preserved seamlessly across physical lens transitions.
-- **Adaptive Bitrate & Quality Ladder**: Automatically monitors round-trip latency (`rttUs`), packet drop rates, and phone thermal warnings. Steps smoothly down (`1080p60 -> 1080p30 -> 720p30 -> 480p30`) when congestion strikes, and cautiously scales back up when conditions clear.
-- **Low-Latency Microphone Audio & 16-Segment LED VU Meter**: Direct 16-bit PCM microphone streaming multiplexed with video over `ChannelRole::Audio = 3`, paired with a responsive 16-segment dynamic LED VU level meter in the desktop UI.
-- **Hardware Controls**:
-  - **Smooth Digital Zoom**: Continuously adjustable digital crop.
-  - **Flash / Torchlight**: Remote hardware torch toggle directly from desktop UI.
-  - **Mirror / Flip**: Instant horizontal sensor reflection for natural webcam framing.
-  - **Rotation**: 90°, 180°, and 270° orientation locking.
-- **Dedicated Pro Feature Toggles**: Instant on/off switch toggles for Auto-Framing, Hand Gestures, Audio Streaming, Bokeh Blur, and Color LUTs with configuration persistence in `desktop-settings.json`.
-- **System Tray Integration**: Native Windows notification area tray icon (`Shell_NotifyIcon`) with background persistence on window close, quick mute, and camera toggle.
-- **Accessible & Contrast-Compliant UI**: Full WCAG 2.1 AA 4.5:1 contrast compliance, tabular numbers (`tnum`) for jitter-free instrumentation, and keyboard navigation.
-
----
-
-## Applications & Platform Compatibility
-
-PhoneCam registers directly as a native system virtual camera (`PhoneCam Camera`) across Windows (Windows Media Foundation `MFCreateVirtualCamera` and DirectShow COM) and Linux (`v4l2loopback`). It is verified plug-and-play compatible with all major video conferencing, live streaming, broadcast, and browser platforms without requiring custom plugins or virtual cables:
-
-| Application / Platform | Verified Status | Input Mode | Recommended Settings & Capabilities |
-| :--- | :---: | :---: | :--- |
-| **OBS Studio & Streamlabs** | <img src="https://img.shields.io/badge/Verified-1080p60%20%2F%204K-success.svg" alt="Verified 1080p60 / 4K" /> | Video Capture Device | Add `PhoneCam Camera` as a Video Capture Device. Supports unlocked 60 FPS capture, custom studio color LUTs, and uncompressed 48 kHz PCM audio. |
-| **Zoom Meetings** | <img src="https://img.shields.io/badge/Verified-HD%20Video-success.svg" alt="Verified HD Video" /> | Video & Audio Settings | Select `PhoneCam Camera` under Camera. Full support for Zoom "HD Video" mode, original sound passthrough, portrait bokeh blur, and touchless gesture control. |
-| **Google Meet** | <img src="https://img.shields.io/badge/Verified-1080p%20WebRTC-success.svg" alt="Verified 1080p WebRTC" /> | Browser Video Device | Direct WebRTC camera enumeration across Chrome, Firefox, and Edge. Select 1080p Send Resolution for pristine executive meetings and smart auto-framing. |
-| **Microsoft Teams** | <img src="https://img.shields.io/badge/Verified-Native%20%26%20Web-success.svg" alt="Verified Native & Web" /> | Device Settings | Native support in both Teams Desktop client and Teams Web. Media Foundation driver isolation ensures zero app crashes on disconnect or reconnect. |
-| **Discord** | <img src="https://img.shields.io/badge/Verified-60%20FPS%20Nitro-success.svg" alt="Verified 60 FPS Nitro" /> | Voice & Video Settings | Select `PhoneCam Camera` in Discord Video Settings. Delivers fluid 60 FPS feeds for Discord Nitro streams, game broadcasting, and voice channels. |
-| **Skype & Cisco Webex** | <img src="https://img.shields.io/badge/Verified-Enterprise%20Ready-success.svg" alt="Verified Enterprise Ready" /> | Audio & Video Preferences | DirectShow COM and Media Foundation dual registration guarantees discovery across enterprise conference suites with seqlock-protected stream stability. |
-| **Twitch Studio / YouTube Live** | <img src="https://img.shields.io/badge/Verified-Broadcast%20Ready-success.svg" alt="Verified Broadcast Ready" /> | Webcast / Stream Encoders | Studio-grade 60 FPS video input for Twitch Studio, YouTube Live Web Producer, Prism Live Studio, and vMix with 0-nit OLED battery cooling for marathon streams. |
-| **WebRTC & Browser Cameras** | <img src="https://img.shields.io/badge/Verified-W3C%20WebRTC-success.svg" alt="Verified W3C WebRTC" /> | Chromium / Firefox / Safari | Fully compatible with standard HTML5 `navigator.mediaDevices.getUserMedia()` for StreamYard, Riverside.fm, Whereby, and browser recorders. |
-
-### Application Setup & Usage Notes
-
-- **OBS Studio & Streamlabs**: In OBS Studio, add a new **Video Capture Device** source, select **PhoneCam Camera**, and set *Resolution/FPS Type* to **Custom** -> `1920x1080` at `60 FPS` with `NV12` or `Any` video format. For low-latency audio, add an **Audio Input Capture** source targeting your audio loopback or virtual mic.
-- **Zoom Meetings**: Navigate to *Settings* -> *Video*, select **PhoneCam Camera**, and check **Enable HD** and **Adjust for low light** (or use PhoneCam's native EV bias slider). Hand gestures (like ✋ Lock Tracking or ✌ Toggle Zoom) allow touch-free presentation control during screen shares.
-- **Google Meet**: Open *Settings* -> *Video*, choose **PhoneCam Camera**, and switch *Send resolution (maximum)* to **High definition (720p)** or **Full HD (1080p)**. PhoneCam's anti-flicker filter eliminates fluorescent lighting banding during calls.
-- **Microsoft Teams**: Go to *Settings* -> *Devices* -> *Camera* and select **PhoneCam Camera**. PhoneCam's fail-safe slate mechanism prevents Teams from dropping your video stream or locking the camera device if the phone connection drops momentarily.
-- **Discord**: In *User Settings* -> *Voice & Video*, select **PhoneCam Camera** under *Camera Settings*. Test video to verify the smooth 60 FPS stream, perfect for gaming facecams and community voice channels.
-- **Skype & Cisco Webex**: Enterprise video platforms reliably discover PhoneCam through either the Media Foundation virtual camera or the registered DirectShow COM filter (`PhoneCamVirtualCamera.dll`), ensuring compatibility across older enterprise IT environments.
-- **Twitch Studio & YouTube Live Web Producer**: Select PhoneCam as your primary webcam layer. Combine PhoneCam's **Vibrant Streamer** LUT preset and **0-Nit Pure-Black OLED** mode on your smartphone for hours of continuous high-framerate streaming without phone overheating.
-- **WebRTC & Browser-Based Studios (StreamYard, Riverside.fm, Whereby)**: Modern browsers (Google Chrome, Microsoft Edge, Brave, Mozilla Firefox) automatically expose PhoneCam via standard W3C WebRTC media capture APIs with zero additional browser extensions required.
-
----
-
-## PhoneCam Pro Features
-
-PhoneCam Pro elevates the desktop companion into a studio-grade virtual camera workstation. All pro features run **100% locally on your machine with zero cloud connectivity and zero telemetry**, leveraging in-process SIMD and GPU-accelerated video shaders. Each feature includes an intuitive on/off toggle directly accessible in the desktop GUI:
-
-```mermaid
-flowchart LR
-    subgraph Capture["Android Device (Camera2)"]
-        Sensors["Multi-Lens (0.5x, 1.0x, 3.0x, Front)"]
-        AE60["Unlocked 60 FPS AE Range"]
-        AntiFlicker["Anti-Flicker (50Hz / 60Hz / Auto)"]
-        OLED["Pure-Black OLED Display"]
-        AudioRec["PCM 48kHz Mic Stream"]
-    end
-    
-    subgraph Transport["Unified Link (USB/Wi-Fi)"]
-        TCP["TCP 48721 (Video + Audio + Control)"]
-    end
-
-    subgraph Processing["PhoneCam Pro Engine (Single Process)"]
-        Dec["In-Process openh264 Decode"]
-        CVFace["CV Face Tracker (Zero Allocation)"]
-        CVGesture["OBSBOT Hand Gestures (6 Gestures)"]
-        Bokeh["Portrait Bokeh Blur (Hermite Feather)"]
-        LUT["5 Studio Color LUT Presets"]
-        VUMeter["Audio Engine (16-Segment LED VU)"]
-    end
-
-    subgraph Output["Outputs"]
-        VCam["Windows Virtual Camera (OBS/Zoom/Meet)"]
-        UI["GPUI D3D11 Stage (Live Gesture HUD)"]
-        Speaker["Virtual Mic / Playback"]
-    end
-
-    Sensors --> AE60 --> AntiFlicker --> TCP
-    AudioRec --> TCP
-    OLED -.-> Sensors
-    TCP --> Dec
-    Dec --> CVFace --> CVGesture --> Bokeh --> LUT
-    LUT --> VCam
-    LUT --> UI
-    TCP --> VUMeter --> Speaker
-```
-
-For comprehensive technical specifications and math models, see [docs/pro-features.md](docs/pro-features.md).
-
-### Real Computer Vision Face Detection & Smart Auto-Framing
-- **In-Process Pure Rust Computer Vision**: Engineered from scratch in pure Rust (`phonecam-media::face_detect`) with zero external machine learning frameworks, zero C/Python runtime wrappers, and zero bulky ONNX/TensorFlow runtimes.
-- **Zero Heap Allocations on 60 FPS Hot Path**: Operates with zero dynamic memory allocation (`Vec::new()`, `String`, `format!()`) inside active 60 FPS rendering cycles using pre-allocated static scratch buffers (`MAX_GRID_W = 160`, `MAX_GRID_H = 120`, `MAX_GRID_CELLS = 19200`).
-- **Skin Chrominance & Geometric Verification**: Analyzes downscaled BGRA frames in normalized YCbCr color space. Contiguous candidate clusters undergo aspect-ratio boundary filtering and eye/mouth Haar-like contrast checks to eliminate false positives.
-- **Cinematic Pan-Tilt-Zoom (PTZ) Smoothing**:
-  - **Deadband Hysteresis**: Applies a 1.5% spatial deadband to eliminate micro-jitter caused by subtle head movements or breathing.
-  - **Temporal Exponential Filter**: Smooths camera coordinates via dual-axis exponential interpolation:
-    $$\vec{C}_{t} = \vec{C}_{t-1} + (\vec{T}_{t} - \vec{C}_{t-1}) \cdot \alpha$$
-    where default smoothing factor $\alpha = 0.12$.
-  - **Aspect-Ratio Preserving Crop**: Computes dynamic crop sub-rectangles with even-pixel boundary alignment (`& !1`) across zoom levels from $1.0\times$ to $2.5\times$.
-- **Tracking Lock / Pause State**: Allows freezing current camera crop and framing in place (via ✋ Open Palm gesture or UI button) so presenter movement does not alter framing during whiteboarding or demonstrations.
-- **Dedicated GUI On/Off Toggle**: Controlled via a 1-click switch in the desktop Capture and Preferences panels (`SideEffect::SetAutoFraming(bool)`), persisted in `desktop-settings.json`.
-
-### OBSBOT-Style Hand Gesture Recognition
-- **Touchless Camera Control**: Control camera framing, zoom, and tracking modes completely touch-free from across the room using natural hand gestures.
-- **Pure Rust High-Precision Classifier**: Evaluates hand candidate contours, finger peak prominence, valley depth thresholds, and palm base solidity ratio with zero heap allocations on the active video stream.
-- **Debounce & Refractory Cooldown**: Built-in temporal debounce filter (requiring consecutive matching frames) and refractory cooldown timer prevent erratic accidental triggers.
-- **Full 6-Gesture Repertoire**:
-  | Gesture | Icon | Action Trigger | Camera Behavior & Presentation Use |
-  | :--- | :---: | :--- | :--- |
-  | **Open Palm** | ✋ | **Lock / Unlock Tracking** | Freezes auto-framing tracking in place. Presenter can step aside without the camera chasing. |
-  | **Peace / V-Sign** | ✌ | **Toggle Zoom (1.0x $\leftrightarrow$ 2.0x)** | Toggles smoothly between wide-angle (1.0x) and tight presenter close-up (2.0x). |
-  | **Pointing Up (Index)** | ☝ | **Medium Zoom (1.5x)** | Smoothly animates zoom to 1.5x, ideal for balanced head-and-shoulders framing. |
-  | **Shaka / Call** | 🤙 | **Reset Framing & Zoom** | Instantly recenters coordinates to `(0.50, 0.50)` and returns zoom to 1.0x uncropped. |
-  | **Pinch / OK** | 🤏 | **Close-Up Macro Focus (2.2x)** | Engages 2.2x close-up macro zoom for physical product demos, notes, or detailed items. |
-  | **Thumbs Up** | 👍 | **Confirm / Toggle Zoom** | Quick confirmation feedback and alternative zoom toggle. |
-- **Real-Time On-Screen HUD Gesture Chips**: High-visibility translucent chips render atop the preview viewport during gesture recognition (e.g., `✋ Tracking Locked`, `✌ V-Sign: Zoom 2.0x`, `🤙 Shaka: Framing & Zoom Reset`, `☝ Index: 1.5x Zoom`, `🤏 Pinch: 2.2x Macro`).
-- **Interactive Guide & Customization Card**: Dedicated "Hand Gesture Controls Guide & Customization" card in Capture and Preferences panels providing visual reference cards, action descriptions, and a global on/off toggle.
-
-### Low-Latency Audio Streaming with 16-Segment LED VU Meter
-- **Microphone Array Passthrough**: Streams pristine, synchronized 16-bit uncompressed PCM audio (48,000 Hz or 16,000 Hz fallback) directly from the phone's onboard microphones to your PC.
-- **Unified Multiplexed TCP Channel**: Audio packets flow across `ChannelRole::Audio = 3` over the single TCP socket (`48721`), preserving sub-millisecond timestamp alignment (`timestamp_us`) with H.264 video to guarantee lip-sync.
-- **16-Segment Broadcast-Grade LED VU Meter**:
-  - Dynamically calculates root-mean-square (RMS) energy and decibel levels (dBFS).
-  - **10 Green Segments (0–9)**: Safe nominal voice levels (-60 dB to -12 dB).
-  - **4 Amber Segments (10–13)**: Optimal broadcast headroom (-12 dB to -3 dB).
-  - **2 Red Segments (14–15)**: Digital clipping indicator (> -3 dB).
-  - Embedded directly into Capture and Diagnostics panels with active channel telemetry.
-- **Dedicated GUI On/Off Toggle**: Fast toggle switch in desktop Capture/Setup panels and Android UI (`SideEffect::SetStreamAudio(bool)`).
-
-### Unlocked 60 FPS Camera2 & Robust Anti-Flicker
-- **Unlocked 60 FPS Capture**: Automatically inspects `CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` to select exact target ranges with `upper == 60` (e.g. `[60, 60]` or `[30, 60]`). Configures `MediaCodec` with both `KEY_FRAME_RATE = 60` and `KEY_CAPTURE_RATE = 60`, completely resolving legacy 30 FPS locking.
-- **Mains Frequency Anti-Flicker (Anti-Banding)**:
-  - Dynamically queries `CONTROL_AE_AVAILABLE_ANTIBANDING_MODES` and allows selecting `Auto`, `50Hz` (Europe, Asia, Australia), `60Hz` (Americas, Japan), or `Off`.
-  - Eliminates rolling dark hum bands caused by AC fluorescent or LED room lights.
-  - Antibanding state is preserved and automatically re-asserted when switching physical lenses or reconnecting streams without video interruption.
-
-### Dynamic Resolution Capabilities
-- **Dynamic Hardware Sensor & Encoder Probing**: Rather than hardcoding fixed resolutions, PhoneCam dynamically queries Android `StreamConfigurationMap` across `MediaRecorder`, `Surface`, and `CodecCapabilities`.
-- **Dynamic Presets Up to 4K**: Dynamically detects and advertises supported device resolutions up to 4K (`3840x2160` @ 30 FPS), 1080p @ 60 FPS, 720p @ 60 FPS, and 480p @ 60 FPS.
-- **Interactive UI Resolution Badges**: Desktop Capture panel dynamically renders selectable resolution cards with aspect ratio and detailed resolution chips (`res_detail`), adapting automatically to each phone's hardware limits.
-
-### Dedicated On/Off Toggles for All Pro Features
-- **Independent Modular Control**: Every Pro feature includes an independent dedicated switch toggle in the desktop UI:
-  - Auto-Framing (Face Tracking) Toggle
-  - OBSBOT Hand Gesture Recognition Toggle
-  - Stream Microphone Audio Toggle
-  - Portrait Bokeh Background Blur Toggle (+ Intensity presets & blend slider)
-  - Studio Color LUT Presets (+ None/Off bypass option)
-  - Pure-Black OLED Ambient Mode Selector
-- **Persistent State**: All toggles and parameters are automatically saved to `%APPDATA%\PhoneCam\desktop-settings.json` and restored seamlessly on startup.
-
-### Portrait Bokeh Background Blur
-- **Cinematic Depth of Field**: Softens cluttered home offices or distracting backgrounds, rendering an aesthetic optical lens blur while keeping the presenter in razor-sharp focus.
-- **Separable 2D Box Blur with Hermite Feathering**: Utilizes a two-pass horizontal and vertical box blur combined with an elliptical subject mask feathered via smooth cubic Hermite polynomial interpolation ($3t^2 - 2t^3$) to prevent unnatural haloing around shoulders and hair.
-- **3 Calibrated Intensity Levels**: Choose between **Soft** (radius: 3), **Studio** (radius: 6), and **Dreamy** (radius: 10) presets, plus an interactive blend intensity slider (0% to 100%).
-- **Dedicated GUI On/Off Toggle**: Toggle on/off instantly with persistent state saved in `desktop-settings.json`.
-
-### Studio Color LUT Presets
-- **In-Process Real-Time Color Grading**: Transforms video color dynamics in-place on premultiplied BGRA pixel buffers with zero dynamic allocations on the 60 FPS hot path.
-- **5 Calibrated Studio Presets + Off Toggle**:
-  - **Natural**: True-to-life passthrough sensor calibration.
-  - **Warm Studio**: Enhanced warm spectrum (+red/warm warmth, +10% contrast) for flattering skin tones under home desk lighting.
-  - **Cool Corporate**: Crisp blue tones, lifted shadow detail, and clean whites for executive videoconferences.
-  - **Vibrant Streamer**: +35% saturation punch with ITU-R BT.601 luma preservation for vivid gaming backdrops and creator streams.
-  - **Monochrome**: High-contrast, classic black-and-white luminance filter.
-  - **None / Off**: Clean bypass option to disable color grading and output raw sensor tones.
-
-### Pure-Black OLED Ambient Display Mode
-- **0-Nit True-Black Pixel Shutoff**: For AMOLED and OLED smartphones, the phone screen renders `#000000` (100% black) across the entire display. Pixels physically turn off, drastically reducing phone temperatures by up to **8°C–12°C** and eliminating nighttime screen glare.
-- **Anti-Burn-In Protection**: Features a dim, minimalist clock at 20% white opacity (`#33FFFFFF`), a battery level indicator, and a discrete `● LIVE` badge. The coordinates subtly shift every minute to eliminate static pixel burn-in.
-- **Tap-to-Peek Navigation**: Single tap on the black screen reveals full viewfinder controls and status readouts; a second tap restores pure-black ambient stillness.
-- **Selectable Screen Modes**: Choose between **Keep Screen On**, **Dim Screen**, or **Pure-Black Ambient**.
-
-### Multi-Lens Optical Camera Switching
-- **Physical Multi-Lens Enumeration**: Automatically detects and enumerates the physical rear and front camera sensors on multi-camera Android devices.
-- **One-Click Instant Switching**: Switch seamlessly between lenses without interrupting the active video stream:
-  - **Ultra-Wide (0.5x)**: Wide field of view (<24mm equivalent) for boardrooms, group meetings, and full-room capture.
-  - **Wide (1.0x)**: Primary main camera sensor (24mm–50mm equivalent) for standard desktop framing.
-  - **Telephoto (3.0x)**: Dedicated optical zoom lens (>50mm equivalent) for tight, flattering portrait framing without digital degradation.
-  - **Front**: Front-facing selfie camera for phone-facing setups.
-- **Interactive UI Pills**: Dedicated lens selector pills (`0.5x`, `1.0x`, `3.0x`, `Front`) in the desktop Capture panel.
-
-### Pro Manual Camera Controls
-- **Direct Sensor-Level Manual Overrides**: Fine-tune camera parameters directly from the desktop companion via Android Camera2 hardware hooks:
-  - **Exposure Compensation (EV)**: Fine-grain exposure bias adjustment slider clamped to your physical camera sensor's hardware limits (`CONTROL_AE_COMPENSATION_RANGE`).
-  - **Manual Kelvin White Balance**: Toggle between Auto White Balance (AWB) and precision manual color temperature adjustment (2000K to 8000K) to eliminate unflattering color casts.
-  - **Manual Diopter Focus (Macro Focus)**: Switch from continuous autofocus (AF) to precision manual diopter focal distance (0.0 to 10.0+ diopters) for razor-sharp product close-ups and macro framing.
-  - **Anti-Flicker Mode**: Selectable `Auto`, `50Hz`, or `60Hz` mains frequency anti-banding to eliminate rolling light hum under fluorescent or LED lighting.
-
-### USB Auto-Connect & ADB Background Supervisor
-- **Frictionless Zero-Click Connection**: A dedicated background supervisor continuously monitors USB device attachment events.
-- **Automated ADB Port Forwarding**: Automatically runs `adb reverse tcp:48721 tcp:48721` the moment your device is plugged in with USB debugging enabled.
-- **Auto-Connect Toggle**: With "Auto-Connect on USB Plug" enabled in Preferences, plugging in your phone starts live streaming immediately without requiring manual clicks on the phone or PC.
-- **Minimize to Tray**: Window close minimizes to the system notification area tray (`Shell_NotifyIcon`), ensuring the virtual camera feed remains uninterrupted for OBS, Discord, and Zoom.
-
----
-
-## Dual Connection Modes
-
-PhoneCam supports both wireless freedom and tethered reliability using a single unified protocol:
-
-### 1. USB Cable (Automatic ADB Reverse)
-- **Zero Configuration**: Connect your phone via USB with USB Debugging enabled. PhoneCam automatically detects the connected device and runs `adb reverse tcp:48721 tcp:48721`.
-- **Ultra-Low Latency**: Packets flow through the USB hardware bus over virtual loopback, immune to Wi-Fi channel crowding, packet loss, or radio interference.
-- **Simultaneous Charging**: Keeps the mobile phone fully charged during multi-hour live streams or conferences.
-
-### 2. Wi-Fi Local Area Network (LAN)
-- **Automatic UDP Beacon Discovery**: The desktop broadcasts an encrypted UDP beacon on port `48720`. The Android app detects the desktop instantly when connected to the same Wi-Fi subnet.
-- **QR Code Pairing**: Scan a cryptographically secure, one-time pairing QR code rendered on the desktop stage to establish an authenticated pairing in seconds.
-
-### Pairing & Live Streaming Handshake
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Phone as Android App
-    participant Desktop as PhoneCam Desktop
-    participant VCam as Media Foundation Virtual Camera
-
-    Note over Phone,Desktop: Phase 1: Discovery & Pairing
-    Desktop->>Phone: UDP 48720 Beacon broadcast (nonce, port, fingerprint)
-    Phone->>Desktop: TCP 48721 Connect (Client Hello)
-    Desktop-->>Phone: Challenge Nonce (Server Nonce)
-    Phone->>Desktop: Pair Request (HMAC-SHA256 + 128-bit One-Time QR Token)
-    Desktop-->>Phone: Pair Response (Session Secret + Confirmation)
-
-    Note over Phone,Desktop: Phase 2: Live Video Streaming Handshake
-    Phone->>Desktop: Start Stream Request (Codec: H.264, Resolution: 1080p60)
-    Desktop-->>Phone: Stream Ack & Bitrate Parameters
-    loop 60 FPS Capture & Decode
-        Phone->>Desktop: H.264 Annex-B NAL Units (TCP 48721)
-        Desktop->>Desktop: Single In-Process Decode (openh264)
-        Desktop->>VCam: Atomic Seqlock Write (framebuffer-v2.bin NV12)
-        Desktop->>Desktop: Blit Premultiplied BGRA to GPUI Surface
-    end
-
-    Note over Phone,Desktop: Phase 3: Adaptive Quality Feedback
-    Desktop-->>Phone: Stats Ack (rttUs, packet drops, thermal state)
-    opt Network Jitter or High Thermal Load
-        Desktop->>Phone: Set Video Quality (Step down rung: 1080p60 -> 1080p30)
-        Phone-->>Desktop: Quality Changed Confirmation
-    end
-```
-
----
-
-## Network Protocol & Environment Variables
-
-| Port / Interface | Protocol | Direction | Purpose | Notes |
-| :--- | :--- | :--- | :--- | :--- |
-| **48720** | UDP | Phone ⇄ Desktop | LAN Discovery Beacon | Periodic presence beacon broadcast |
-| **48721** | TCP | Phone → Desktop | Primary Service & Video Stream | Length-prefixed JSON control, H.264 video, PCM audio |
-| **48723** | TCP | *Eliminated* | Legacy Loopback IPC | Removed in Rust rewrite; no longer used |
-
-### Runtime & Testing Environment Variables
-
-PhoneCam respects standard environment variables across the runtime, test harness, and build scripts:
-
-| Variable | Scope | Description | Default Fallback |
-| :--- | :--- | :--- | :--- |
-| `PHONECAM_PORT` | Runtime | Port override for desktop TCP listener & UDP broadcast | `48721` (TCP) / `48720` (UDP) |
-| `ANDROID_SERIAL` | Testing / Tooling | Target Android device serial for ADB reverse and test harness | Auto-detected via `adb get-serialno` or first device in `adb devices` |
-| `PHONECAM_ADB_PATH` | Testing / Tooling | Custom path to Android Debug Bridge binary | Searches system `PATH`, falls back to relative `dist/unpacked/adb.exe` |
-| `PHONECAM_ARTIFACT_DIR`| Testing | Destination directory for test screenshots & video frame dumps | System temp directory (`%TEMP%\phonecam-artifacts` or `/tmp/phonecam-artifacts`) |
-
-#### Port Override Example
-If another application or legacy service binds to port 48721, PhoneCam can be directed to bind an alternate port:
-```powershell
-$env:PHONECAM_PORT = 48791
-.\phonecam.exe
-```
-When `PHONECAM_PORT` is specified, the QR pairing code and UDP beacon automatically advertise the updated port to incoming clients.
-
----
-
-## System Requirements
-
-### Desktop (Receiver & Virtual Camera)
-- **Windows 11 (Build 22621+)**: Native Windows Media Foundation Virtual Camera (`MFCreateVirtualCamera`).
-- **Windows 10 (Version 1809+, Build 17763+)**: Full desktop companion app, preview, audio, hardware controls, and DirectShow COM Virtual Camera driver (`PhoneCamVirtualCamera.dll` via `phonecam-vcam-register.exe`).
-- **Linux (Ubuntu/Debian, Fedora, Arch Linux)**: Supported via native build and `v4l2loopback` virtual video device.
-- **macOS (Apple Silicon & Intel x86_64)**: Supported via native build (Metal backend) and CoreMediaIO DAL plugin / Camera Extension.
-- **Processor & GPU**: 64-bit Intel, AMD, or ARM64 processor; DirectX 11 / Metal / Vulkan compatible GPU.
-- For detailed multi-platform architecture and build matrices, see [docs/platform-support.md](docs/platform-support.md).
-
-### Android Phone (Sender & Camera)
-- **Operating System**: Android 8.0 (Oreo, API Level 26) or newer.
-- **Architectures**: arm64-v8a (primary), armeabi-v7a (legacy 32-bit), x86_64 (emulators).
-- **Camera Hardware**: Camera2 API support with hardware H.264 `MediaCodec` encoder.
-- **Permissions**: Camera (`android.permission.CAMERA`), Local Network / Wi-Fi state, Foreground Service.
-
----
-
-## Installation & Quick Start (Pre-Built Binaries)
-
-For everyday users who do not need to compile from source, pre-built binary releases are available on the [GitHub Releases](https://github.com/primahagantha/phonecam/releases/latest) page.
-
-### 1. Android APK Installation
-1. Download **`PhoneCam.apk`** (Universal bundle) or the architecture-specific APK (`PhoneCam-arm64-v8a.apk` for modern phones) from the [Latest Release](https://github.com/primahagantha/phonecam/releases/latest).
-2. Install the APK on your Android device (ensure "Install unknown apps" permission is granted to your browser/file manager).
-3. Open PhoneCam and grant Camera and Local Network permissions.
-
-### 2. Windows Desktop Installation
-1. Download **`PhoneCam-Setup-1.2.1.exe`** (or portable ZIP `PhoneCam-v1.2.1-windows-x64.zip`).
-2. Run the installer and launch PhoneCam.
-3. **Virtual Camera Activation**: In the PhoneCam app, toggle the Virtual Camera switch. The application automatically triggers a native Windows UAC elevation prompt to register `PhoneCamVirtualCamera.dll` into the system registry without requiring manual terminal commands. Once approved, "PhoneCam Camera" is immediately enumerable in OBS Studio, Google Meet, Zoom, and Discord.
-
-### 3. Linux Desktop Installation & Virtual Camera
-Pre-compiled Linux binaries are packaged as standalone tarballs (`PhoneCam-v1.2.1-linux-x64.tar.gz`). Linux uses `v4l2loopback` for the virtual video device (`/dev/video10`).
-
-#### Automated Setup (One-Click)
-Run our automated setup script to install all development and runtime dependencies, load `v4l2loopback`, configure boot persistence, and apply non-root udev access rules:
-```bash
-git clone https://github.com/primahagantha/phonecam.git
-cd phonecam
-chmod +x scripts/setup-linux.sh
-./scripts/setup-linux.sh
-```
-
-#### Manual Package Prerequisites by Distribution
-If you prefer installing dependencies manually:
-
-- **Ubuntu / Debian / Linux Mint**:
-  ```bash
-  sudo apt-get update && sudo apt-get install -y --no-install-recommends \
-      build-essential pkg-config libfontconfig1-dev libfreetype6-dev \
-      libasound2-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev \
-      libxrandr-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev \
-      libwayland-dev libvulkan-dev libssl-dev v4l2loopback-dkms v4l-utils android-tools-adb
-  ```
-
-- **Fedora / RHEL / CentOS Stream**:
-  ```bash
-  sudo dnf install -y \
-      gcc gcc-c++ pkgconf-pkg-config fontconfig-devel freetype-devel \
-      alsa-lib-devel libX11-devel libXcursor-devel libXrandr-devel \
-      libXi-devel libxkbcommon-devel libxkbcommon-x11-devel wayland-devel \
-      vulkan-loader-devel openssl-devel v4l2loopback v4l-utils android-tools
-  ```
-
-- **Arch Linux / Manjaro**:
-  ```bash
-  sudo pacman -S --needed --noconfirm \
-      base-devel pkgconf fontconfig freetype2 alsa-lib libx11 \
-      libxcursor libxrandr libxi libxkbcommon libxkbcommon-x11 \
-      wayland vulkan-icd-loader openssl v4l2loopback-dkms v4l-utils android-tools
-  ```
-
-#### Virtual Camera Module Configuration (`v4l2loopback`)
-```bash
-# 1. Load module with device label and fixed device node
-sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="PhoneCam" exclusive_caps=1
-
-# 2. Persist module on boot:
-echo "v4l2loopback" | sudo tee /etc/modules-load.d/v4l2loopback.conf
-echo 'options v4l2loopback devices=1 video_nr=10 card_label="PhoneCam" exclusive_caps=1' | sudo tee /etc/modprobe.d/v4l2loopback.conf
-
-# 3. Allow non-root access for OBS, Chrome, Meet, and Zoom:
-sudo usermod -aG video,plugdev $USER
-echo 'KERNEL=="video10*", SUBSYSTEM=="video4linux", ATTR{name}=="PhoneCam*", MODE="0666", GROUP="video"' | sudo tee /etc/udev/rules.d/99-phonecam-vcam.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
+Key invariants (see [docs/architecture.md](docs/architecture.md) for full details):
+- **Single-decode pipeline**: H.264 Annex-B is decoded once per frame via `openh264`, avoiding dual-decode CPU overhead and preview/camera drift.
+- **Resilient virtual camera**: On disconnect, `phonecam-framebus` holds the last frame for 3 seconds before publishing a disconnected NV12 slate so OBS/Zoom/Meet never lose the camera device.
+- **Local-only security**: Zero cloud calls or telemetry. Pairing uses a 128-bit single-use QR token (5-minute TTL), persistent 256-bit secrets (`%APPDATA%\PhoneCam\devices.json`), `HMAC-SHA256`, monotonic replay nonces, and hex-token log redaction.
+- **Controls & Labs**: Supports hardware camera switching, manual EV / Kelvin WB / diopter focus, anti-flicker (`50Hz`/`60Hz`/`Auto`), mirror/rotation, pure-black OLED phone mode, and experimental local **Labs** toggles (heuristic YCbCr auto-framing, hand gestures, portrait bokeh, color LUTs). See [docs/pro-features.md](docs/pro-features.md).
 
 ---
 
 ## Building from Source
 
 ### Prerequisites
+- Rust toolchain (`1.85+` stable)
+- **Windows 11 (x64)**: MSVC Build Tools + Windows SDK (for GPUI / `windows` crate) and [NSIS](https://nsis.sourceforge.io/) (optional, for installer packaging)
+- **Android**: JDK 17, Android SDK (API 34), Android NDK + `cargo-ndk` (if rebuilding `.so` JNI libs)
 
-Ensure the following toolchains are installed on your workstation:
-
-1. **Rust Toolchain**: Rust 1.85 or newer (`stable-x86_64-pc-windows-msvc`).
-   ```powershell
-   rustup default stable-x86_64-pc-windows-msvc
-   ```
-2. **Visual Studio C++ Build Tools**: Visual Studio 2022 with the "Desktop development with C++" workload and Windows 11 SDK (10.0.22621.0+).
-3. **Nullsoft Scriptable Install System (NSIS)**: Version 3.08+ (needed for installer generation). Add `makensis.exe` to your system `PATH`.
-4. **Java Development Kit (JDK)**: OpenJDK 17 or Oracle JDK 17 (`JAVA_HOME` set).
-5. **Android SDK & NDK**:
-   - Android SDK Command-line Tools / Build Tools (34.0.0+).
-   - Android NDK (r26c or r28+, e.g. `28.2.13676358`).
-   - Set environment variables `ANDROID_HOME` and `ANDROID_NDK_HOME`.
-6. **cargo-ndk**:
-   ```powershell
-   cargo install cargo-ndk
-   ```
-   Add Android Rust targets:
-   ```powershell
-   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
-   ```
-
----
-
-### 1. Windows Desktop Application
-
-To compile the native Windows desktop executable in release mode:
-
+### Desktop (Windows)
 ```powershell
-# Clone the repository
-git clone https://github.com/phonecam/phonecam.git
-cd phonecam
-
-# Run workspace unit and integration tests (230+ tests)
+cargo check --workspace
 cargo test --workspace
-
-# Build the release binary
-cargo build --release -p phonecam-app
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p phonecam-app
 ```
-The compiled executable will be located at:
-`target\release\phonecam.exe`
 
----
-
-### 2. Packaging the Windows NSIS Installer
-
-To generate the standalone `PhoneCam-Setup-1.2.1.exe` installer:
-
+To package the release binary and NSIS installer:
 ```powershell
-# 1. Ensure dist\unpacked contains the required binaries:
-#    - phonecam.exe (from target\release\phonecam.exe)
-#    - PhoneCamVirtualCamera.dll
-#    - phonecam-vcam-register.exe
-#    - adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll
-#    - icon.ico
-
-Copy-Item target\release\phonecam.exe dist\unpacked\phonecam.exe
-
-# 2. Compile installer using NSIS
+cargo build --release -p phonecam-app
+Copy-Item target\release\phonecam.exe dist\unpacked\phonecam.exe -Force
 makensis scripts\installer.nsi
 ```
-The completed installer will be output to:
-`dist\installer\PhoneCam-Setup-1.2.1.exe`
 
-#### Standalone Portable Release
-To run PhoneCam portably without system-wide installation:
-1. Extract `dist\PhoneCam-v1.2.1-windows-x64.zip` (or navigate to `dist\unpacked\`).
-2. Run `run-portable.bat` to launch `phonecam.exe` with bundled local dependency checks.
-3. For virtual camera registration in OBS/Zoom/Meet, run `install-virtual-camera.bat` as Administrator.
-
-#### Release Gatekeeper & Automated Changelog
-PhoneCam includes an automated release gate so normal commits do not accidentally publish releases:
-- **Release Gate (`release-gate.json`)**: Default is `"release_enabled": false`. Commits to `master` build and test across CI, but will not publish a public release.
-- **Enabling a Release**: Set `"release_enabled": true` in `release-gate.json` and push. GitHub Actions automatically executes the multi-platform matrix (Windows NSIS + portable ZIP, Linux standalone tarball, Android multi-ABI APKs) and publishes the GitHub release.
-- **Contributor Transparency**: Every release automatically generates changelogs grouped by category (Features, Fixes, Performance, Refactor, Docs, CI) and credits all contributors with their live GitHub avatar profiles.
-
----
-
-### 3. Android Native Rust JNI Core
-
-The Android app utilizes `crates/phonecam-android-core` for high-performance JNI operations. Compile the cross-platform native `.so` shared libraries:
-
+### Android & JNI Core
 ```powershell
-# Compiles JNI shared libraries for arm64-v8a, armeabi-v7a, and x86_64
+# Optional: rebuild Rust JNI .so libraries for arm64-v8a, armeabi-v7a, x86_64
 .\scripts\build-android-core.ps1
-```
-This script automatically compiles the native code and populates:
-`apps\android\app\src\main\jniLibs\<ABI>\libphonecam_android_core.so`
 
----
-
-### 4. Android APK
-
-Compile the Android APK using Gradle:
-
-```powershell
+# Build and test Android APK
 cd apps\android
-
-# Run JVM and Android unit tests
 .\gradlew.bat test
-
-# Build debug APK
-.\gradlew.bat assembleDebug
-
-# Build production release APK
 .\gradlew.bat assembleRelease
 ```
-The generated APKs will be placed in `apps\android\app\build\outputs\apk\release\`:
-- `app-arm64-v8a-release.apk` (~2.36 MB, optimized for 64-bit ARM)
-- `app-armeabi-v7a-release.apk` (~2.14 MB, optimized for 32-bit ARM)
-- `app-x86_64-release.apk` (~2.34 MB, optimized for x86_64 emulators)
-- `app-universal-release.apk` (~3.75 MB, universal bundle containing all native ABIs, copied to `dist\PhoneCam.apk`)
 
 ---
 
-### 5. Linux Desktop Application
+## Workspace Layout
 
-Once the Linux prerequisites are installed (or after running `./scripts/setup-linux.sh`):
-
-```bash
-# Run workspace core, protocol, and media tests
-cargo test -p phonecam-core -p phonecam-media -p phonecam-protocol -p phonecam-android-core
-
-# Build release desktop binary
-cargo build --release -p phonecam-app
-```
-The compiled Linux executable will be located at:
-`target/release/phonecam`
-
----
-
-## Testing & Quality Assurance
-
-PhoneCam maintains an extensive test suite across Rust crates and Android components, ensuring absolute stability on the high-throughput video hot path.
-
-### Automated Workspace Tests
-Run unit, protocol wire-format, and integration tests across all 7 workspace crates:
-```powershell
-# Run full workspace test suite (230+ tests across 7 crates)
-cargo test --workspace
-
-# Run individual crate test suites
-cargo test -p phonecam-protocol
-cargo test -p phonecam-framebus
-cargo test -p phonecam-media
-cargo test -p phonecam-core
-cargo test -p phonecam-ui
-cargo test -p phonecam-app --test end_to_end
-```
-
-### Android JVM Unit Tests
-Test Camera2 state machine, physical lens detection, and JNI bindings without needing an emulator:
-```powershell
-cd apps\android
-.\gradlew.bat test
-cd ..\..
-```
-
-### Physical Live Device Test Suite
-PhoneCam includes an automated end-to-end physical device verification suite (`crates/phonecam-app/tests/live_device_test.rs`). It connects to a real physical phone over USB/ADB, starts the camera, verifies H.264 stream decoding, drives the OLED ambient mode, switches physical camera lenses, exercises manual exposure/white balance/focus, toggles audio streaming, tests AI Color LUTs and Portrait Blur, and captures verification screenshots.
-
-```powershell
-# Run the live physical device test suite
-cargo test -p phonecam-app --test live_device_test -- --ignored --nocapture
-```
-
-### Environment Variables for Testing
-The live device test suite is 100% generic and accepts configuration via environment variables:
-
-- **`ANDROID_SERIAL`**: Target device serial. If not specified, the suite runs `adb get-serialno` or parses `adb devices` to target the connected phone. If no physical phone is connected, the test skips gracefully without failing CI:
-  ```powershell
-  $env:ANDROID_SERIAL = "your_device_serial"
-  ```
-- **`PHONECAM_ADB_PATH`**: Path to the `adb` executable. If unset, checks `PATH` followed by `dist\unpacked\adb.exe`:
-  ```powershell
-  $env:PHONECAM_ADB_PATH = "C:\Android\platform-tools\adb.exe"
-  ```
-- **`PHONECAM_ARTIFACT_DIR`**: Output directory for captured test frames and phone screenshots. Defaults to `%TEMP%\phonecam-artifacts`:
-  ```powershell
-  $env:PHONECAM_ARTIFACT_DIR = "C:\TestArtifacts\phonecam"
-  ```
-
-### Static Analysis, Linting & Formatting
-```powershell
-# Code formatting check
-cargo fmt --all -- --check
-
-# Strict Clippy lint check (zero warnings tolerated)
-cargo clippy --workspace --all-targets -- -D warnings
-```
+| Path | Role |
+| :--- | :--- |
+| `crates/phonecam-protocol` | Binary framing, control/video messages, `HMAC-SHA256` & log redaction |
+| `crates/phonecam-framebus` | Windows shared-memory 68-byte seqlock ring & NV12 writer/reader |
+| `crates/phonecam-media` | `openh264` decoder, YUV/NV12/BGRA conversion, Labs CV & effects |
+| `crates/phonecam-core` | TCP/UDP transport, pairing/session state machine, adaptive quality ladder |
+| `crates/phonecam-ui` | GPUI desktop views, preview stage, control rail, VU meter |
+| `crates/phonecam-app` | Windows binary, Win32 system tray, ADB supervisor, runtime orchestration |
+| `crates/phonecam-android-core` | Rust JNI library (`cdylib`) shared with the Android app |
+| `apps/android` | Kotlin + Jetpack Compose Android client (Camera2 + MediaCodec) |
+| `docs/` | [Architecture](docs/architecture.md), [Platform Support](docs/platform-support.md), [Pro & Labs Features](docs/pro-features.md) |
 
 ---
 
-## Virtual Camera Registration
+## Troubleshooting
 
-### Windows (Automatic Elevation & CLI)
-On Windows 11 and Windows 10, PhoneCam automatically elevates via native Win32 UAC when toggled in the desktop GUI. If you prefer to register or inspect the COM server via CLI, open an elevated (Administrator) terminal:
-
-```powershell
-# Register the virtual camera driver
-.\dist\unpacked\phonecam-vcam-register.exe --register
-
-# Verify registration and Media Foundation source enumeration
-.\dist\unpacked\phonecam-vcam-register.exe --status
-
-# To unregister:
-.\dist\unpacked\phonecam-vcam-register.exe --unregister
-```
-
-### Linux (v4l2loopback Device Node)
-On Linux, the virtual camera is mediated by the `v4l2loopback` kernel module:
-```bash
-# Verify active loopback device
-v4l2-ctl --device=/dev/video10 --all
-
-# List video capture devices
-v4l2-ctl --list-devices
-```
+- **Wi-Fi discovery / pairing fails**: Ensure PC and phone are on the same subnet (guest Wi-Fi / client isolation blocks UDP `48720` and TCP `48721`). Allow `phonecam.exe` through Windows Defender Firewall on Private networks, or scan the QR code directly.
+- **USB not detected**: Enable **Developer options -> USB debugging** on Android and accept the RSA debugging prompt on the phone screen.
+- **Camera missing in Zoom/OBS/Discord**: Verify registration as Administrator via `phonecam-vcam-register.exe --status` (or re-run `install-virtual-camera.bat`). Requires Windows 11 Build `22621+`.
+- **Port conflict (`48721`)**: Override the service port via `$env:PHONECAM_PORT = "48791"`.
 
 ---
 
-## Repository & Workspace Crates
+## Contributing & License
 
-The PhoneCam repository is organized as a unified Rust cargo workspace:
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md). Commits follow [Conventional Commits](https://www.conventionalcommits.org/).
 
-```
-phonecam/
-├── apps/
-│   └── android/                   # Android Camera2 application (Kotlin + Gradle)
-├── crates/
-│   ├── phonecam-protocol/         # Frozen wire contract: framing, crypto HMAC, JSON models
-│   ├── phonecam-framebus/         # Shared memory seqlock writer & NV12 pitch conversion
-│   ├── phonecam-media/            # openh264 in-process decoder, SPS parsing, pacer
-│   ├── phonecam-core/             # Transport listeners, pairing state, adaptive bitrate ladder
-│   ├── phonecam-ui/               # GPUI design system, tokens, preview stage, instrument panels
-│   ├── phonecam-app/              # Native desktop binary: main entry, win32 tray, adb driver
-│   └── phonecam-android-core/     # Native JNI shared library for Android client
-├── dist/                          # Packaged installers and release binaries
-├── docs/                          # Architecture blueprints and design documentation
-└── scripts/                       # NSIS installer script and cross-compilation helpers
-```
-
----
-
-## Security & Privacy Guarantee (Zero Telemetry)
-
-PhoneCam is built from first principles as an **offline-first, zero-cloud, privacy-preserving webcam system**:
-
-- **Strict Zero-Telemetry Invariant**: PhoneCam never collects analytics, telemetry, diagnostics pings, or crash reporting data. There are zero background network calls to third-party endpoints or external servers. All operations run strictly on your local computer and private local network (or direct USB cable).
-- **100% Local-Only Media & AI Processing**: All video decoding (`openh264`), color grading (LUTs), portrait background blurring (SIMD/GPU), and AI auto-framing tracking execute entirely in-process on your local CPU and GPU. Raw video frames and microphone audio never touch the internet or external cloud APIs.
-- **Cryptographic Pairing**: Devices pair using ephemeral 128-bit CSPRNG tokens that expire in 5 minutes and require explicit on-screen user approval on the desktop.
-- **HMAC-SHA256 Authentication & Monotonic Replay Guard**: Every subsequent session is verified using a shared 256-bit secret stored in `%APPDATA%\PhoneCam\devices.json` and authenticated against strictly increasing 64-bit client nonces (`client_nonce`) to make replay attacks mathematically impossible.
-- **Automated Memory Redaction**: The internal logger runs an aggressive redaction filter that automatically strips out any 32- or 64-character hexadecimal tokens from debug logs, ensuring secrets and session tokens are never leaked into log files.
-- **Local Shared Memory Isolation**: Frame delivery to the virtual camera occurs via local Windows memory-mapped files (`framebuffer-v2.bin`) protected by atomic seqlocks, isolated entirely from the public network.
-
----
-
-## Troubleshooting & FAQ
-
-### 1. The phone does not detect the PC over USB
-- Ensure **USB Debugging** is toggled ON under Android Developer Options.
-- Confirm that your phone displays the *"Allow USB debugging from this computer?"* authorization modal and select "Always allow".
-- Verify connectivity in your terminal by running `adb devices`.
-
-### 2. Virtual Camera does not show up in Discord / OBS / Zoom
-- Ensure you have run `phonecam-vcam-register.exe --register` from an elevated (Administrator) command prompt.
-- Confirm you are running **Windows 11 Build 22621** or later (`winver`).
-- Restart the consumer application (e.g. OBS or Discord) after registering the camera.
-
-### 3. Port 48721 is already in use
-- If a legacy version of PhoneCam or another server is holding port 48721, launch PhoneCam with an override:
-  ```powershell
-  $env:PHONECAM_PORT = 48791
-  .\phonecam.exe
-  ```
-
-### 4. UDP Discovery does not find the desktop on Wi-Fi
-- Verify both devices are connected to the same subnet and that your router does not have "AP Isolation" or "Client Isolation" enabled.
-- Check the Windows Defender Firewall prompt to ensure PhoneCam has permission to listen on Private networks.
-- You can always pair instantly by scanning the QR code on the desktop screen.
-
----
-
-## Search & Discovery Index
-
-For GitHub Blackbird indexation, developer search queries, and open-source documentation cross-referencing, PhoneCam's capabilities and ecosystem queries are indexed below across four core domains:
-
-### Phone Camera & Webcam Hardware
-- **phone camera to pc**: Direct high-speed video capture streaming modern Android Camera2 feeds straight to Windows and Linux PCs.
-- **android phone as webcam**: Turn Samsung Galaxy, Google Pixel, OnePlus, Xiaomi, Motorola, and Sony smartphones into high-end computer webcams.
-- **usb webcam**: Plug-and-play USB connection via automated ADB reverse port tunneling (`adb reverse tcp:48721 tcp:48721`) for rock-solid zero-jitter streaming and simultaneous phone charging.
-- **wifi webcam**: Low-latency wireless streaming across local area networks (LAN) with UDP 48720 beacon auto-discovery and instant QR code cryptographic pairing.
-- **60fps webcam**: True unlocked 60 FPS video capture utilizing Camera2 `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` (`[60, 60]`, `[30, 60]`) and hardware `MediaCodec` H.264 Annex-B encoding.
-- **4k phone webcam**: Dynamic resolution negotiation supporting up to 4K (`3840x2160` @ 30 FPS), 1080p60, 720p60, and 480p60 without artificial software caps.
-- **multi-lens webcam switching**: Live instant switching across phone sensors (0.5x Ultra-Wide, 1.0x Wide, 3.0x Telephoto, and Front selfie camera).
-- **manual webcam controls**: Direct desktop sliders for Exposure Compensation (EV bias), manual White Balance Kelvin temperature (2000K–8000K), manual Diopter focus distance, and mains anti-flicker (50Hz / 60Hz).
-
-### Alternatives & Comparisons
-- **droidcam alternative**: 100% free, watermark-free, open-source alternative to DroidCam and DroidCamX Pro with unlocked 1080p60/4K and zero banner advertisements.
-- **iriun alternative**: Modern open-source alternative to Iriun 4K Webcam featuring true 60 FPS capture without intrusive watermark overlays or thermal overheating.
-- **camo alternative**: Lightweight native alternative to Camo (Reincubate) providing studio portrait bokeh blur, color LUT presets, and tracking with zero monthly or annual subscription fees.
-- **watermark-free phone webcam**: Pristine video output with zero watermarks, zero brand logos, and zero resolution limits for professional meetings, presentations, and broadcasts.
-- **epoccam alternative & ivcam alternative**: High-performance open-source virtual camera companion for Windows 11/10 and Linux without closed-source proprietary blobs.
-
-### Virtual Camera & Streaming Ecosystem
-- **virtual camera driver**: Native Windows Media Foundation Virtual Camera (`MFCreateVirtualCamera`) and DirectShow COM filter running inside `svchost.exe -k Camera` with atomic seqlock framebus memory mapping.
-- **obs phone camera**: Seamless integration as an OBS Studio and Streamlabs Video Capture Device for twitch streaming, podcasting, and multi-cam broadcasting.
-- **zoom phone camera**: High-definition video camera input for Zoom Meetings with portrait bokeh blur, studio lighting LUTs, and touchless presentation controls.
-- **google meet camera**: Zero-plugin browser WebRTC camera enumeration across Chrome, Firefox, and Edge for Google Meet video conferences.
-- **teams webcam & discord camera**: Crisp 1080p60 streaming for Microsoft Teams meetings and Discord Nitro voice/video channels.
-- **linux v4l2 webcam**: Standard Linux virtual camera device support through `v4l2loopback` (`/dev/video10`) for open-source Linux desktops.
-- **webrtc browser webcam**: Native HTML5 `navigator.mediaDevices.getUserMedia()` compatibility for StreamYard, Riverside.fm, Whereby, and online video studios.
-
-### Core Architecture & Native Systems Tech
-- **Rust**: Built 100% in pure native Rust for zero memory-safety vulnerabilities, deterministic concurrency, and maximum throughput.
-- **GPUI**: Accelerated rendering powered by Zed's modern GPU UI framework delivering sub-millisecond desktop preview blits directly to DirectX 11 / Metal textures.
-- **Media Foundation**: First-class Windows Media Foundation virtual camera provider with atomic seqlock shared memory (`framebuffer-v2.bin`) ensuring zero-copy frame delivery.
-- **v4l2**: Native Linux Video4Linux2 loopback module support for seamless open-source desktop integration.
-- **zero telemetry**: 100% offline-first, local-only media architecture with zero cloud calls, zero analytics pings, zero crash data collection, and HMAC-SHA256 authenticated pairing.
-- **local AI face tracking**: Pure Rust in-process Computer Vision (`phonecam-media::face_detect`) executing YCbCr skin chrominance clustering and cinematic exponential PTZ auto-framing with zero dynamic heap allocations on the 60 FPS hot path.
-- **OBSBOT gestures**: Touchless hand gesture classifier (✋ Lock/Unlock, ✌ 1x/2x Zoom, ☝ 1.5x Zoom, 🤙 Reset, 🤏 Macro 2.2x, 👍 Confirm) with real-time on-screen HUD chips.
-- **16-segment LED VU meter**: Broadcast-grade audio energy telemetry paired with uncompressed 16-bit 48 kHz PCM audio streaming.
-- **OLED pure-black mode**: 0-nit `#000000` AMOLED display mode with pixel shutoff and anti-burn-in coordinate drift for up to 12°C device cooling.
-
----
-
-## Contributing
-
-We welcome contributions from the open-source community! Please review [CONTRIBUTING.md](CONTRIBUTING.md) for our code style guidelines, semantic commit standards, testing requirements, and Pull Request workflow.
-
----
-
-## Changelog
-
-For a complete record of releases, features, bug fixes, and architectural milestones, see [CHANGELOG.md](CHANGELOG.md).
-
----
-
-## License
-
-PhoneCam is dual-licensed under either:
-
-- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- **MIT License** ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option. See [LICENSE](LICENSE) for full details.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option (see [LICENSE](LICENSE)).

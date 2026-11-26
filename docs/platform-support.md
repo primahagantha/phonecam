@@ -1,212 +1,80 @@
-# PhoneCam Multi-Platform OS Support & Architecture Matrix
+# PhoneCam Platform Support & Roadmap
 
-This document provides a comprehensive reference for PhoneCam across supported desktop operating systems (Windows 11, Windows 10 Build 17763+, Linux distributions, and macOS) as well as the Android client multi-ABI architecture.
+This document reflects the **verified current status** of each platform and output pipeline in PhoneCam, separating what works today from experimental work and future roadmap targets.
 
 ---
 
-## 1. Operating System Support Matrix
+## 1. Platform Support Matrix
 
-| Platform | Minimum Version | Target Architectures | Video Output Pipeline | Transport | Status |
+| Platform | Minimum Version | Architecture | Video Output Pipeline | Transport | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows 11** | Build 22621 (22H2)+ | x86_64, aarch64 | Windows Media Foundation Virtual Camera (`MFCreateVirtualCamera`) | USB (ADB) & Wi-Fi | **Tier 1 (Production)** |
-| **Windows 10** | Version 1809 (Build 17763)+ | x86_64 | DirectShow COM Virtual Camera Filter (`phonecam-vcam-register.exe`) | USB (ADB) & Wi-Fi | **Tier 1 (Production)** |
-| **Linux (Ubuntu/Debian)** | Ubuntu 20.04 LTS / Debian 11+ | x86_64, aarch64 | `v4l2loopback` kernel module (`/dev/videoX`) | USB (ADB) & Wi-Fi | **Supported** |
-| **Linux (Fedora/DNF)** | Fedora 38+ / RHEL 9+ | x86_64, aarch64 | `v4l2loopback` kernel module (`/dev/videoX`) | USB (ADB) & Wi-Fi | **Supported** |
-| **Linux (Arch Linux)** | Rolling (kernel 5.15+) | x86_64 | `v4l2loopback-dkms` kernel module (`/dev/videoX`) | USB (ADB) & Wi-Fi | **Supported** |
-| **macOS** | macOS 12.3 (Monterey)+ | Apple Silicon (arm64), Intel (x86_64) | CoreMediaIO DAL Plugin / Camera Extension | USB (ADB) & Wi-Fi | **Supported** |
-| **Android Client** | Android 8.0 (API 26)+ | arm64-v8a, armeabi-v7a, x86_64 | Camera2 API + Hardware `MediaCodec` H.264 | Wi-Fi LAN & USB Loopback | **Tier 1 (Production)** |
+| **Windows 11** | Build 22621 (22H2)+ | `x86_64` | Windows Media Foundation Virtual Camera (`MFCreateVirtualCamera`) | USB (ADB) & Wi-Fi | **Supported** |
+| **Android** | Android 8.0 (API 26)+ | `arm64-v8a`, `armeabi-v7a`, `x86_64` | Camera2 API + Hardware `MediaCodec` H.264 | USB (ADB) & Wi-Fi | **Supported** |
+| **Linux** | Ubuntu 20.04+ / Debian 11+ / Fedora 38+ / Arch | `x86_64` | `v4l2loopback` (writer in progress; `framebus` currently Windows-only) | USB (ADB) & Wi-Fi | **Experimental / In Progress** |
+| **Windows 10** | Build 17763 (1809)+ | `x86_64` | DirectShow COM virtual camera (desktop preview runs on D3D11; no vcam yet) | USB (ADB) & Wi-Fi | **Roadmap** |
+| **macOS** | macOS 12.3 (Monterey)+ | `arm64`, `x86_64` | CoreMediaIO camera extension (core crates compile; no vcam/app release) | USB (ADB) & Wi-Fi | **Roadmap** |
+| **iOS** | — | `arm64` | Native iOS capture client | — | **Roadmap** |
+
+> **Virtual Camera Binary Note:** On Windows 11, `dist/unpacked/PhoneCamVirtualCamera.dll` and `dist/unpacked/phonecam-vcam-register.exe` are currently shipped as prebuilt Media Foundation binaries pending C++ source cleanup and open-sourcing.
 
 ---
 
-## 2. Windows 10 (Version 1809+, Build 17763+) Validation
+## 2. Windows 11 (`x86_64`) — Supported
 
-### Architecture & Capabilities
-Windows 10 Version 1809 (October 2018 Update, OS Build 17763) is the foundational minimum supported Windows version.
+### Requirements
+- **OS**: Windows 11 Build `22621` (22H2) or newer (`x86_64`). Required for `MFCreateVirtualCamera` used by `PhoneCamVirtualCamera.dll`.
+- **GPU**: DirectX 11 / Direct3D 11 compatible GPU for GPUI hardware-accelerated preview rendering.
+- **USB Mode**: Bundled `adb.exe`, `AdbWinApi.dll`, and `AdbWinUsbApi.dll` are included in the installer and portable zip. USB Debugging must be enabled on the Android device.
+- **Firewall**: Inbound TCP `48721` and UDP `48720` are needed for Wi-Fi pairing/streaming (configured automatically by the NSIS installer).
 
-1. **Desktop Companion Application**:
-   - Compiles and executes natively with GPUI DirectX 11 / Direct3D 11 hardware-accelerated rendering.
-   - Decodes H.264 Annex-B bitstreams in-process via Cisco `openh264`, eliminating external runtime dependencies.
-   - System Tray integration is driven by Win32 `Shell_NotifyIconW` with a dedicated hidden message-only window (`HWND`), ensuring icon click events and close-to-tray behaviors work properly.
-   - Dual connection modes (USB via ADB reverse tunnel and Wi-Fi via UDP discovery & QR pairing) operate with identical zero-copy performance.
+### Virtual Camera Registration
+The NSIS installer (`PhoneCam-Setup-<version>.exe`) registers the virtual camera automatically. For the portable zip (`PhoneCam-<version>-windows-x64.zip`):
+1. Right-click `install-virtual-camera.bat` and select **Run as administrator** (runs `phonecam-vcam-register.exe --register`).
+2. Verify registration at any time with:
+   ```cmd
+   phonecam-vcam-register.exe --status
+   ```
+3. Launch via `run-portable.bat` or `phonecam.exe`.
+4. To unregister later, run `uninstall-virtual-camera.bat` as administrator.
 
-2. **Virtual Camera Implementation on Windows 10**:
-   - While Windows 11 provides the newer `MFCreateVirtualCamera` system API, Windows 10 utilizes the DirectShow COM Source Filter mechanism (`PhoneCamVirtualCamera.dll`).
-   - Registration is performed via `phonecam-vcam-register.exe`:
-     ```cmd
-     :: Must be run from an elevated (Administrator) Command Prompt
-     phonecam-vcam-register.exe --register
-     ```
-   - Registration verifies COM class entries (`CLSID_VideoInputDeviceCategory`), device enumeration, and Frame Server availability.
-   - Verifiable status can be checked at any time:
-     ```cmd
-     phonecam-vcam-register.exe --status
-     ```
-
-3. **Portable Release Bundle**:
-   - For environments where system installation is prohibited or portable use is preferred, `dist/unpacked/` delivers a self-contained execution package:
-     - `run-portable.bat`: Runs local directory sanity checks, ensures bundled `adb.exe` is in `PATH`, verifies `PhoneCamVirtualCamera.dll` presence, and starts `phonecam.exe` without installation.
-     - `install-virtual-camera.bat`: One-click Administrator privilege elevation wrapper to register the virtual camera driver.
-     - `uninstall-virtual-camera.bat`: One-click uninstaller for driver cleanup.
+### Windows 10 Note
+The GPUI desktop companion runs on Windows 10 (`1809` / Build `17763`+) with Direct3D 11 preview, **but virtual camera registration requires Windows 11 (`MFCreateVirtualCamera`)**. A DirectShow COM virtual camera driver for Windows 10 is on the Roadmap.
 
 ---
 
-## 3. Linux Building & Usage Workflows
+## 3. Android (`arm64-v8a`, `armeabi-v7a`, `x86_64`) — Supported
 
-PhoneCam's core (`phonecam-core`, `phonecam-protocol`, `phonecam-media`, `phonecam-framebus`, and `phonecam-ui`) builds natively on modern Linux systems.
+The Android client (`apps/android`) uses Camera2 + hardware `MediaCodec` H.264 encoding paired with `phonecam-android-core` (Rust JNI) for framing and HMAC-SHA256 authentication.
 
-### Package Prerequisites by Distribution
+### Target ABIs & Outputs (`apps/android/app/build.gradle.kts`)
+- `arm64-v8a`: Modern 64-bit ARM devices (recommended).
+- `armeabi-v7a`: Older 32-bit ARM devices.
+- `x86_64`: Android emulators and ChromeOS.
+- Universal APK (`PhoneCam.apk`): Bundles all three ABIs for sideloading.
 
-#### Debian / Ubuntu / Linux Mint
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-    build-essential \
-    pkg-config \
-    libfontconfig1-dev \
-    libasound2-dev \
-    libx11-dev \
-    libxcursor-dev \
-    libxrandr-dev \
-    libxi-dev \
-    libssl-dev \
-    v4l2loopback-dkms \
-    v4l-utils \
-    android-tools-adb
-```
-
-#### Fedora / RHEL / CentOS Stream (DNF)
-```bash
-sudo dnf install -y \
-    gcc \
-    gcc-c++ \
-    pkgconf-pkg-config \
-    fontconfig-devel \
-    alsa-lib-devel \
-    libX11-devel \
-    libXcursor-devel \
-    libXrandr-devel \
-    libXi-devel \
-    openssl-devel \
-    v4l2loopback \
-    v4l-utils \
-    android-tools
-```
-
-#### Arch Linux / Manjaro (Pacman)
-```bash
-sudo pacman -S --needed \
-    base-devel \
-    fontconfig \
-    alsa-lib \
-    libx11 \
-    libxcursor \
-    libxrandr \
-    libxi \
-    openssl \
-    v4l2loopback-dkms \
-    v4l-utils \
-    android-tools
-```
-
-### Configuring `v4l2loopback` for Virtual Camera
-To create the virtual video device for consumer applications (OBS Studio, Discord, Chrome, Zoom):
-
-```bash
-# Load module with device label and fixed device node
-sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="PhoneCam" exclusive_caps=1
-```
-
-To persist across reboots:
-```bash
-# /etc/modules-load.d/v4l2loopback.conf
-v4l2loopback
-
-# /etc/modprobe.d/v4l2loopback.conf
-options v4l2loopback devices=1 video_nr=10 card_label="PhoneCam" exclusive_caps=1
-```
-
-### Compiling on Linux
-```bash
-# Build desktop companion
-cargo build --release -p phonecam-app
-
-# Run all workspace unit tests
-cargo test --workspace
-```
-
----
-
-## 4. macOS Building & Usage Workflows
-
-### Prerequisites
-- macOS 12.3 (Monterey) or newer (macOS 13+ Ventura / macOS 14+ Sonoma recommended).
-- Xcode Command Line Tools: `xcode-select --install`
-- Android platform tools: `brew install android-platform-tools`
-- Rust target support:
-  ```bash
-  rustup target add aarch64-apple-darwin x86_64-apple-darwin
-  ```
-
-### Building for Apple Silicon & Intel
-```bash
-# Apple Silicon (M1 / M2 / M3 / M4)
-cargo build --release --target aarch64-apple-darwin -p phonecam-app
-
-# Intel x86_64 Macs
-cargo build --release --target x86_64-apple-darwin -p phonecam-app
-
-# Create Universal 2 binary
-lipo -create -output target/release/phonecam-universal \
-    target/aarch64-apple-darwin/release/phonecam \
-    target/x86_64-apple-darwin/release/phonecam
-```
-
-### Virtual Camera Pipeline on macOS
-- Rendering is handled natively by GPUI's Metal backend with vsync-aligned presenting.
-- Virtual camera feed is integrated via CoreMediaIO DAL plugin (`/Library/CoreMediaIO/Plug-Ins/DAL/PhoneCam.plugin`) or modern Camera Extension (`CMIOExtensionProvider`).
-
----
-
-## 5. Android Multi-ABI Packaging Configuration
-
-The Android application is configured in `apps/android/app/build.gradle.kts` to build optimized per-architecture APKs alongside a universal APK.
-
-### Target Architectures
-- **`arm64-v8a`**: Primary 64-bit ARM architecture. Targeted by all modern Android smartphones released since 2016. Produces lean, high-performance binary code with full NEON vectorization.
-- **`armeabi-v7a`**: Legacy 32-bit ARM architecture. Supported for older test devices and budget hardware.
-- **`x86_64`**: 64-bit x86 architecture. Crucial for Android Studio emulators and ChromeOS Android subsystem testing.
-
-### Gradle Configuration
-```kotlin
-android {
-    defaultConfig {
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
-    }
-
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a", "armeabi-v7a", "x86_64")
-            isUniversalApk = true
-        }
-    }
-}
-```
-
-### Build Outputs (`apps/android/app/build/outputs/apk/release/`)
-| Artifact Name | ABI / Target | Approx. Size | Purpose |
-| :--- | :--- | :--- | :--- |
-| `app-arm64-v8a-release.apk` | 64-bit ARM | ~2.36 MB | Optimized for 99%+ of modern consumer smartphones |
-| `app-armeabi-v7a-release.apk` | 32-bit ARM | ~2.14 MB | Optimized for legacy 32-bit hardware |
-| `app-x86_64-release.apk` | 64-bit x86 | ~2.34 MB | Fast native testing in emulators & ChromeOS |
-| `app-universal-release.apk` | All ABIs bundled | ~3.75 MB | Standalone sideloading, bundled in portable zip |
-
-### Verification Commands
+### Build & Test Commands
 ```powershell
-# In apps/android/
-.\gradlew.bat test              # JVM and native mock unit tests
-.\gradlew.bat assembleRelease   # Compiles all ABI splits and universal APK
+# Compile Rust JNI libraries (requires ANDROID_NDK_HOME and cargo-ndk)
+.\scripts\build-android-core.ps1
+
+# Run JVM unit tests and build release APKs
+cd apps\android
+.\gradlew.bat test
+.\gradlew.bat assembleRelease
 ```
+
+---
+
+## 4. Linux (`x86_64`) — Experimental / In Progress
+
+The Rust core crates (`phonecam-protocol`, `phonecam-core`, `phonecam-media`, `phonecam-framebus`, `phonecam-android-core`) and `phonecam-app` compile on Linux, and `scripts/setup-linux.sh` installs build dependencies (`vulkan`, `x11`/`wayland`, `alsa`, `adb`) and loads `v4l2loopback` at `/dev/video10`.
+
+**Current limitation:** `crates/phonecam-framebus/src/writer.rs` currently stubs non-Windows targets to return `Err(WriterError::NotWindows)`. Live virtual camera frame output to `/dev/video10` via `v4l2loopback` is not yet wired, so Linux virtual camera streaming is **experimental / in progress**.
+
+---
+
+## 5. macOS, iOS & Virtual Microphone — Roadmap
+
+- **macOS (`CoreMediaIO`)**: `phonecam-protocol`, `phonecam-core`, and `phonecam-media` compile and pass unit tests on macOS in CI, but no `CMIOExtensionProvider` virtual camera or packaged macOS app exists yet.
+- **Virtual Microphone Audio Routing**: PhoneCam currently streams Android microphone PCM over `ChannelRole::Audio = 3` to drive the desktop **Audio Monitor (16-segment LED VU meter)**. Routing audio to an OS Virtual Microphone or WASAPI loopback endpoint is on the Roadmap.
+- **iOS**: Planned for a future release after Windows/Linux desktop stabilization.

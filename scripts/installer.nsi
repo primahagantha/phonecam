@@ -50,6 +50,13 @@ Section "PhoneCam Core (required)" SecCore
   DetailPrint "Registering PhoneCam virtual camera..."
   nsExec::ExecToLog '"$INSTDIR\phonecam-vcam-register.exe" --register'
 
+  ; Configure Windows Defender Firewall rules for Wi-Fi pairing & streaming
+  DetailPrint "Configuring Windows Defender Firewall rules..."
+  nsExec::Exec 'netsh advfirewall firewall delete rule name="PhoneCam TCP"'
+  nsExec::Exec 'netsh advfirewall firewall delete rule name="PhoneCam UDP"'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="PhoneCam TCP" dir=in action=allow program="$INSTDIR\phonecam.exe" protocol=TCP localport=48721'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="PhoneCam UDP" dir=in action=allow program="$INSTDIR\phonecam.exe" protocol=UDP localport=48720'
+
   ; Write installation path into registry
   WriteRegStr HKLM "Software\PhoneCam" "Install_Dir" "$INSTDIR"
 
@@ -78,6 +85,11 @@ Section "Uninstall"
   ; Unregister Virtual Camera
   DetailPrint "Unregistering PhoneCam virtual camera..."
   nsExec::ExecToLog '"$INSTDIR\phonecam-vcam-register.exe" --unregister'
+
+  ; Remove Windows Defender Firewall rules
+  DetailPrint "Removing Windows Defender Firewall rules..."
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="PhoneCam TCP"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="PhoneCam UDP"'
 
   ; Remove shortcuts
   Delete "$DESKTOP\PhoneCam.lnk"
