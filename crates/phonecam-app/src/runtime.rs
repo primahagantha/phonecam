@@ -22,7 +22,7 @@ use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 use phonecam_core::adaptive_quality::{AdaptiveQuality, QualityRung, QualitySample};
-use phonecam_core::pairing::{new_server_id, DeviceRecord, PairingManager};
+use phonecam_core::pairing::{DeviceRecord, PairingManager};
 use phonecam_core::session::{
     control_frame, now_ms, now_us, phase_after_phone_state, Authenticator, SessionState,
     StatsWindow,
@@ -108,6 +108,10 @@ pub struct PublishScratch {
     pub transformed: Vec<u8>,
     /// Reusable BGRA scratch buffer for auto-framing crop & rescale.
     pub auto_framing_scratch: Vec<u8>,
+    /// Reusable scratch pools for zero-allocation portrait blur and bilinear scaling.
+    pub effects_scratch: phonecam_media::EffectsScratch,
+    /// Timestamp (us) of the previous FX step for frame-rate independent smoothing.
+    pub last_fx_us: i64,
     /// A recycled BGRA buffer, swapped with the mailbox's previous one.
     pub spare: Vec<u8>,
     /// The last size published, so the state lock is not taken per frame.
@@ -127,6 +131,8 @@ impl Default for PublishScratch {
             bgra: Vec::new(),
             transformed: Vec::new(),
             auto_framing_scratch: Vec::new(),
+            effects_scratch: phonecam_media::EffectsScratch::new(),
+            last_fx_us: 0,
             spare: Vec::new(),
             last_size: None,
             tracker: phonecam_media::AutoFramingTracker::new(1.25, 0.12),
@@ -189,8 +195,6 @@ pub struct Runtime {
     pub stage_us: Arc<Mutex<[i64; 3]>>,
     /// The slowest single occurrence of each stage.
     pub stage_max_us: Arc<Mutex<[i64; 3]>>,
-    /// The desktop's own log, so a freeze or a drop can be dated.
-    pub log: Arc<crate::settings::DesktopLog>,
     /// Whether the virtual camera is registered with Windows.
     ///
     /// Checked rather than assumed: an interrupted install, a moved DLL or a
@@ -273,6 +277,12 @@ pub struct Runtime {
     camera_retry_active: AtomicBool,
     /// Last `(requested, actual)` pair emitted as `ResolutionDowngraded`.
     last_downgraded: Mutex<Option<(String, String)>>,
+    /// Latch ensuring the 3s disconnect placeholder is published once per disconnect.
+    placeholder_published: AtomicBool,
+    /// True while a background USB auto-connect attempt is in flight.
+    usb_connecting: AtomicBool,
+    /// Last USB serial auto-connected during the current plug-in session.
+    last_auto_usb_serial: Mutex<Option<String>>,
 }
 
 impl Runtime {
@@ -308,7 +318,7 @@ impl Runtime {
             preview_enabled: Arc::new(AtomicBool::new(settings.preview_enabled)),
             quality: Arc::new(Mutex::new(quality)),
             running: Arc::new(AtomicBool::new(true)),
-            server_id: new_server_id().unwrap_or_else(|| "pc-00000000".into()),
+            server_id: crate::settings::load_or_create_server_id(),
             server_name: hostname(),
             port: Arc::new(AtomicI64::new(SERVICE_PORT as i64)),
             last_frame_at_ms: Arc::new(AtomicI64::new(0)),
@@ -323,7 +333,6 @@ impl Runtime {
             skipped_frames: Arc::new(AtomicI64::new(0)),
             stage_us: Arc::new(Mutex::new([0; 3])),
             stage_max_us: Arc::new(Mutex::new([0; 3])),
-            log: Arc::new(crate::settings::DesktopLog::new()),
             vcam_registered: Arc::new(AtomicBool::new(false)),
             vcam_error: Mutex::new(None),
             vcam_starting: AtomicBool::new(false),
@@ -360,6 +369,9 @@ impl Runtime {
             frame_interval_count: AtomicUsize::new(0),
             camera_retry_active: AtomicBool::new(false),
             last_downgraded: Mutex::new(None),
+            placeholder_published: AtomicBool::new(false),
+            usb_connecting: AtomicBool::new(false),
+            last_auto_usb_serial: Mutex::new(None),
         })
     }
 
@@ -840,8 +852,11 @@ impl Runtime {
             Err(error) => {
                 // Logged once, here: the caller reports the same failure to the
                 // UI, and writing it twice made the log look like two problems.
-                self.log
-                    .write("ERROR", &format!("port_unavailable: {error}"));
+                crate::logging::append_file_line(
+                    LogLevel::Error,
+                    LogSource::Core,
+                    &format!("port_unavailable: {error}"),
+                );
                 return None;
             }
         };
@@ -990,23 +1005,25 @@ impl Runtime {
         self.disarm_pairing();
         self.broadcast_state();
 
-        // Stream auto-resume on reconnect (upstream commit 220c3af):
-        // If stream_wanted is true, the stream was running before the reconnect.
-        // Ask the phone to resume!
+        // Stream auto-resume on reconnect (upstream commit 220c3af) or auto-start
+        // when `settings.auto_start_stream` is enabled on connect:
         let auto_start_env = std::env::var("PHONECAM_AUTO_START")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        let (auto_connect_usb, auto_start_stream) = {
+            let s = self.state.lock();
+            (s.settings.auto_connect_usb, s.settings.auto_start_stream)
+        };
         if self.session.stream_wanted.load(Ordering::Relaxed)
-            || (conn.is_loopback()
-                && self.active_usb_serial.lock().is_some()
-                && self.state.lock().settings.auto_connect_usb)
+            || (conn.is_loopback() && self.active_usb_serial.lock().is_some() && auto_connect_usb)
+            || auto_start_stream
             || auto_start_env
         {
             self.log_info(
-                "the stream was running before the reconnect or auto-connect is active; asking the phone to start",
+                "auto-starting stream on connection (reconnect, auto-start, or USB auto-connect active)",
             );
             tracing::info!(
-                "the stream was running before the reconnect or auto-connect is active; asking the phone to start"
+                "auto-starting stream on connection (reconnect, auto-start, or USB auto-connect active)"
             );
             self.start_stream();
         }
@@ -1070,6 +1087,7 @@ impl Runtime {
                 }
                 PhoneToDesktop::State(phone_state) => {
                     let streaming = phone_state.streaming;
+                    let phone_orientation = phone_state.orientation;
                     // The phone naming the rung that was asked for is the
                     // confirmation that lets the ladder act again. Announcing at
                     // the request would name a rung the phone is not using.
@@ -1085,15 +1103,38 @@ impl Runtime {
                     // The phase rules live in the core and are unit tested there.
                     let next = phase_after_phone_state(self.session.phase(), streaming);
                     *self.session.phase.lock() = next;
-                    self.broadcast_state();
+
+                    let mut applied_auto_rotate = false;
+                    if let Some(deg) = phone_orientation {
+                        let (should_rotate, mirror, cur_rot) = {
+                            let s = self.state.lock();
+                            (
+                                s.settings.auto_rotate,
+                                s.settings.output_mirror,
+                                s.settings.output_rotation % 360,
+                            )
+                        };
+                        let target_rot = deg % 360;
+                        if should_rotate
+                            && matches!(target_rot, 0 | 90 | 180 | 270)
+                            && target_rot != cur_rot
+                        {
+                            self.sync_output_transform(mirror, target_rot);
+                            applied_auto_rotate = true;
+                        }
+                    }
+                    if !applied_auto_rotate {
+                        self.broadcast_state();
+                    }
                 }
                 PhoneToDesktop::Stats(stats) => {
                     self.session
                         .phone_encoded_frames
                         .store(stats.encoded_frames as i64, Ordering::Relaxed);
+                    let permille = (stats.dropped.max(0.0) * 10.0).round() as i64;
                     self.session
                         .phone_dropped_permille
-                        .store((stats.dropped as i64) * 10, Ordering::Relaxed);
+                        .store(permille, Ordering::Relaxed);
                     *self.session.phone_thermal.lock() = stats.thermal;
                     let mut state = self.state.lock();
                     state.phone_stats = Some(stats);
@@ -1361,6 +1402,7 @@ impl Runtime {
         let mut buf = vec![0u8; 4096];
         let mut leftover: Option<u8> = None;
         let mut last_report_ms = 0i64;
+        let mut last_published_level: f32 = 0.0;
 
         while self.running.load(Ordering::Relaxed) {
             if self.audio_generation.load(Ordering::SeqCst) != audio_gen {
@@ -1410,8 +1452,13 @@ impl Runtime {
                         let rms = ((sum_sq / sample_count as f64).sqrt() / 32768.0) as f32;
                         let level = (peak * 0.7 + rms * 0.3).clamp(0.0, 1.0);
                         let now = now_ms();
-                        if now.saturating_sub(last_report_ms) >= 30 {
+                        // Throttle UI snapshots to ~11 Hz and skip redundant bumps when level is steady.
+                        if now.saturating_sub(last_report_ms) >= 90
+                            && ((level - last_published_level).abs() >= 0.015
+                                || (level == 0.0 && last_published_level > 0.0))
+                        {
                             last_report_ms = now;
+                            last_published_level = level;
                             {
                                 let mut state = self.state.lock();
                                 state.audio_level = level;
@@ -1428,6 +1475,7 @@ impl Runtime {
                             if state.audio_level < 0.01 {
                                 state.audio_level = 0.0;
                             }
+                            last_published_level = state.audio_level;
                             true
                         } else {
                             false
@@ -1458,12 +1506,129 @@ impl Runtime {
         }
     }
 
+    /// Ensures `writer` is open at the target output dimensions, reopening it
+    /// when `output_follows_stream` is enabled and stream dimensions change.
+    fn ensure_writer<'a>(
+        &self,
+        writer: &'a mut Option<FrameWriter>,
+        stream_width: u32,
+        stream_height: u32,
+        mirror: bool,
+        rotation: u32,
+    ) -> Option<&'a mut FrameWriter> {
+        let follows_stream = self.output_follows_stream.load(Ordering::Relaxed);
+        let (target_w, target_h) = if follows_stream {
+            (stream_width & !1, stream_height & !1)
+        } else {
+            (
+                self.output_width.load(Ordering::Relaxed) & !1,
+                self.output_height.load(Ordering::Relaxed) & !1,
+            )
+        };
+        let needs_open = match writer.as_ref() {
+            None => true,
+            Some(w) => follows_stream && (w.width() != target_w || w.height() != target_h),
+        };
+        if needs_open {
+            *writer = None;
+            match FrameWriter::open(target_w, target_h) {
+                Ok(mut w) => {
+                    w.set_transform(mirror, rotation);
+                    tracing::info!("frame bus opened at {}x{}", w.width(), w.height());
+                    *writer = Some(w);
+                }
+                Err(error) => {
+                    tracing::warn!("could not open the frame bus: {error}");
+                }
+            }
+        }
+        writer.as_mut()
+    }
+
+    fn process_hand_gestures(
+        &self,
+        scratch: &mut PublishScratch,
+        width: usize,
+        height: usize,
+        face: Option<phonecam_media::FaceRect>,
+    ) {
+        let gesture_event = scratch
+            .gesture_detector
+            .detect(&scratch.bgra, width, height, face);
+        if gesture_event.triggered {
+            if let Some(action) = scratch.tracker.handle_gesture(&gesture_event) {
+                let msg = match gesture_event.gesture {
+                    phonecam_media::HandGesture::OpenPalm => {
+                        if scratch.tracker.is_tracking_locked() {
+                            "Open Palm: Tracking Locked"
+                        } else {
+                            "Open Palm: Tracking Unlocked"
+                        }
+                    }
+                    phonecam_media::HandGesture::PeaceV => {
+                        if scratch.tracker.target_zoom > 1.5 {
+                            "V-Sign: 2.0x Zoom"
+                        } else {
+                            "V-Sign: 1.0x Zoom"
+                        }
+                    }
+                    phonecam_media::HandGesture::ThumbsUp => {
+                        if scratch.tracker.target_zoom > 1.5 {
+                            "Thumbs Up: 2.0x Zoom"
+                        } else {
+                            "Thumbs Up: 1.0x Zoom"
+                        }
+                    }
+                    _ => action,
+                };
+                {
+                    let mut state = self.state.lock();
+                    state.set_toast(msg, 2500);
+                    state.active_gesture = Some(gesture_event.gesture);
+                    state.gesture_action = Some(msg.to_string());
+                    state.tracking_locked = scratch.tracker.is_tracking_locked();
+                }
+                self.bump_state_version();
+            }
+        } else if gesture_event.gesture != phonecam_media::HandGesture::None {
+            let state_needs_update = {
+                let mut state = self.state.lock();
+                if state.active_gesture != Some(gesture_event.gesture) {
+                    state.active_gesture = Some(gesture_event.gesture);
+                    true
+                } else {
+                    false
+                }
+            };
+            if state_needs_update {
+                self.bump_state_version();
+            }
+        } else {
+            let state_needs_update = {
+                let mut state = self.state.lock();
+                if state.active_gesture.is_some() {
+                    state.active_gesture = None;
+                    true
+                } else {
+                    false
+                }
+            };
+            if state_needs_update {
+                self.bump_state_version();
+            }
+        }
+    }
+
     /// Publishes one decoded planar YUV frame to the camera bus and to the window.
     ///
-    /// Writes directly into the shared-memory frame bus under the seqlock when
-    /// no scaling is needed (zero intermediate NV12 staging copy) and skips
-    /// BGRA conversion when the preview is disabled or the window is hidden.
+    /// Keeps the fast zero-copy `YuvPlanes -> NV12` path when all visual FX are
+    /// off; when any visual FX (LUT, portrait blur, auto-framing) is active,
+    /// processes pre-allocated BGRA buffers once (even when the window is hidden)
+    /// and writes the processed output to both the virtual camera (`bgra_to_nv12`)
+    /// and the desktop preview mailbox so consumers see the exact same picture.
     fn publish_planes(&self, planes: YuvPlanes<'_>, pts_us: u64, scratch: &mut PublishScratch) {
+        self.placeholder_published.store(false, Ordering::Relaxed);
+
         // Timestamped at the producer, so the interval is the real one.
         let now = now_us();
         let previous = self.last_publish_us.swap(now, Ordering::Relaxed);
@@ -1476,46 +1641,218 @@ impl Runtime {
             self.frame_interval_count
                 .store(intervals.len(), Ordering::Relaxed);
         }
-        // --- the virtual camera: NV12 into the shared buffer
+
+        let vcam_enabled = self.vcam_enabled.load(Ordering::Relaxed);
+        let preview_needed = self.preview_enabled.load(Ordering::Relaxed)
+            && self.window_visible.load(Ordering::Relaxed);
         let mirror = self.output_mirror.load(Ordering::Relaxed);
         let rotation = self.output_rotation.load(Ordering::Relaxed) % 360;
-        if self.vcam_enabled.load(Ordering::Relaxed) {
-            let mut writer = self.writer.lock();
-            if writer.is_none() {
-                let (width, height) = if self.output_follows_stream.load(Ordering::Relaxed) {
-                    (planes.width & !1, planes.height & !1)
-                } else {
-                    (
-                        self.output_width.load(Ordering::Relaxed) & !1,
-                        self.output_height.load(Ordering::Relaxed) & !1,
-                    )
-                };
-                match FrameWriter::open(width, height) {
-                    Ok(mut w) => {
-                        w.set_transform(mirror, rotation);
-                        tracing::info!("frame bus opened at {}x{}", w.width(), w.height());
-                        *writer = Some(w);
-                    }
-                    Err(error) => {
-                        tracing::warn!("could not open the frame bus: {error}");
+
+        let lut_preset = u8_to_lut(self.lut_preset.load(Ordering::Relaxed));
+        let lut_active = lut_preset != phonecam_media::LutPreset::None
+            && lut_preset != phonecam_media::LutPreset::Natural;
+        let portrait_blur = self.portrait_blur.load(Ordering::Relaxed);
+        let blur_amt = f32::from_bits(self.portrait_blur_intensity.load(Ordering::Relaxed));
+        let auto_framing = self.auto_framing.load(Ordering::Relaxed);
+        let hand_gestures = self.hand_gestures.load(Ordering::Relaxed);
+        let any_visual_fx = lut_active || portrait_blur || auto_framing;
+
+        let needed = planes.width as usize * planes.height as usize * 4;
+
+        if !any_visual_fx {
+            // Fast zero-copy NV12 path when all visual FX are off.
+            if vcam_enabled {
+                let mut writer_guard = self.writer.lock();
+                if let Some(writer) = self.ensure_writer(
+                    &mut writer_guard,
+                    planes.width,
+                    planes.height,
+                    mirror,
+                    rotation,
+                ) {
+                    let out_width = writer.width();
+                    let out_height = writer.height();
+
+                    if planes.width == out_width && planes.height == out_height {
+                        let _ = writer.publish_with(pts_us, FrameState::Live, None, |dst| {
+                            phonecam_media::write_planes_nv12(&planes, dst)
+                        });
+                    } else {
+                        let source_len = planes.width as usize * planes.height as usize * 3 / 2;
+                        scratch.source.resize(source_len, 0);
+                        if phonecam_media::write_planes_nv12(&planes, &mut scratch.source) {
+                            let _ = writer.publish_with(pts_us, FrameState::Live, None, |dst| {
+                                phonecam_framebus::nv12::scale(
+                                    &scratch.source,
+                                    planes.width,
+                                    planes.height,
+                                    dst,
+                                    out_width,
+                                    out_height,
+                                );
+                                true
+                            });
+                        }
                     }
                 }
             }
 
-            if let Some(writer) = writer.as_mut() {
-                let out_width = writer.width();
-                let out_height = writer.height();
+            if !preview_needed && !hand_gestures {
+                return;
+            }
 
-                if planes.width == out_width && planes.height == out_height {
-                    // Same size: interleave straight into the shared-memory publish buffer.
-                    let _ = writer.publish_with(pts_us, FrameState::Live, None, |dst| {
-                        phonecam_media::write_planes_nv12(&planes, dst)
-                    });
+            self.prepare_bgra_buffer(scratch, needed);
+            if !phonecam_media::write_planes_bgra(&planes, &mut scratch.bgra, planes.width as usize)
+            {
+                return;
+            }
+
+            if hand_gestures {
+                let face = scratch.tracker.process_frame(
+                    &mut scratch.face_detector,
+                    &scratch.bgra,
+                    planes.width as usize,
+                    planes.height as usize,
+                );
+                self.process_hand_gestures(
+                    scratch,
+                    planes.width as usize,
+                    planes.height as usize,
+                    face,
+                );
+            }
+
+            if !preview_needed {
+                return;
+            }
+        } else {
+            if !vcam_enabled && !preview_needed && !hand_gestures {
+                return;
+            }
+
+            self.prepare_bgra_buffer(scratch, needed);
+            if !phonecam_media::write_planes_bgra(&planes, &mut scratch.bgra, planes.width as usize)
+            {
+                return;
+            }
+
+            let face = if auto_framing || hand_gestures || portrait_blur {
+                scratch.tracker.process_frame(
+                    &mut scratch.face_detector,
+                    &scratch.bgra,
+                    planes.width as usize,
+                    planes.height as usize,
+                )
+            } else {
+                None
+            };
+
+            if hand_gestures {
+                self.process_hand_gestures(
+                    scratch,
+                    planes.width as usize,
+                    planes.height as usize,
+                    face,
+                );
+            }
+
+            let mut applied_crop: Option<phonecam_media::CropRect> = None;
+            if auto_framing {
+                let dt_secs = if scratch.last_fx_us == 0 {
+                    1.0 / 30.0
                 } else {
-                    // Different size: interleave once to scratch.source, then scale directly into the frame bus.
-                    let source_len = planes.width as usize * planes.height as usize * 3 / 2;
-                    scratch.source.resize(source_len, 0);
-                    if phonecam_media::write_planes_nv12(&planes, &mut scratch.source) {
+                    ((now - scratch.last_fx_us).max(1) as f32 / 1_000_000.0).clamp(0.001, 0.25)
+                };
+                scratch.last_fx_us = now;
+                scratch.tracker.step_with_dt(None, dt_secs);
+                let crop = scratch.tracker.compute_crop(planes.width, planes.height);
+                if scratch.auto_framing_scratch.capacity() < needed {
+                    if let Some(buf) = self.take_spare_buffer(needed) {
+                        scratch.auto_framing_scratch = buf;
+                    } else {
+                        scratch.auto_framing_scratch = Vec::with_capacity(needed);
+                    }
+                }
+                scratch.auto_framing_scratch.resize(needed, 0);
+                phonecam_media::AutoFramingTracker::crop_bgra_with_scratch(
+                    &scratch.bgra,
+                    planes.width as usize,
+                    planes.height as usize,
+                    &crop,
+                    &mut scratch.auto_framing_scratch,
+                    planes.width as usize,
+                    planes.height as usize,
+                    &mut scratch.effects_scratch,
+                );
+                std::mem::swap(&mut scratch.bgra, &mut scratch.auto_framing_scratch);
+                applied_crop = Some(crop);
+            } else {
+                scratch.last_fx_us = 0;
+            }
+
+            if portrait_blur {
+                let intensity = if blur_amt <= 0.45 {
+                    phonecam_media::BlurIntensity::Soft
+                } else if blur_amt <= 0.80 {
+                    phonecam_media::BlurIntensity::Studio
+                } else {
+                    phonecam_media::BlurIntensity::Dreamy
+                };
+                let blur_face = match applied_crop {
+                    Some(ref crop) => remap_face_to_crop(
+                        scratch.tracker.last_face,
+                        crop,
+                        planes.width,
+                        planes.height,
+                    ),
+                    None => scratch.tracker.last_face,
+                };
+                phonecam_media::apply_portrait_blur_with_scratch(
+                    &mut scratch.bgra,
+                    planes.width,
+                    planes.height,
+                    intensity,
+                    blur_face,
+                    &mut scratch.effects_scratch,
+                );
+            }
+
+            if lut_active {
+                phonecam_media::apply_lut(&mut scratch.bgra, lut_preset);
+            }
+
+            // Virtual camera parity: write the exact post-processed BGRA frame to FrameWriter.
+            if vcam_enabled {
+                let mut writer_guard = self.writer.lock();
+                if let Some(writer) = self.ensure_writer(
+                    &mut writer_guard,
+                    planes.width,
+                    planes.height,
+                    mirror,
+                    rotation,
+                ) {
+                    let out_width = writer.width();
+                    let out_height = writer.height();
+
+                    if planes.width == out_width && planes.height == out_height {
+                        let _ = writer.publish_with(pts_us, FrameState::Live, None, |dst| {
+                            phonecam_media::bgra_to_nv12(
+                                &scratch.bgra,
+                                planes.width,
+                                planes.height,
+                                dst,
+                            );
+                            true
+                        });
+                    } else {
+                        let source_len = planes.width as usize * planes.height as usize * 3 / 2;
+                        scratch.source.resize(source_len, 0);
+                        phonecam_media::bgra_to_nv12(
+                            &scratch.bgra,
+                            planes.width,
+                            planes.height,
+                            &mut scratch.source,
+                        );
                         let _ = writer.publish_with(pts_us, FrameState::Live, None, |dst| {
                             phonecam_framebus::nv12::scale(
                                 &scratch.source,
@@ -1530,148 +1867,10 @@ impl Runtime {
                     }
                 }
             }
-        }
 
-        if !self.preview_enabled.load(Ordering::Relaxed)
-            || !self.window_visible.load(Ordering::Relaxed)
-        {
-            return;
-        }
-
-        // --- the window: BGRA, double-buffered so the mailbox never holds a
-        // buffer this thread is still writing into.
-        let needed = planes.width as usize * planes.height as usize * 4;
-        if scratch.bgra.capacity() < needed {
-            if scratch.spare.capacity() >= needed {
-                std::mem::swap(&mut scratch.bgra, &mut scratch.spare);
-            } else if let Some(buf) = self.take_spare_buffer(needed) {
-                scratch.bgra = buf;
-            } else {
-                scratch.bgra = Vec::with_capacity(needed);
+            if !preview_needed {
+                return;
             }
-        }
-        scratch.bgra.resize(needed, 0);
-        if !phonecam_media::write_planes_bgra(&planes, &mut scratch.bgra, planes.width as usize) {
-            return;
-        }
-
-        let lut_preset = u8_to_lut(self.lut_preset.load(Ordering::Relaxed));
-        let portrait_blur = self.portrait_blur.load(Ordering::Relaxed);
-        let blur_amt = f32::from_bits(self.portrait_blur_intensity.load(Ordering::Relaxed));
-        let auto_framing = self.auto_framing.load(Ordering::Relaxed);
-        let hand_gestures = self.hand_gestures.load(Ordering::Relaxed);
-
-        let face = if auto_framing || hand_gestures {
-            scratch.tracker.process_frame(
-                &mut scratch.face_detector,
-                &scratch.bgra,
-                planes.width as usize,
-                planes.height as usize,
-            )
-        } else {
-            None
-        };
-
-        if hand_gestures {
-            let gesture_event = scratch.gesture_detector.detect(
-                &scratch.bgra,
-                planes.width as usize,
-                planes.height as usize,
-                face,
-            );
-            if gesture_event.triggered {
-                if let Some(action) = scratch.tracker.handle_gesture(&gesture_event) {
-                    let msg = match gesture_event.gesture {
-                        phonecam_media::HandGesture::OpenPalm => {
-                            if scratch.tracker.is_tracking_locked() {
-                                "✋ Open Palm: Tracking Locked"
-                            } else {
-                                "✋ Open Palm: Tracking Unlocked"
-                            }
-                        }
-                        phonecam_media::HandGesture::PeaceV
-                        | phonecam_media::HandGesture::ThumbsUp => {
-                            if scratch.tracker.zoom > 1.5 {
-                                "✌ V-Sign: 2.0x Zoom"
-                            } else {
-                                "✌ V-Sign: 1.0x Zoom"
-                            }
-                        }
-                        _ => action,
-                    };
-                    {
-                        let mut state = self.state.lock();
-                        state.set_toast(msg, 2500);
-                        state.active_gesture = Some(gesture_event.gesture);
-                        state.gesture_action = Some(msg.to_string());
-                        state.tracking_locked = scratch.tracker.is_tracking_locked();
-                    }
-                    self.bump_state_version();
-                }
-            } else if gesture_event.gesture != phonecam_media::HandGesture::None {
-                let state_needs_update = {
-                    let mut state = self.state.lock();
-                    if state.active_gesture != Some(gesture_event.gesture) {
-                        state.active_gesture = Some(gesture_event.gesture);
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if state_needs_update {
-                    self.bump_state_version();
-                }
-            } else {
-                let state_needs_update = {
-                    let mut state = self.state.lock();
-                    if state.active_gesture.is_some() {
-                        state.active_gesture = None;
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if state_needs_update {
-                    self.bump_state_version();
-                }
-            }
-        }
-
-        if auto_framing {
-            scratch.tracker.step();
-            let crop = scratch.tracker.compute_crop(planes.width, planes.height);
-            if scratch.auto_framing_scratch.capacity() < needed {
-                if let Some(buf) = self.take_spare_buffer(needed) {
-                    scratch.auto_framing_scratch = buf;
-                } else {
-                    scratch.auto_framing_scratch = Vec::with_capacity(needed);
-                }
-            }
-            scratch.auto_framing_scratch.resize(needed, 0);
-            phonecam_media::AutoFramingTracker::crop_bgra(
-                &scratch.bgra,
-                planes.width as usize,
-                planes.height as usize,
-                &crop,
-                &mut scratch.auto_framing_scratch,
-                planes.width as usize,
-                planes.height as usize,
-            );
-            std::mem::swap(&mut scratch.bgra, &mut scratch.auto_framing_scratch);
-        }
-        if portrait_blur {
-            phonecam_media::apply_portrait_blur(
-                &mut scratch.bgra,
-                planes.width as usize,
-                planes.height as usize,
-                phonecam_media::BlurIntensity::Studio,
-                blur_amt,
-            );
-        }
-        if lut_preset != phonecam_media::LutPreset::None
-            && lut_preset != phonecam_media::LutPreset::Natural
-        {
-            phonecam_media::apply_lut(&mut scratch.bgra, lut_preset);
         }
 
         let needs_transform = mirror || rotation != 0;
@@ -1725,6 +1924,19 @@ impl Runtime {
         }
     }
 
+    fn prepare_bgra_buffer(&self, scratch: &mut PublishScratch, needed: usize) {
+        if scratch.bgra.capacity() < needed {
+            if scratch.spare.capacity() >= needed {
+                std::mem::swap(&mut scratch.bgra, &mut scratch.spare);
+            } else if let Some(buf) = self.take_spare_buffer(needed) {
+                scratch.bgra = buf;
+            } else {
+                scratch.bgra = Vec::with_capacity(needed);
+            }
+        }
+        scratch.bgra.resize(needed, 0);
+    }
+
     /// The one-second tick: stats, placeholder, ladder, discovery beacon.
     fn spawn_stats(self: &Arc<Self>) {
         let runtime = self.clone();
@@ -1736,15 +1948,18 @@ impl Runtime {
                 tick_count = tick_count.wrapping_add(1);
                 let now = now_ms();
 
-                // --- placeholder after a grace period with no frames
+                // --- placeholder after a grace period with no frames (once per disconnect)
                 let last_frame = runtime.last_frame_at_ms.load(Ordering::Relaxed);
                 if runtime.vcam_enabled.load(Ordering::Relaxed)
                     && last_frame > 0
                     && now - last_frame > 3000
+                    && !runtime.placeholder_published.load(Ordering::Relaxed)
                 {
                     let mut writer = runtime.writer.lock();
                     if let Some(writer) = writer.as_mut() {
-                        let _ = writer.publish_placeholder("no frames for 3s");
+                        if writer.publish_placeholder("no frames for 3s").is_ok() {
+                            runtime.placeholder_published.store(true, Ordering::Relaxed);
+                        }
                     }
                 }
 
@@ -1867,6 +2082,7 @@ impl Runtime {
         self.want_stream.store(true, Ordering::Relaxed);
         self.session.note_start_stream();
         self.last_frame_at_ms.store(0, Ordering::Relaxed);
+        self.placeholder_published.store(false, Ordering::Relaxed);
 
         // Clear any previous error reported for the earlier stream attempt.
         self.session.clear_error();
@@ -1897,6 +2113,15 @@ impl Runtime {
         });
         self.queue_command(DesktopToPhone::SetAntiFlicker {
             mode: settings.anti_flicker,
+        });
+        self.queue_command(DesktopToPhone::SetExposure {
+            compensation: settings.exposure,
+        });
+        self.queue_command(DesktopToPhone::SetWhiteBalance {
+            kelvin: settings.white_balance_kelvin,
+        });
+        self.queue_command(DesktopToPhone::SetFocus {
+            distance: settings.focus_distance,
         });
         self.queue_command(DesktopToPhone::SetAudioStream {
             enabled: settings.stream_audio,
@@ -1951,15 +2176,42 @@ impl Runtime {
 
     /// Updates digital zoom immediately via `set_image`.
     pub fn set_zoom(&self, zoom: f32) {
-        let clamped = zoom.max(1.0);
-        self.zoom_bits.store(clamped.to_bits(), Ordering::Relaxed);
-        let (mirror, rotation) = {
+        let (mirror, rotation, min_zoom, max_zoom) = {
             let state = self.state.lock();
+            let active_camera = state
+                .core
+                .as_ref()
+                .and_then(|c| c.phone.as_ref())
+                .map(|p| p.camera.as_str())
+                .unwrap_or(state.settings.camera.as_str());
+            let cam_cap = state.capabilities.as_ref().and_then(|caps| {
+                caps.cameras
+                    .iter()
+                    .find(|c| c.id == active_camera || c.facing.as_str() == active_camera)
+                    .or_else(|| caps.cameras.first())
+            });
+            let min_z = cam_cap
+                .map(|c| if c.min_zoom > 0.0 { c.min_zoom } else { 1.0 })
+                .unwrap_or(0.5);
+            let max_z = cam_cap
+                .map(|c| {
+                    if c.max_zoom > min_z {
+                        c.max_zoom
+                    } else {
+                        (min_z + 1.0).max(8.0)
+                    }
+                })
+                .unwrap_or(10.0);
             (
                 state.settings.output_mirror,
                 state.settings.output_rotation % 360,
+                min_z,
+                max_z,
             )
         };
+        let safe_zoom = if zoom.is_finite() { zoom } else { 1.0 };
+        let clamped = safe_zoom.clamp(min_zoom, max_zoom);
+        self.zoom_bits.store(clamped.to_bits(), Ordering::Relaxed);
         if let Some(phone) = self.session.phone_state.lock().as_mut() {
             phone.zoom = clamped;
         }
@@ -2125,6 +2377,9 @@ impl Runtime {
 
     /// Configures automatic USB ADB connection upon device plug-in.
     pub fn set_auto_connect_usb(&self, enabled: bool) {
+        if !enabled {
+            *self.last_auto_usb_serial.lock() = None;
+        }
         {
             let mut state = self.state.lock();
             state.settings.auto_connect_usb = enabled;
@@ -2141,6 +2396,45 @@ impl Runtime {
             let _ = crate::settings::save(&state.settings);
         }
         self.broadcast_state();
+    }
+
+    /// Configures automatically starting the stream when a phone connects.
+    pub fn set_auto_start_stream(&self, enabled: bool) {
+        {
+            let mut state = self.state.lock();
+            state.settings.auto_start_stream = enabled;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.broadcast_state();
+    }
+
+    /// Configures automatically matching desktop output rotation to the phone's orientation.
+    pub fn set_auto_rotate(&self, enabled: bool) {
+        let mut applied_now = false;
+        let mirror = {
+            let mut state = self.state.lock();
+            state.settings.auto_rotate = enabled;
+            let _ = crate::settings::save(&state.settings);
+            state.settings.output_mirror
+        };
+        if enabled {
+            let orientation = self
+                .session
+                .phone_state
+                .lock()
+                .as_ref()
+                .and_then(|p| p.orientation);
+            if let Some(deg) = orientation {
+                let target_rot = deg % 360;
+                if matches!(target_rot, 0 | 90 | 180 | 270) {
+                    self.sync_output_transform(mirror, target_rot);
+                    applied_now = true;
+                }
+            }
+        }
+        if !applied_now {
+            self.broadcast_state();
+        }
     }
 
     /// Asks the phone to stop, leaving the virtual camera running.
@@ -2277,12 +2571,24 @@ impl Runtime {
             let mut outbox = self.outbox.lock();
             std::mem::take(&mut *outbox)
         };
-        for command in commands {
+        let mut iter = commands.into_iter();
+        while let Some(command) = iter.next() {
             if let Some(bytes) = control_frame(&command) {
                 if !conn.write_all(&bytes) {
-                    // Put the rest back so a reconnect can send them.
-                    let mut outbox = self.outbox.lock();
-                    outbox.extend(commands_remaining(&bytes));
+                    // Preserve the failed command and all remaining commands in order,
+                    // ahead of any newer commands queued concurrently.
+                    let mut rest = Vec::with_capacity(1 + iter.len());
+                    rest.push(command);
+                    rest.extend(iter);
+                    let newly_queued = {
+                        let mut outbox = self.outbox.lock();
+                        let newer = std::mem::take(&mut *outbox);
+                        *outbox = rest;
+                        newer
+                    };
+                    for newer in newly_queued {
+                        self.send_to_phone(newer);
+                    }
                     break;
                 }
             }
@@ -2686,11 +2992,7 @@ impl Runtime {
 
     pub fn log_info(&self, message: &str) {
         let redacted = phonecam_protocol::redact(message);
-        if crate::logging::is_initialized() {
-            crate::logging::append_file_line(LogLevel::Info, LogSource::Core, &redacted);
-        } else {
-            self.log.write("INFO", &redacted);
-        }
+        crate::logging::append_file_line(LogLevel::Info, LogSource::Core, &redacted);
         self.state
             .lock()
             .push_log(LogLevel::Info, LogSource::Core, redacted);
@@ -2718,15 +3020,11 @@ impl Runtime {
 
     pub fn log_error(&self, code: &str, message: &str) {
         let redacted = phonecam_protocol::redact(message);
-        if crate::logging::is_initialized() {
-            crate::logging::append_file_line(
-                LogLevel::Error,
-                LogSource::Core,
-                &format!("{code}: {redacted}"),
-            );
-        } else {
-            self.log.write("ERROR", &format!("{code}: {redacted}"));
-        }
+        crate::logging::append_file_line(
+            LogLevel::Error,
+            LogSource::Core,
+            &format!("{code}: {redacted}"),
+        );
         let user_friendly = Self::clean_user_error_message(&redacted);
         {
             let mut state = self.state.lock();
@@ -2867,9 +3165,30 @@ impl Runtime {
     }
 }
 
-/// An empty remainder, kept so the retry path has one place to change.
-fn commands_remaining(_last: &[u8]) -> Vec<DesktopToPhone> {
-    Vec::new()
+fn remap_face_to_crop(
+    face: Option<phonecam_media::FaceRect>,
+    crop: &phonecam_media::CropRect,
+    src_w: u32,
+    src_h: u32,
+) -> Option<phonecam_media::FaceRect> {
+    let f = face?;
+    if crop.width == 0 || crop.height == 0 {
+        return Some(f);
+    }
+    let cx = (f.center_x * src_w as f32 - crop.x as f32) / crop.width as f32;
+    let cy = (f.center_y * src_h as f32 - crop.y as f32) / crop.height as f32;
+    if !(0.0..=1.0).contains(&cx) || !(0.0..=1.0).contains(&cy) {
+        return None;
+    }
+    let w = (f.width * src_w as f32 / crop.width as f32).clamp(0.05, 0.95);
+    let h = (f.height * src_h as f32 / crop.height as f32).clamp(0.05, 0.95);
+    Some(phonecam_media::FaceRect::new(
+        (cx - w * 0.5).clamp(0.0, 1.0 - w),
+        (cy - h * 0.5).clamp(0.0, 1.0 - h),
+        w,
+        h,
+        f.confidence,
+    ))
 }
 
 #[cfg(windows)]
@@ -2890,6 +3209,8 @@ fn windows_os_name() -> String {
         w_reserved: u8,
     }
     type RtlGetVersionFn = unsafe extern "system" fn(*mut OSVERSIONINFOEXW) -> i32;
+    // SAFETY: `ntdll.dll` is always loaded in Win32 processes, `RtlGetVersion` matches the
+    // `RtlGetVersionFn` ABI, and `info` is zeroed with `dw_os_version_info_size` initialized.
     unsafe {
         if let Ok(ntdll) = GetModuleHandleA(windows::core::s!("ntdll.dll")) {
             if let Some(proc) = GetProcAddress(ntdll, windows::core::s!("RtlGetVersion")) {
@@ -2947,6 +3268,7 @@ pub fn local_ipv4_addresses() -> Vec<String> {
 
 #[cfg(windows)]
 fn windows_addresses() -> Vec<String> {
+    use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
     use windows::Win32::NetworkManagement::IpHelper::GET_ADAPTERS_ADDRESSES_FLAGS;
     use windows::Win32::NetworkManagement::IpHelper::{
         GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
@@ -2974,21 +3296,36 @@ fn windows_addresses() -> Vec<String> {
     ];
 
     let mut size: u32 = 16 * 1024;
-    let mut buffer = vec![0u8; size as usize];
+    let mut buffer: Vec<u64> = vec![0u64; (size as usize).div_ceil(8)];
     let flags = GET_ADAPTERS_ADDRESSES_FLAGS(
         GAA_FLAG_SKIP_ANYCAST.0 | GAA_FLAG_SKIP_MULTICAST.0 | GAA_FLAG_SKIP_DNS_SERVER.0,
     );
 
-    let result = unsafe {
-        GetAdaptersAddresses(
-            AF_INET.0 as u32,
-            flags,
-            None,
-            Some(buffer.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
-            &mut size,
-        )
-    };
-    if result != 0 {
+    let mut succeeded = false;
+    for _ in 0..4 {
+        let mut buf_size = (buffer.len() * 8) as u32;
+        // SAFETY: `buffer` is 8-byte aligned (from `Vec<u64>`) and holds `buf_size` writable bytes.
+        let result = unsafe {
+            GetAdaptersAddresses(
+                AF_INET.0 as u32,
+                flags,
+                None,
+                Some(buffer.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
+                &mut buf_size,
+            )
+        };
+        if result == 0 {
+            succeeded = true;
+            break;
+        }
+        if result == ERROR_BUFFER_OVERFLOW.0 && buf_size > (buffer.len() * 8) as u32 {
+            size = buf_size;
+            buffer.resize((size as usize).div_ceil(8), 0);
+            continue;
+        }
+        return Vec::new();
+    }
+    if !succeeded {
         return Vec::new();
     }
 
@@ -2996,8 +3333,10 @@ fn windows_addresses() -> Vec<String> {
     let mut current = buffer.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
 
     while !current.is_null() {
+        // SAFETY: `current` traverses the valid linked list populated inside `buffer` by `GetAdaptersAddresses`.
         let adapter = unsafe { &*current };
 
+        // SAFETY: `adapter.Description` is either null or a valid null-terminated UTF-16 string in `buffer`.
         let description = unsafe { wide_to_string(adapter.Description) };
         let blocked = BLOCKED.iter().any(|needle| description.contains(needle));
 
@@ -3005,12 +3344,16 @@ fn windows_addresses() -> Vec<String> {
         {
             let mut unicast = adapter.FirstUnicastAddress;
             while !unicast.is_null() {
+                // SAFETY: `unicast` traverses the valid unicast linked list inside `buffer`.
                 let entry = unsafe { &*unicast };
                 let sockaddr = entry.Address.lpSockaddr;
                 if !sockaddr.is_null() {
+                    // SAFETY: `sockaddr` is a non-null `SOCKADDR` header written by `GetAdaptersAddresses`.
                     let family = unsafe { (*sockaddr).sa_family };
                     if family == AF_INET {
+                        // SAFETY: `sa_family == AF_INET` guarantees `sockaddr` points to a valid `SOCKADDR_IN`.
                         let sin = unsafe { &*(sockaddr as *const SOCKADDR_IN) };
+                        // SAFETY: Reading `S_un_b` byte octets of an initialized `IN_ADDR`.
                         let octets = unsafe { sin.sin_addr.S_un.S_un_b };
                         let text = format!(
                             "{}.{}.{}.{}",
@@ -3048,15 +3391,22 @@ fn is_cgnat(address: &str) -> bool {
     }
 }
 
+/// Converts a null-terminated Win32 `PWSTR` into a `String`.
+///
+/// # Safety
+/// `ptr` must either be null or point to a valid, null-terminated UTF-16 string
+/// that remains immutable for the duration of the call.
 #[cfg(windows)]
 unsafe fn wide_to_string(ptr: windows::core::PWSTR) -> String {
     if ptr.is_null() {
         return String::new();
     }
     let mut len = 0usize;
+    // SAFETY: Caller guarantees `ptr` points to a null-terminated UTF-16 buffer.
     while unsafe { *ptr.0.add(len) } != 0 {
         len += 1;
     }
+    // SAFETY: `ptr.0` has at least `len` initialized `u16` elements before the terminator.
     let slice = unsafe { std::slice::from_raw_parts(ptr.0, len) };
     String::from_utf16_lossy(slice)
 }
@@ -3066,6 +3416,15 @@ fn hostname() -> String {
 }
 
 impl Runtime {
+    fn service_port(&self) -> u16 {
+        let p = self.port.load(Ordering::Relaxed);
+        if p > 0 && p <= u16::MAX as i64 {
+            p as u16
+        } else {
+            SERVICE_PORT
+        }
+    }
+
     /// Locates adb, once, and remembers why it failed if it did.
     ///
     /// Called at startup and again by `refresh_usb`, because a developer build can
@@ -3122,12 +3481,56 @@ impl Runtime {
                 })
         };
 
+        let port = self.service_port();
         let forwarding = adb
             .as_ref()
-            .map(|adb| adb.is_reverse_active(SERVICE_PORT, target_serial.as_deref()))
+            .map(|adb| adb.is_reverse_active(port, target_serial.as_deref()))
             .unwrap_or(false);
 
+        let ready_serial = target_serial
+            .clone()
+            .filter(|s| devices.iter().any(|d| &d.serial == s && d.is_ready()));
+
+        {
+            let mut last = self.last_auto_usb_serial.lock();
+            if let Some(prev) = last.as_ref() {
+                if !devices.iter().any(|d| &d.serial == prev && d.is_ready()) {
+                    *last = None;
+                }
+            }
+        }
+
         self.sync_usb_state(devices, forwarding);
+
+        let auto_connect = self.state.lock().settings.auto_connect_usb;
+        let is_idle_and_unpaired = self.session.device_id.lock().is_empty()
+            && *self.session.phase.lock() == StreamPhase::Idle;
+        if auto_connect && self.running.load(Ordering::Relaxed) && is_idle_and_unpaired {
+            if let Some(serial) = ready_serial {
+                let already_tried = self.last_auto_usb_serial.lock().as_deref() == Some(&serial);
+                if !already_tried
+                    && self
+                        .usb_connecting
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    *self.last_auto_usb_serial.lock() = Some(serial.clone());
+                    if let Some(rt) = self.self_weak.upgrade() {
+                        let spawned = std::thread::Builder::new()
+                            .name("phonecam-usb-autoconnect".to_string())
+                            .spawn(move || {
+                                rt.connect_usb_device(Some(serial));
+                                rt.usb_connecting.store(false, Ordering::SeqCst);
+                            });
+                        if spawned.is_err() {
+                            self.usb_connecting.store(false, Ordering::SeqCst);
+                        }
+                    } else {
+                        self.usb_connecting.store(false, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
     }
 
     fn sync_usb_state(&self, devices: Vec<crate::adb::AdbDevice>, forwarding: bool) {
@@ -3201,8 +3604,9 @@ impl Runtime {
 
         let Some(registrar) = crate::vcam::Registrar::locate(exe_dir.as_deref()) else {
             self.vcam_registered.store(false, Ordering::Relaxed);
-            self.log.write(
-                "WARN",
+            crate::logging::append_file_line(
+                LogLevel::Warn,
+                LogSource::Core,
                 "the virtual camera registrar was not found beside the app",
             );
             return;
@@ -3215,17 +3619,24 @@ impl Runtime {
         match state {
             crate::vcam::RegistrationState::Registered => {
                 *self.vcam_error.lock() = None;
-                self.log
-                    .write("INFO", "virtual camera: registered and enumerable");
+                crate::logging::append_file_line(
+                    LogLevel::Info,
+                    LogSource::Core,
+                    "virtual camera: registered and enumerable",
+                );
             }
             crate::vcam::RegistrationState::NotRegistered { detail } => {
                 // Say what the tool said rather than guessing at a cause.
-                self.log
-                    .write("WARN", &format!("virtual camera not registered: {detail}"));
+                crate::logging::append_file_line(
+                    LogLevel::Warn,
+                    LogSource::Core,
+                    &format!("virtual camera not registered: {detail}"),
+                );
             }
             crate::vcam::RegistrationState::Unavailable { detail } => {
-                self.log.write(
-                    "WARN",
+                crate::logging::append_file_line(
+                    LogLevel::Warn,
+                    LogSource::Core,
                     &format!("virtual camera status unavailable: {detail}"),
                 );
             }
@@ -3318,7 +3729,7 @@ impl Runtime {
                         let msg = "Virtual camera registrar (phonecam-vcam-register.exe) was not found. Reinstall PhoneCam or run the installer as administrator.".to_string();
                         rt.vcam_registered.store(false, Ordering::Relaxed);
                         *rt.vcam_error.lock() = Some(msg.clone());
-                        rt.log.write("ERROR", &msg);
+                        crate::logging::append_file_line(LogLevel::Error, LogSource::Core, &msg);
                         rt.set_notice(
                             FailureCode::VcamUnavailable,
                             vec![("message".into(), msg)],
@@ -3341,8 +3752,11 @@ impl Runtime {
                 self.vcam_registered.store(enabled, Ordering::Relaxed);
                 *self.vcam_error.lock() = None;
                 self.state.lock().dismiss_notice("vcam");
-                self.log
-                    .write("INFO", &format!("virtual camera {action} succeeded"));
+                crate::logging::append_file_line(
+                    LogLevel::Info,
+                    LogSource::Core,
+                    &format!("virtual camera {action} succeeded"),
+                );
             }
             Err(err) => {
                 let human = format_vcam_error(action, &err);
@@ -3350,7 +3764,7 @@ impl Runtime {
                     self.vcam_registered.store(false, Ordering::Relaxed);
                 }
                 *self.vcam_error.lock() = Some(human.clone());
-                self.log.write("ERROR", &human);
+                crate::logging::append_file_line(LogLevel::Error, LogSource::Core, &human);
                 self.set_notice(
                     FailureCode::VcamUnavailable,
                     vec![("message".into(), human)],
@@ -3380,14 +3794,15 @@ impl Runtime {
 
         let target = serial.or_else(|| self.active_usb_serial.lock().clone());
         *self.active_usb_serial.lock() = target.clone();
+        let port = self.service_port();
 
-        if let Err(error) = adb.enable_reverse(SERVICE_PORT, target.as_deref()) {
+        if let Err(error) = adb.enable_reverse(port, target.as_deref()) {
             self.log_error("usb_forward_failed", &error);
             return;
         }
-        self.log_info(&format!("cable tunnel open on {SERVICE_PORT}"));
+        self.log_info(&format!("cable tunnel open on {port}"));
 
-        if let Err(error) = adb.start_phone_session(SERVICE_PORT, target.as_deref()) {
+        if let Err(error) = adb.start_phone_session(port, target.as_deref()) {
             let not_installed = error.contains("Not found")
                 || error.contains("not found")
                 || error.contains("no service started")
@@ -3423,13 +3838,21 @@ impl Runtime {
             return;
         };
         let serial = self.active_usb_serial.lock().clone();
-        let candidates = [
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Some(dir) = exe_dir {
+            candidates.push(dir.join("PhoneCam.apk"));
+            candidates.push(dir.join("resources").join("PhoneCam.apk"));
+        }
+        candidates.extend([
             PathBuf::from("dist/unpacked/PhoneCam.apk"),
             PathBuf::from("dist/PhoneCam.apk"),
             PathBuf::from("apps/android/app/build/outputs/apk/release/app-release.apk"),
             PathBuf::from("apps/android/app/build/outputs/apk/debug/app-debug.apk"),
-        ];
-        let found_apk = candidates.iter().find(|p| p.exists());
+        ]);
+        let found_apk = candidates.iter().find(|p| p.is_file());
         if let Some(apk) = found_apk {
             self.log_info(&format!("installing PhoneCam APK from {}", apk.display()));
             match adb.install_apk(apk, serial.as_deref()) {
@@ -3499,10 +3922,12 @@ impl Runtime {
 
     /// Closes the tunnel.
     pub fn disconnect_usb(&self) {
+        *self.last_auto_usb_serial.lock() = None;
         let adb = self.adb.lock().clone();
         let serial = self.active_usb_serial.lock().take();
+        let port = self.service_port();
         if let Some(adb) = adb {
-            if let Err(error) = adb.disable_reverse(SERVICE_PORT, serial.as_deref()) {
+            if let Err(error) = adb.disable_reverse(port, serial.as_deref()) {
                 self.log_error("usb_forward_failed", &error);
             } else {
                 self.log_info("cable tunnel closed");
@@ -4535,6 +4960,7 @@ mod tests {
             charging: false,
             thermal: phonecam_protocol::ThermalState::None,
             anti_flicker: phonecam_protocol::AntiFlickerMode::Auto,
+            orientation: None,
         };
         runtime.reconcile_resolution_downgrade(&downgraded);
         assert!(runtime
@@ -4622,5 +5048,126 @@ mod tests {
         runtime.set_audio_stream(false);
         assert!(!runtime.state.lock().settings.stream_audio);
         assert_eq!(runtime.state.lock().audio_level, 0.0);
+    }
+
+    #[test]
+    fn set_zoom_respects_ultrawide_min_zoom_from_capabilities() {
+        let runtime = Runtime::new(&phonecam_ui::views::state::Settings::default());
+
+        // Fallback allows down to 0.5x when capabilities are not yet populated.
+        runtime.set_zoom(0.5);
+        assert!(matches!(
+            runtime.outbox.lock().last(),
+            Some(DesktopToPhone::SetImage { zoom, .. }) if (*zoom - 0.5).abs() < 0.001
+        ));
+
+        // Explicit ultrawide capability (0.6x..8.0x) clamps to 0.6x.
+        runtime.state.lock().capabilities = Some(CapabilitiesPayload {
+            device: phonecam_protocol::DeviceCapabilities {
+                model: "Pixel".into(),
+                android_version: 34,
+                app_version: "1.0.0".into(),
+            },
+            cameras: vec![phonecam_protocol::CameraCapability {
+                id: "back".into(),
+                facing: phonecam_protocol::CameraFacing::Back,
+                resolutions: vec!["1920x1080".into()],
+                fps: vec![30],
+                torch: true,
+                focus: true,
+                zoom: true,
+                exposure: true,
+                white_balance: true,
+                min_zoom: 0.6,
+                max_zoom: 8.0,
+                orientation_degrees: 90,
+            }],
+        });
+
+        runtime.set_zoom(0.3);
+        assert!(matches!(
+            runtime.outbox.lock().last(),
+            Some(DesktopToPhone::SetImage { zoom, .. }) if (*zoom - 0.6).abs() < 0.001
+        ));
+    }
+
+    #[test]
+    fn send_start_stream_queues_persisted_sensor_controls() {
+        let mut settings = phonecam_ui::views::state::Settings::default();
+        settings.exposure = -2;
+        settings.white_balance_kelvin = Some(4800);
+        settings.focus_distance = Some(3.5);
+        settings.anti_flicker = AntiFlickerMode::Hz50;
+        let runtime = Runtime::new(&settings);
+
+        runtime.send_start_stream(true);
+
+        let outbox = runtime.outbox.lock().clone();
+        assert!(outbox
+            .iter()
+            .any(|m| matches!(m, DesktopToPhone::SetExposure { compensation: -2 })));
+        assert!(outbox
+            .iter()
+            .any(|m| matches!(m, DesktopToPhone::SetWhiteBalance { kelvin: Some(4800) })));
+        assert!(outbox.iter().any(|m| matches!(
+            m,
+            DesktopToPhone::SetFocus { distance: Some(d) } if (*d - 3.5).abs() < 0.001
+        )));
+        assert!(outbox.iter().any(|m| matches!(
+            m,
+            DesktopToPhone::SetAntiFlicker {
+                mode: AntiFlickerMode::Hz50
+            }
+        )));
+        assert!(matches!(outbox.last(), Some(DesktopToPhone::StartStream)));
+    }
+
+    #[test]
+    fn flush_pending_requeues_unsent_commands_on_write_failure() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = std::net::TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        drop(server);
+
+        let conn = Connection::new(client).unwrap();
+        conn.close();
+
+        let runtime = Runtime::new(&phonecam_ui::views::state::Settings::default());
+        runtime.queue_command(DesktopToPhone::SetExposure { compensation: 1 });
+        runtime.queue_command(DesktopToPhone::StartStream);
+
+        runtime.flush_pending(&conn);
+
+        let outbox = runtime.outbox.lock().clone();
+        assert_eq!(outbox.len(), 2);
+        assert!(matches!(
+            outbox[0],
+            DesktopToPhone::SetExposure { compensation: 1 }
+        ));
+        assert!(matches!(outbox[1], DesktopToPhone::StartStream));
+    }
+
+    #[test]
+    fn hidden_window_with_visual_fx_runs_fx_pipeline_without_populating_preview() {
+        let mut settings = phonecam_ui::views::state::Settings::default();
+        settings.vcam_enabled = true;
+        settings.preview_enabled = true;
+        settings.lut_preset = phonecam_media::LutPreset::WarmStudio;
+        settings.portrait_blur = true;
+        settings.auto_framing = true;
+        let runtime = Runtime::new(&settings);
+        runtime.set_window_visible(false);
+
+        let frame = phonecam_media::DecodedFrame::new(16, 16, vec![128; 384], 1_000);
+        let mut scratch = PublishScratch::default();
+        runtime.publish(frame, &mut scratch);
+
+        assert!(runtime.frames.lock().is_none());
+        assert_eq!(
+            scratch.bgra.len(),
+            16 * 16 * 4,
+            "visual FX path must still execute for vcam when window is hidden"
+        );
     }
 }

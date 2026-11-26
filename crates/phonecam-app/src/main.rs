@@ -316,6 +316,7 @@ fn start_effect_pump(
     runtime: std::sync::Arc<Runtime>,
     hwnd: Option<isize>,
 ) {
+    let adb_tx = spawn_adb_worker();
     cx.spawn(async move |cx| loop {
         cx.background_executor()
             .timer(Duration::from_millis(30))
@@ -327,10 +328,22 @@ fn start_effect_pump(
         }
 
         for effect in effects {
-            apply_effect(&runtime, effect, &window, &view, hwnd, cx);
+            apply_effect(&runtime, effect, &window, &view, hwnd, &adb_tx, cx);
         }
     })
     .detach();
+}
+
+fn spawn_adb_worker() -> std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+    let _ = std::thread::Builder::new()
+        .name("phonecam-adb-worker".to_string())
+        .spawn(move || {
+            while let Ok(task) = rx.recv() {
+                task();
+            }
+        });
+    tx
 }
 
 fn open_platform_tools_url(runtime: &Runtime) {
@@ -364,6 +377,7 @@ fn apply_effect(
     window: &WindowHandle<AppView>,
     view: &gpui::Entity<AppView>,
     hwnd: Option<isize>,
+    adb_tx: &std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>,
     cx: &mut gpui::AsyncApp,
 ) {
     match effect {
@@ -377,10 +391,22 @@ fn apply_effect(
         SideEffect::SetVcam(enabled) => runtime.set_vcam(enabled),
         SideEffect::RestartVcam => runtime.restart_vcam(),
         SideEffect::RefreshState => runtime.broadcast_state(),
-        SideEffect::RefreshUsb => runtime.refresh_usb(),
-        SideEffect::ConnectUsb(serial) => runtime.connect_usb_device(serial),
-        SideEffect::DisconnectUsb => runtime.disconnect_usb(),
-        SideEffect::RestartAdb => runtime.restart_adb(),
+        SideEffect::RefreshUsb => {
+            let rt = runtime.clone();
+            let _ = adb_tx.send(Box::new(move || rt.refresh_usb()));
+        }
+        SideEffect::ConnectUsb(serial) => {
+            let rt = runtime.clone();
+            let _ = adb_tx.send(Box::new(move || rt.connect_usb_device(serial)));
+        }
+        SideEffect::DisconnectUsb => {
+            let rt = runtime.clone();
+            let _ = adb_tx.send(Box::new(move || rt.disconnect_usb()));
+        }
+        SideEffect::RestartAdb => {
+            let rt = runtime.clone();
+            let _ = adb_tx.send(Box::new(move || rt.restart_adb()));
+        }
         SideEffect::OpenPlatformToolsUrl => open_platform_tools_url(runtime),
         SideEffect::ForgetDevice(target_id) => runtime.forget_device(target_id.as_deref()),
         SideEffect::SetTab(tab) => {
@@ -491,6 +517,8 @@ fn apply_effect(
         SideEffect::SetAutoConnectUsb(enabled) => runtime.set_auto_connect_usb(enabled),
         SideEffect::SetMinimizeToTray(enabled) => runtime.set_minimize_to_tray(enabled),
         SideEffect::SetAudioStream(enabled) => runtime.set_audio_stream(enabled),
+        SideEffect::SetAutoStartStream(enabled) => runtime.set_auto_start_stream(enabled),
+        SideEffect::SetAutoRotate(enabled) => runtime.set_auto_rotate(enabled),
         SideEffect::SetLogLevel(level) => {
             logging::set_level(level);
             runtime.set_log_level(level);
@@ -537,7 +565,10 @@ fn apply_effect(
                     .spawn();
             }
         }
-        SideEffect::InstallPhoneApp => runtime.install_phone_app(),
+        SideEffect::InstallPhoneApp => {
+            let rt = runtime.clone();
+            let _ = adb_tx.send(Box::new(move || rt.install_phone_app()));
+        }
         SideEffect::ToggleAlwaysOnTop => {
             let snapshot = {
                 let mut state = runtime.state.lock();
@@ -714,6 +745,15 @@ fn handle_tray_command(
             }
             runtime.set_window_visible(true);
         }
+        tray::TrayCommand::ToggleStream => {
+            let is_streaming =
+                runtime.want_stream.load(Ordering::Relaxed) || runtime.session.phone_is_streaming();
+            if is_streaming {
+                phonecam_ui::push_effect(SideEffect::StopStream);
+            } else {
+                phonecam_ui::push_effect(SideEffect::StartStream);
+            }
+        }
         tray::TrayCommand::ToggleVcam => {
             let enabled = !runtime.vcam_enabled.load(Ordering::Relaxed);
             phonecam_ui::push_effect(SideEffect::SetVcam(enabled));
@@ -818,19 +858,27 @@ fn start_tray(
     }
     *runtime.tray.lock() = installed;
 
-    // Closing hides the window instead of quitting, so the camera keeps running.
-    // The tray's Quit is the only deliberate exit.
+    // Closing hides the window when `minimize_to_tray` is enabled so the virtual
+    // camera keeps running; otherwise it exits the application cleanly.
     let close_runtime = runtime.clone();
     window
         .update(cx, |_, window, cx| {
-            window.on_window_should_close(cx, move |window, _cx| {
-                tracing::info!("window close requested; hiding instead of quitting");
+            window.on_window_should_close(cx, move |window, cx| {
                 persist_window_geometry(window, &close_runtime);
-                tray::hide_window(hwnd);
-                close_runtime.set_window_visible(false);
-                // Refuse the close: the window is hidden, not destroyed, so the
-                // camera and the listener keep running.
-                false
+                let minimize_to_tray = close_runtime.state.lock().settings.minimize_to_tray;
+                if minimize_to_tray {
+                    tracing::info!("window close requested; hiding instead of quitting");
+                    tray::hide_window(hwnd);
+                    close_runtime.set_window_visible(false);
+                    // Refuse the close: the window is hidden, not destroyed, so the
+                    // camera and the listener keep running.
+                    false
+                } else {
+                    tracing::info!("window close requested; minimize_to_tray is false, quitting");
+                    close_runtime.running.store(false, Ordering::Relaxed);
+                    cx.quit();
+                    true
+                }
             });
         })
         .ok();

@@ -89,6 +89,12 @@ struct SettingsFile {
     minimize_to_tray: Option<bool>,
     #[serde(default)]
     stream_audio: Option<bool>,
+    #[serde(default)]
+    auto_start_stream: Option<bool>,
+    #[serde(default)]
+    auto_rotate: Option<bool>,
+    #[serde(default)]
+    server_id: Option<String>,
 }
 
 /// Loads the settings, falling back to defaults per field.
@@ -204,6 +210,8 @@ fn coerce(file: SettingsFile) -> Settings {
         auto_connect_usb: file.auto_connect_usb.unwrap_or(defaults.auto_connect_usb),
         minimize_to_tray: file.minimize_to_tray.unwrap_or(defaults.minimize_to_tray),
         stream_audio: file.stream_audio.unwrap_or(defaults.stream_audio),
+        auto_start_stream: file.auto_start_stream.unwrap_or(defaults.auto_start_stream),
+        auto_rotate: file.auto_rotate.unwrap_or(defaults.auto_rotate),
     }
 }
 
@@ -212,15 +220,69 @@ fn is_dimension(value: u32) -> bool {
     value >= 16 && value <= 8192 && value % 2 == 0
 }
 
+static CACHED_SERVER_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Loads the persisted `server_id` from `desktop-settings.json`, or generates a
+/// new one once and persists it so phones recognize this PC across restarts.
+pub fn load_or_create_server_id() -> String {
+    let path = settings_path();
+    let id = load_or_create_server_id_at(&path);
+    let _ = CACHED_SERVER_ID.set(id.clone());
+    id
+}
+
+fn load_or_create_server_id_at(path: &std::path::Path) -> String {
+    let existing_file = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<SettingsFile>(&text).ok());
+
+    if let Some(existing_id) = existing_file
+        .as_ref()
+        .and_then(|f| f.server_id.as_ref())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        return existing_id.to_string();
+    }
+
+    let generated = phonecam_core::pairing::new_server_id().unwrap_or_else(|| "pc-00000000".into());
+    let mut file = existing_file.unwrap_or_default();
+    file.server_id = Some(generated.clone());
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&file) {
+        let temp = path.with_extension("json.tmp");
+        if std::fs::write(&temp, text).is_ok() {
+            let _ = std::fs::rename(&temp, path);
+        }
+    }
+    generated
+}
+
 /// Writes the settings atomically.
 ///
 /// The write goes to a temporary file and is renamed over the real one, so a
 /// crash mid-write cannot leave a half-file that the next start has to discard.
 pub fn save(settings: &Settings) -> std::io::Result<()> {
-    let path = settings_path();
+    save_at(&settings_path(), settings, CACHED_SERVER_ID.get().cloned())
+}
+
+fn save_at(
+    path: &std::path::Path,
+    settings: &Settings,
+    fallback_server_id: Option<String>,
+) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+
+    let preserved_server_id = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<SettingsFile>(&text).ok())
+        .and_then(|f| f.server_id)
+        .filter(|s| !s.trim().is_empty())
+        .or(fallback_server_id);
 
     let file = SettingsFile {
         vcam_enabled: Some(settings.vcam_enabled),
@@ -256,12 +318,15 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
         auto_connect_usb: Some(settings.auto_connect_usb),
         minimize_to_tray: Some(settings.minimize_to_tray),
         stream_audio: Some(settings.stream_audio),
+        auto_start_stream: Some(settings.auto_start_stream),
+        auto_rotate: Some(settings.auto_rotate),
+        server_id: preserved_server_id,
     };
 
     let text = serde_json::to_string_pretty(&file)?;
     let temp = path.with_extension("json.tmp");
     std::fs::write(&temp, text)?;
-    std::fs::rename(&temp, &path)?;
+    std::fs::rename(&temp, path)?;
     Ok(())
 }
 
@@ -406,120 +471,44 @@ mod tests {
         assert_eq!(invalid.window_x, None);
         assert_eq!(invalid.window_y, None);
     }
-}
-
-/// The desktop's own log file, beside the settings.
-///
-/// The core writes `core.log` and the phone answers `adb logcat`, but the
-/// desktop's half of a problem was invisible in the Electron build: "it froze" or
-/// "it disconnected" produced nothing on this side, so a report could not be
-/// confirmed, dated, or tied to a state. This writes one line per event with a
-/// timestamp, and it is deliberately append-only and size-capped rather than
-/// rotated, because the interesting window is always the end.
-pub struct DesktopLog {
-    path: PathBuf,
-    written: std::sync::atomic::AtomicU64,
-}
-
-impl DesktopLog {
-    /// A log beside the settings file.
-    pub fn new() -> Self {
-        let path = settings_path().with_file_name("desktop.log");
-        Self {
-            path,
-            written: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-
-    pub fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-
-    /// Appends one line.
-    ///
-    /// A log that cannot be written must never take the app down with it, so the
-    /// failure is swallowed after one attempt to create the directory.
-    pub fn write(&self, level: &str, message: &str) {
-        use std::io::Write;
-
-        // Past a few megabytes, start over: the tail is what gets read.
-        const LIMIT: u64 = 2 * 1024 * 1024;
-        let count = self.written.load(std::sync::atomic::Ordering::Relaxed);
-        if count == 0 {
-            if let Ok(meta) = std::fs::metadata(&self.path) {
-                self.written
-                    .store(meta.len(), std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        if self.written.load(std::sync::atomic::Ordering::Relaxed) > LIMIT {
-            let _ = std::fs::remove_file(&self.path);
-            self.written.store(0, std::sync::atomic::Ordering::Relaxed);
-        }
-
-        if let Some(parent) = self.path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        let stamp = format_log_time(now_ms());
-        let line = format!("{stamp} {level:<5} {message}\n");
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-        {
-            if file.write_all(line.as_bytes()).is_ok() {
-                self.written
-                    .fetch_add(line.len() as u64, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-    }
-}
-
-impl Default for DesktopLog {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// `HH:MM:SS.mmm`, matching the diagnostics panel.
-fn format_log_time(ts_ms: i64) -> String {
-    let total_seconds = ts_ms.div_euclid(1000);
-    let millis = ts_ms.rem_euclid(1000);
-    let seconds = total_seconds.rem_euclid(86_400);
-    format!(
-        "{:02}:{:02}:{:02}.{:03}",
-        seconds / 3600,
-        (seconds % 3600) / 60,
-        seconds % 60,
-        millis
-    )
-}
-
-/// Milliseconds since the Unix epoch.
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-#[cfg(test)]
-mod log_tests {
-    use super::*;
 
     #[test]
-    fn the_log_writes_a_dated_line() {
-        let log = DesktopLog::new();
-        log.write("INFO", "unit test line");
+    fn auto_start_and_auto_rotate_default_false_and_parse() {
+        let defaults = parse("{}");
+        assert!(!defaults.auto_start_stream);
+        assert!(!defaults.auto_rotate);
 
-        // The default location may not be writable in a sandbox, so only assert
-        // when the write actually landed.
-        if let Ok(text) = std::fs::read_to_string(log.path()) {
-            assert!(text.contains("unit test line"), "log was {text:?}");
-            // A timestamp, so a freeze can be dated.
-            assert!(text.contains(':'), "log line has no time: {text:?}");
-        }
+        let enabled = parse(r#"{"auto_start_stream": true, "auto_rotate": true}"#);
+        assert!(enabled.auto_start_stream);
+        assert!(enabled.auto_rotate);
+    }
+
+    #[test]
+    fn server_id_is_generated_once_and_preserved_across_saves() {
+        let dir = std::env::temp_dir().join(format!(
+            "phonecam-settings-server-id-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("desktop-settings.json");
+
+        let first = load_or_create_server_id_at(&path);
+        assert!(!first.is_empty());
+
+        let mut s = Settings::default();
+        s.auto_start_stream = true;
+        s.auto_rotate = true;
+        save_at(&path, &s, None).expect("save settings");
+
+        let second = load_or_create_server_id_at(&path);
+        assert_eq!(first, second, "server_id must survive subsequent saves");
+
+        let text = std::fs::read_to_string(&path).expect("settings file readable");
+        let parsed = coerce(serde_json::from_str::<SettingsFile>(&text).unwrap());
+        assert!(parsed.auto_start_stream);
+        assert!(parsed.auto_rotate);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

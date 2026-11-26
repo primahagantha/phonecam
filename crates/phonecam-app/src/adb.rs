@@ -142,10 +142,11 @@ impl Adb {
 
     /// Runs one adb command and returns its combined output.
     ///
-    /// A timeout is enforced because `adb` can block indefinitely on a wedged
-    /// device or a pending authorization prompt, and a blocked UI thread is worse
-    /// than a reported failure.
+    /// Drains stdout and stderr concurrently on reader threads so >4 KB output
+    /// cannot deadlock the child process pipe while enforcing the timeout.
     fn run(&self, args: &[&str], timeout: Duration) -> Result<String, String> {
+        use std::io::Read;
+
         let mut child = Command::new(&self.path)
             .args(args)
             .stdout(Stdio::piped())
@@ -154,6 +155,21 @@ impl Adb {
             .spawn()
             .map_err(|e| format!("could not run adb: {e}"))?;
 
+        let stdout_handle = child.stdout.take().map(|mut out| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = out.read_to_end(&mut buf);
+                buf
+            })
+        });
+        let stderr_handle = child.stderr.take().map(|mut err| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = err.read_to_end(&mut buf);
+                buf
+            })
+        });
+
         let deadline = std::time::Instant::now() + timeout;
         loop {
             match child.try_wait() {
@@ -161,20 +177,40 @@ impl Adb {
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
                         let _ = child.kill();
+                        let _ = child.wait();
+                        if let Some(h) = stdout_handle {
+                            let _ = h.join();
+                        }
+                        if let Some(h) = stderr_handle {
+                            let _ = h.join();
+                        }
                         return Err(format!("adb {} timed out", args.join(" ")));
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
-                Err(e) => return Err(format!("adb failed: {e}")),
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    if let Some(h) = stdout_handle {
+                        let _ = h.join();
+                    }
+                    if let Some(h) = stderr_handle {
+                        let _ = h.join();
+                    }
+                    return Err(format!("adb failed: {e}"));
+                }
             }
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("could not read adb output: {e}"))?;
+        let stdout_bytes = stdout_handle
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+        let stderr_bytes = stderr_handle
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
 
-        let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        let mut text = String::from_utf8_lossy(&stdout_bytes).to_string();
+        text.push_str(&String::from_utf8_lossy(&stderr_bytes));
         Ok(text)
     }
 

@@ -18,6 +18,7 @@ use phonecam_ui::views::state::AppState;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
     ShowWindow,
+    ToggleStream,
     ToggleVcam,
     ShowPairing,
     Quit,
@@ -30,7 +31,7 @@ pub enum TrayCommand {
 /// Pure data, so the wording is testable without a message loop.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrayMenu {
-    /// A disabled status row, e.g. "● Streaming".
+    /// A disabled status row, e.g. "Status: Streaming".
     pub status: String,
     /// A disabled row naming the phone, or "No phone connected".
     pub device: String,
@@ -38,38 +39,45 @@ pub struct TrayMenu {
     pub vcam: String,
     /// Whether the camera toggle is ticked.
     pub vcam_checked: bool,
+    /// Action label for toggling the stream ("Start Stream" or "Stop Stream").
+    pub stream_label: String,
+    /// Whether the stream toggle action is currently interactive.
+    pub stream_enabled: bool,
+    /// Whether the stream is currently active.
+    pub streaming: bool,
 }
 
 impl Default for TrayMenu {
     fn default() -> Self {
         Self {
-            status: "Idle".into(),
+            status: "Status: Idle".into(),
             device: "No phone connected".into(),
             vcam: "Virtual camera: off".into(),
             vcam_checked: false,
+            stream_label: "Start Stream".into(),
+            stream_enabled: false,
+            streaming: false,
         }
     }
 }
 
-/// The phase glyph, so the tray can be read at a glance.
-pub fn phase_dot(phase: &str) -> &'static str {
+/// Clear text state label for a stream phase.
+pub fn phase_label(phase: &str) -> &'static str {
     match phase {
-        "idle" => "○",
-        "connecting" => "◌",
-        "connected" => "◉",
-        "streaming" => "●",
-        "reconnecting" => "◍",
-        "error" => "⊗",
-        _ => "•",
+        "idle" => "Idle",
+        "connecting" => "Connecting",
+        "connected" => "Connected",
+        "streaming" => "Streaming",
+        "reconnecting" => "Reconnecting",
+        "error" => "Error",
+        _ => "Unknown",
     }
 }
 
 /// Builds the menu rows from the current state.
 pub fn build_menu(state: &AppState) -> TrayMenu {
     let phase = state.display_phase();
-    let status = phonecam_ui::views::state::stream_phase_label(
-        state.core.as_ref().map(|c| c.phase).unwrap_or_default(),
-    );
+    let status = phase_label(&phase);
 
     let device = match (
         state.device_name(),
@@ -109,11 +117,31 @@ pub fn build_menu(state: &AppState) -> TrayMenu {
         },
     };
 
+    let phase_enum = state.core.as_ref().map(|c| c.phase).unwrap_or_default();
+    let streaming = matches!(
+        phase_enum,
+        phonecam_protocol::StreamPhase::Streaming | phonecam_protocol::StreamPhase::Connecting
+    ) || state
+        .core
+        .as_ref()
+        .and_then(|c| c.phone.as_ref())
+        .map(|p| p.streaming)
+        .unwrap_or(false);
+    let stream_enabled = state.has_device() || streaming;
+    let stream_label = if streaming {
+        "Stop Stream".to_string()
+    } else {
+        "Start Stream".to_string()
+    };
+
     TrayMenu {
-        status: format!("{} {status}", phase_dot(&phase)),
+        status: format!("Status: {status}"),
         device,
         vcam,
         vcam_checked: vcam_state == "running" || vcam_state == "starting",
+        stream_label,
+        stream_enabled,
+        streaming,
     }
 }
 
@@ -155,6 +183,8 @@ pub fn hide_window(hwnd: isize) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
     if hwnd != 0 {
+        // SAFETY: `hwnd` is a non-zero Win32 window handle obtained from GPUI; `ShowWindow`
+        // handles invalid/destroyed HWNDs safely by returning FALSE without memory corruption.
         unsafe {
             let _ = ShowWindow(HWND(hwnd as *mut _), SW_HIDE);
         }
@@ -174,6 +204,7 @@ pub fn set_window_always_on_top(hwnd: isize, enabled: bool) {
         } else {
             HWND_NOTOPMOST
         };
+        // SAFETY: `hwnd` is non-zero and `insert_after` is a valid Win32 pseudo-HWND constant.
         unsafe {
             let _ = SetWindowPos(
                 HWND(hwnd as *mut _),
@@ -211,11 +242,16 @@ pub fn set_window_icon(hwnd: isize) {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
+        // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
         let cx_big = unsafe { GetSystemMetrics(SM_CXICON) };
+        // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
         let cy_big = unsafe { GetSystemMetrics(SM_CYICON) };
+        // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
         let cx_sm = unsafe { GetSystemMetrics(SM_CXSMICON) };
+        // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
         let cy_sm = unsafe { GetSystemMetrics(SM_CYSMICON) };
 
+        // SAFETY: `wide_path` is a null-terminated UTF-16 buffer alive across `LoadImageW`.
         let big = unsafe {
             LoadImageW(
                 None,
@@ -230,6 +266,7 @@ pub fn set_window_icon(hwnd: isize) {
         .map(|h| HICON(h.0))
         .filter(|h| !h.is_invalid());
 
+        // SAFETY: `wide_path` is a null-terminated UTF-16 buffer alive across `LoadImageW`.
         let small = unsafe {
             LoadImageW(
                 None,
@@ -250,6 +287,7 @@ pub fn set_window_icon(hwnd: isize) {
     };
 
     let fallback = if hicon_big.is_none() && hicon_small.is_none() {
+        // SAFETY: `IDI_APPLICATION` is a built-in resource ID with `None` module handle.
         unsafe {
             LoadIconW(None, IDI_APPLICATION)
                 .ok()
@@ -263,6 +301,7 @@ pub fn set_window_icon(hwnd: isize) {
     let final_small = hicon_small.or(final_big);
 
     if let Some(hicon) = final_big {
+        // SAFETY: `hwnd` is non-zero and `hicon` is a valid non-null `HICON` handle.
         unsafe {
             let _ = SendMessageW(
                 hwnd,
@@ -273,6 +312,7 @@ pub fn set_window_icon(hwnd: isize) {
         }
     }
     if let Some(hicon) = final_small {
+        // SAFETY: `hwnd` is non-zero and `hicon` is a valid non-null `HICON` handle.
         unsafe {
             let _ = SendMessageW(
                 hwnd,
@@ -299,6 +339,7 @@ impl Drop for SingleInstanceGuard {
     fn drop(&mut self) {
         use windows::Win32::Foundation::{CloseHandle, HANDLE};
         if self.0 != 0 {
+            // SAFETY: `self.0` was returned by `CreateMutexW` and is owned exclusively by this guard.
             unsafe {
                 let _ = CloseHandle(HANDLE(self.0 as *mut _));
             }
@@ -321,6 +362,7 @@ pub fn acquire_single_instance_or_focus() -> Option<SingleInstanceGuard> {
     let name: Vec<u16> = "Local\\PhoneCamDesktopSingleInstance\0"
         .encode_utf16()
         .collect();
+    // SAFETY: `name` is a null-terminated UTF-16 string alive for the duration of `CreateMutexW`.
     let handle = match unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) } {
         Ok(h) => h,
         Err(err) => {
@@ -331,7 +373,9 @@ pub fn acquire_single_instance_or_focus() -> Option<SingleInstanceGuard> {
             return Some(SingleInstanceGuard(0));
         }
     };
+    // SAFETY: `GetLastError` reads the calling thread's last-error code set by `CreateMutexW`.
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // SAFETY: `handle` is a valid mutex handle owned by this scope and no longer needed.
         unsafe {
             let _ = CloseHandle(handle);
         }
@@ -357,6 +401,7 @@ fn focus_existing_window() {
 
     unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let mut class_buf = [0u16; 64];
+        // SAFETY: `class_buf` is a writable stack buffer of 64 UTF-16 code units.
         let class_len = unsafe { GetClassNameW(hwnd, &mut class_buf) };
         if class_len > 0 {
             let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
@@ -366,10 +411,13 @@ fn focus_existing_window() {
         }
 
         let mut title_buf = [0u16; 256];
+        // SAFETY: `title_buf` is a writable stack buffer of 256 UTF-16 code units.
         let len = unsafe { GetWindowTextW(hwnd, &mut title_buf) };
         if len > 0 {
             let title = String::from_utf16_lossy(&title_buf[..len as usize]);
             if title == "PhoneCam" || title.starts_with("PhoneCam - ") {
+                // SAFETY: `lparam` was passed by `focus_existing_window` pointing to a stack `HWND`
+                // alive for the synchronous `EnumWindows` call.
                 let target = unsafe { &mut *(lparam.0 as *mut HWND) };
                 *target = hwnd;
                 return BOOL(0);
@@ -379,16 +427,19 @@ fn focus_existing_window() {
     }
 
     let exact_title: Vec<u16> = "PhoneCam\0".encode_utf16().collect();
+    // SAFETY: `exact_title` is a null-terminated UTF-16 string alive across `FindWindowW`.
     let mut found = unsafe { FindWindowW(PCWSTR::null(), PCWSTR(exact_title.as_ptr())) }
         .unwrap_or(HWND::default());
     if found.is_invalid() || found.0.is_null() {
         let mut enumerated = HWND::default();
+        // SAFETY: `enum_cb` is invoked synchronously while `enumerated` stays pinned on the stack.
         let _ =
             unsafe { EnumWindows(Some(enum_cb), LPARAM(&mut enumerated as *mut HWND as isize)) };
         found = enumerated;
     }
 
     if !found.is_invalid() && !found.0.is_null() {
+        // SAFETY: `found` is a valid non-null window handle returned by FindWindowW/EnumWindows.
         unsafe {
             if IsIconic(found).as_bool() {
                 let _ = ShowWindow(found, SW_RESTORE);
@@ -411,15 +462,18 @@ pub fn window_bounds(hwnd: isize) -> Option<(f32, f32, f32, f32, bool)> {
         return None;
     }
     let hwnd = HWND(hwnd as *mut _);
+    // SAFETY: `IsWindow` validates whether `hwnd` currently refers to a live Win32 window.
     if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
         return None;
     }
 
+    // SAFETY: `hwnd` was just validated by `IsWindow`.
     let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
     let mut placement = WINDOWPLACEMENT {
         length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
         ..Default::default()
     };
+    // SAFETY: `placement` has `length` initialized to its exact struct size and is writable.
     if unsafe { GetWindowPlacement(hwnd, &mut placement) }.is_ok() {
         let r = placement.rcNormalPosition;
         let width = (r.right - r.left) as f32;
@@ -430,6 +484,7 @@ pub fn window_bounds(hwnd: isize) -> Option<(f32, f32, f32, f32, bool)> {
     }
 
     let mut rect = RECT::default();
+    // SAFETY: `rect` is an aligned, writable stack `RECT` and `hwnd` is a valid window.
     if unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
         let width = (rect.right - rect.left) as f32;
         let height = (rect.bottom - rect.top) as f32;
@@ -452,6 +507,7 @@ pub fn is_window_visible(hwnd: isize) -> bool {
         return true;
     }
     let hwnd = HWND(hwnd as *mut _);
+    // SAFETY: `IsWindow` checks handle validity before querying visibility and iconic state.
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() {
             return true;
@@ -513,6 +569,8 @@ pub fn save_diagnostics_dialog(hwnd: Option<isize>) -> SaveDialogResult {
         ..Default::default()
     };
 
+    // SAFETY: `GetSaveFileNameW` writes at most `nMaxFile` UTF-16 code units into `file_buf`,
+    // and all string pointers in `ofn` outlive the modal call.
     if unsafe { GetSaveFileNameW(&mut ofn) }.as_bool() {
         let len = file_buf
             .iter()
@@ -520,6 +578,7 @@ pub fn save_diagnostics_dialog(hwnd: Option<isize>) -> SaveDialogResult {
             .unwrap_or(file_buf.len());
         let os = OsString::from_wide(&file_buf[..len]);
         SaveDialogResult::Selected(std::path::PathBuf::from(os))
+    // SAFETY: `CommDlgExtendedError` reads thread-local common dialog error status with no pointers.
     } else if unsafe { CommDlgExtendedError().0 } == 0 {
         SaveDialogResult::Cancelled
     } else {
@@ -626,6 +685,7 @@ mod imp {
     const CMD_VCAM: usize = 1002;
     const CMD_QR: usize = 1003;
     const CMD_QUIT: usize = 1004;
+    const CMD_STREAM: usize = 1005;
 
     /// A tray icon registered with the shell, and the window that receives its
     /// messages.
@@ -645,9 +705,10 @@ mod imp {
         commands: Arc<Mutex<Vec<TrayCommand>>>,
     }
 
-    // The HWNDs are plain handles and every call below is a Win32 message that is
-    // safe from any thread.
+    // SAFETY: The HWNDs and HICON are opaque Win32 handles, `commands` is `Arc<Mutex<_>>`,
+    // and every Win32 message call on these handles is thread-safe.
     unsafe impl Send for Tray {}
+    // SAFETY: All interior mutation occurs through `Mutex` or thread-safe Win32 Post/Send calls.
     unsafe impl Sync for Tray {}
 
     /// The commands a click has recorded, shared with the UI thread.
@@ -677,6 +738,7 @@ mod imp {
                 }
                 LRESULT(0)
             }
+            // SAFETY: Default window procedure forwarded unmodified parameters from Windows.
             _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
         }
     }
@@ -686,14 +748,17 @@ mod imp {
         static REGISTERED: OnceLock<bool> = OnceLock::new();
         *REGISTERED.get_or_init(|| {
             let class = wide("PhoneCamTrayWindow");
+            // SAFETY: `GetModuleHandleW(null)` returns the current executable's HMODULE.
+            let hinstance = unsafe { GetModuleHandleW(PCWSTR::null()) }
+                .unwrap_or_default()
+                .into();
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(tray_wndproc),
-                hInstance: unsafe { GetModuleHandleW(PCWSTR::null()) }
-                    .unwrap_or_default()
-                    .into(),
+                hInstance: hinstance,
                 lpszClassName: PCWSTR(class.as_ptr()),
                 ..Default::default()
             };
+            // SAFETY: `wc` points to a null-terminated class name alive during `RegisterClassW`.
             (unsafe { RegisterClassW(&wc) }) != 0
         })
     }
@@ -704,6 +769,7 @@ mod imp {
         }
         let class = wide("PhoneCamTrayWindow");
         let title = wide("PhoneCam tray");
+        // SAFETY: `class` and `title` are valid null-terminated UTF-16 strings for `CreateWindowExW`.
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -749,6 +815,7 @@ mod imp {
             let mut owned_icon = None;
             if let Some(icon_path) = find_icon_path() {
                 let wide_path = wide(&icon_path.to_string_lossy());
+                // SAFETY: `wide_path` is a null-terminated UTF-16 path alive across `LoadImageW`.
                 if let Ok(handle) = unsafe {
                     LoadImageW(
                         None,
@@ -767,14 +834,17 @@ mod imp {
                 }
             }
             if data.hIcon.is_invalid() {
+                // SAFETY: `IDI_APPLICATION` is a built-in system icon resource ID.
                 if let Ok(icon) = unsafe { LoadIconW(None, IDI_APPLICATION) } {
                     data.hIcon = icon;
                 }
             }
             copy_tip(&mut data, tooltip);
 
+            // SAFETY: `data` has `cbSize` set and points to valid handles and fixed buffers.
             if !unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool() {
                 if let Some(icon) = owned_icon {
+                    // SAFETY: `icon` was loaded by `LoadImageW` and is owned exclusively here.
                     let _ = unsafe { DestroyIcon(icon) };
                 }
                 tracing::warn!("could not add the tray icon");
@@ -782,6 +852,7 @@ mod imp {
             }
 
             data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+            // SAFETY: `data` describes the tray icon just added via `NIM_ADD`.
             let _ = unsafe { Shell_NotifyIconW(NIM_SETVERSION, &data) };
 
             tracing::info!("tray icon installed");
@@ -803,6 +874,7 @@ mod imp {
         /// Brings the GPUI window back after a close hid it.
         pub fn show_target(&self) {
             set_window_icon(self.target.0 as isize);
+            // SAFETY: `self.target` is the non-null GPUI window handle stored during `install`.
             unsafe {
                 let _ = ShowWindow(self.target, SW_SHOW);
                 let _ = SetForegroundWindow(self.target);
@@ -811,6 +883,8 @@ mod imp {
 
         /// Shows the menu and returns what the user chose.
         pub fn show_menu(&self, menu: &TrayMenu) -> Option<TrayCommand> {
+            // SAFETY: All wide string buffers remain pinned on stack through `TrackPopupMenu`,
+            // `popup` is destroyed via `DestroyMenu` before returning, and `self.target` is valid.
             unsafe {
                 let popup = CreatePopupMenu().ok()?;
 
@@ -818,6 +892,7 @@ mod imp {
                 let device = wide(&menu.device);
                 let vcam = wide(&menu.vcam);
                 let show = wide("Show PhoneCam");
+                let stream = wide(&menu.stream_label);
                 let toggle = wide("Virtual camera");
                 let qr = wide("Show QR code");
                 let quit = wide("Quit PhoneCam");
@@ -828,6 +903,12 @@ mod imp {
                 let _ = AppendMenuW(popup, MF_STRING | MF_GRAYED, 0, PCWSTR(vcam.as_ptr()));
                 let _ = AppendMenuW(popup, MF_SEPARATOR, 0, PCWSTR::null());
                 let _ = AppendMenuW(popup, MF_STRING, CMD_SHOW, PCWSTR(show.as_ptr()));
+                let stream_flags = if menu.stream_enabled {
+                    MF_STRING
+                } else {
+                    MF_STRING | MF_GRAYED
+                };
+                let _ = AppendMenuW(popup, stream_flags, CMD_STREAM, PCWSTR(stream.as_ptr()));
                 let vcam_flags = if menu.vcam_checked {
                     MF_STRING | MF_CHECKED
                 } else {
@@ -859,6 +940,7 @@ mod imp {
 
                 match chosen.0 as usize {
                     CMD_SHOW => Some(TrayCommand::ShowWindow),
+                    CMD_STREAM => Some(TrayCommand::ToggleStream),
                     CMD_VCAM => Some(TrayCommand::ToggleVcam),
                     CMD_QR => Some(TrayCommand::ShowPairing),
                     CMD_QUIT => Some(TrayCommand::Quit),
@@ -875,6 +957,7 @@ mod imp {
             data.uID = TRAY_ID;
             data.uFlags = NIF_TIP;
             copy_tip(&mut data, tooltip);
+            // SAFETY: `data` has `cbSize` set and `self.hwnd` owns the registered tray icon.
             let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
         }
     }
@@ -886,10 +969,12 @@ mod imp {
                 data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
                 data.hWnd = self.hwnd;
                 data.uID = TRAY_ID;
+                // SAFETY: `data` identifies the active tray icon owned by `self.hwnd`.
                 let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &data) };
                 self.added = false;
             }
             if let Some(icon) = self.owned_icon.take() {
+                // SAFETY: `icon` was loaded by `LoadImageW` and has not been destroyed yet.
                 let _ = unsafe { DestroyIcon(icon) };
             }
         }
@@ -936,7 +1021,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_phase_has_a_distinct_glyph() {
+    fn every_phase_has_a_distinct_text_label() {
         let phases = [
             "idle",
             "connecting",
@@ -947,10 +1032,11 @@ mod tests {
         ];
         let mut seen = std::collections::HashSet::new();
         for phase in phases {
-            assert!(seen.insert(phase_dot(phase)), "{phase} reuses a glyph");
+            let label = phase_label(phase);
+            assert!(seen.insert(label), "{phase} reuses a label");
+            assert!(label.is_ascii(), "{label} must be clear ASCII text");
         }
-        // An unknown phase still renders something rather than nothing.
-        assert_eq!(phase_dot("who-knows"), "•");
+        assert_eq!(phase_label("who-knows"), "Unknown");
     }
 
     #[test]
@@ -958,6 +1044,40 @@ mod tests {
         let menu = TrayMenu::default();
         assert_eq!(menu.device, "No phone connected");
         assert!(!menu.vcam_checked);
+        assert_eq!(menu.stream_label, "Start Stream");
+        assert!(!menu.stream_enabled);
+        assert!(!menu.streaming);
+    }
+
+    #[test]
+    fn build_menu_toggles_start_and_stop_stream_labels() {
+        use phonecam_protocol::{CoreState, DeviceIdentity, StreamPhase, TransportKind};
+        let mut state = AppState::default();
+        state.status.connected = true;
+        state.core = Some(CoreState {
+            transport: TransportKind::Usb,
+            phase: StreamPhase::Connected,
+            device: Some(DeviceIdentity {
+                device_id: "android-a".into(),
+                name: "Pixel".into(),
+                model: "Pixel".into(),
+                android_version: 34,
+            }),
+            ..Default::default()
+        });
+
+        let connected_menu = build_menu(&state);
+        assert_eq!(connected_menu.status, "Status: Connected");
+        assert_eq!(connected_menu.stream_label, "Start Stream");
+        assert!(connected_menu.stream_enabled);
+        assert!(!connected_menu.streaming);
+
+        state.core.as_mut().unwrap().phase = StreamPhase::Streaming;
+        let streaming_menu = build_menu(&state);
+        assert_eq!(streaming_menu.status, "Status: Streaming");
+        assert_eq!(streaming_menu.stream_label, "Stop Stream");
+        assert!(streaming_menu.stream_enabled);
+        assert!(streaming_menu.streaming);
     }
 
     #[test]

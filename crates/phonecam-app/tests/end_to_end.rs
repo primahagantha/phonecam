@@ -501,7 +501,7 @@ fn pressing_start_asks_the_phone_to_stream() {
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     let mut seen = Vec::new();
-    for _ in 0..8 {
+    for _ in 0..16 {
         match phone.read_control() {
             Some(message) => {
                 let kind = message["t"].as_str().unwrap_or_default().to_string();
@@ -553,7 +553,7 @@ fn stream_auto_resumes_when_phone_reconnects() {
 
     // Drain start stream commands from first connection
     let mut seen = Vec::new();
-    for _ in 0..8 {
+    for _ in 0..16 {
         if let Some(msg) = first.read_control() {
             let t = msg["t"].as_str().unwrap_or_default().to_string();
             seen.push(t.clone());
@@ -582,7 +582,7 @@ fn stream_auto_resumes_when_phone_reconnects() {
 
     // Because stream_wanted was still true, the desktop automatically resumes streaming!
     let mut resumed_commands = Vec::new();
-    for _ in 0..8 {
+    for _ in 0..16 {
         if let Some(msg) = second.read_control() {
             let t = msg["t"].as_str().unwrap_or_default().to_string();
             resumed_commands.push(t.clone());
@@ -707,7 +707,7 @@ fn stepped_camera_retries_on_initial_camera_start_failure() {
     assert_eq!(runtime.camera_retry.lock().failures(), 0);
 
     // Drain initial start_stream
-    for _ in 0..6 {
+    for _ in 0..16 {
         if let Some(msg) = phone.read_control() {
             if msg["t"] == "start_stream" {
                 break;
@@ -741,7 +741,7 @@ fn stepped_camera_retries_on_initial_camera_start_failure() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let mut retry_seen = false;
-    for _ in 0..8 {
+    for _ in 0..16 {
         if let Some(msg) = phone.read_control() {
             if msg["t"] == "start_stream" {
                 retry_seen = true;
@@ -810,4 +810,76 @@ fn rapid_stress_test_coalesces_commands_and_recovers() {
         delivered_types.iter().any(|t| t == "start_stream"),
         "phone must ultimately receive the coalesced start_stream command; saw {delivered_types:?}"
     );
+}
+
+#[test]
+fn auto_start_stream_and_auto_rotate_wire_end_to_end() {
+    let settings_path = phonecam_app::settings::settings_path();
+    let saved_before = std::fs::read(&settings_path).ok();
+
+    let settings = Settings {
+        auto_start_stream: true,
+        auto_rotate: true,
+        ..Default::default()
+    };
+    let runtime = Runtime::new(&settings);
+    let port = runtime.start_on(0).expect("the app must listen");
+    runtime.broadcast_state();
+
+    let payloads = runtime.arm_pairing();
+    let payload: serde_json::Value = serde_json::from_str(&payloads[0]).unwrap();
+    let token = payload["token"].as_str().unwrap().to_string();
+
+    let mut phone = Phone::dial(port);
+    phone.read_greeting();
+    phone.handshake(ChannelRole::Control, AuthMode::PairingToken, 1, &token);
+    assert_eq!(phone.read_response().status as u8, 0);
+
+    let welcome = phone.read_control().expect("welcome");
+    assert_eq!(welcome["t"], "welcome");
+
+    // auto_start_stream must send start_stream on connect without explicit UI click.
+    let mut seen_start = false;
+    for _ in 0..16 {
+        if let Some(msg) = phone.read_control() {
+            if msg["t"] == "start_stream" {
+                seen_start = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        seen_start,
+        "auto_start_stream must trigger start_stream on connect"
+    );
+
+    // Phone reports orientation: 90, auto_rotate must update desktop output_rotation to 90.
+    let state_message = serde_json::json!({
+        "t": "state", "streaming": true, "camera": "back",
+        "resolution": "1280x720", "fps": 30,
+        "actualResolution": "1280x720", "actualFps": 30, "bitrate": 4000000,
+        "mirror": false, "rotation": 0, "torch": false, "zoom": 1.0,
+        "battery": 88, "charging": true, "thermal": "none", "orientation": 90
+    });
+    let bytes = serde_json::to_vec(&state_message).unwrap();
+    let mut framed = (bytes.len() as u32).to_be_bytes().to_vec();
+    framed.extend_from_slice(&bytes);
+    phone.stream.write_all(&framed).unwrap();
+    phone.stream.flush().unwrap();
+
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        runtime.state.lock().settings.output_rotation,
+        90,
+        "auto_rotate must sync phone orientation to output_rotation"
+    );
+
+    match saved_before {
+        Some(bytes) => {
+            let _ = std::fs::write(&settings_path, bytes);
+        }
+        None => {
+            let _ = std::fs::remove_file(&settings_path);
+        }
+    }
 }

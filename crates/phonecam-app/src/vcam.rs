@@ -277,6 +277,8 @@ impl Registrar {
     }
 
     fn run(&self, args: &[&str]) -> Result<(bool, String), String> {
+        use std::io::Read;
+
         let mut command = Command::new(&self.path);
         command
             .args(args)
@@ -288,28 +290,74 @@ impl Registrar {
             command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
 
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|e| format!("could not run the registrar: {e}"))?;
 
-        // The tool can block behind a UAC prompt, which no amount of waiting will
-        // resolve; a bounded wait keeps the UI responsive.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(child.wait_with_output());
+        // Drain stdout and stderr concurrently so large output cannot deadlock the child pipe.
+        let stdout_handle = child.stdout.take().map(|mut out| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = out.read_to_end(&mut buf);
+                buf
+            })
+        });
+        let stderr_handle = child.stderr.take().map(|mut err| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = err.read_to_end(&mut buf);
+                buf
+            })
         });
 
-        match rx.recv_timeout(Duration::from_secs(15)) {
-            Ok(Ok(output)) => {
-                let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-                text.push_str(&String::from_utf8_lossy(&output.stderr));
-                Ok((output.status.success(), text))
+        // The tool can block behind a UAC prompt, which no amount of waiting will
+        // resolve; a bounded wait keeps the UI responsive, and killing/reaping
+        // prevents orphaned processes on timeout.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        if let Some(h) = stdout_handle {
+                            let _ = h.join();
+                        }
+                        if let Some(h) = stderr_handle {
+                            let _ = h.join();
+                        }
+                        return Err(
+                            "the registrar did not answer in 15 s; it may be waiting for elevation"
+                                .into(),
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    if let Some(h) = stdout_handle {
+                        let _ = h.join();
+                    }
+                    if let Some(h) = stderr_handle {
+                        let _ = h.join();
+                    }
+                    return Err(format!("could not read the registrar's output: {e}"));
+                }
             }
-            Ok(Err(e)) => Err(format!("could not read the registrar's output: {e}")),
-            Err(_) => {
-                Err("the registrar did not answer in 15 s; it may be waiting for elevation".into())
-            }
-        }
+        };
+
+        let stdout_bytes = stdout_handle
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+        let stderr_bytes = stderr_handle
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+
+        let mut text = String::from_utf8_lossy(&stdout_bytes).to_string();
+        text.push_str(&String::from_utf8_lossy(&stderr_bytes));
+        Ok((status.success(), text))
     }
 }
 
