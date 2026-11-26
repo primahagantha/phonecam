@@ -17,19 +17,17 @@ pub mod framing;
 pub mod messages;
 
 pub use framing::{
-    write_control_frame, write_loopback, write_server_greeting, write_server_response,
-    write_video_packet, ClientHandshake, LoopbackTag, ServerGreeting, ServerHandshakeResponse,
-    VideoPacketHeader,
+    write_control_frame, write_server_greeting, write_server_response, write_video_packet,
+    ClientHandshake, ServerGreeting, ServerHandshakeResponse, VideoPacketHeader,
 };
 
 pub use messages::{
     AdbDevice, AntiFlickerMode, AuthMode, CameraCapability, CameraFacing, CapabilitiesPayload,
-    ChannelRole, CommandReply, ConnectionStats, CoreError, CoreState, CoreToDesktop, DesktopBeacon,
-    DesktopToCore, DesktopToPhone, DeviceCapabilities, DeviceIdentity, DiscoveryMessage,
-    DiscoveryProbe, FpsValue, HandshakeStatus, LogLevel, NearbyPhone, OutputTransform,
-    PairingStatus, PhoneBeacon, PhoneState, PhoneStats, PhoneToDesktop, QrPayload, QualityMode,
-    ScreenMode, StreamPhase, ThermalState, TransportKind, UsbStatus, VcamState, VcamStatus,
-    VideoCodec, VideoFlags,
+    ChannelRole, CommandReply, ConnectionStats, CoreError, CoreState, DesktopBeacon,
+    DesktopToPhone, DeviceCapabilities, DeviceIdentity, DiscoveryMessage, DiscoveryProbe, FpsValue,
+    HandshakeStatus, LogLevel, NearbyPhone, OutputTransform, PairingStatus, PhoneBeacon,
+    PhoneState, PhoneStats, PhoneToDesktop, QrPayload, QualityMode, ScreenMode, StreamPhase,
+    ThermalState, TransportKind, UsbStatus, VcamState, VcamStatus, VideoCodec, VideoFlags,
 };
 
 use hmac::{Hmac, KeyInit, Mac};
@@ -42,10 +40,8 @@ pub const PROTOCOL_VERSION: u8 = 1;
 
 /// UDP discovery beacons.
 pub const DISCOVERY_PORT: u16 = 48720;
-/// Phone â†’ desktop control + video.
+/// Phone → desktop control + video.
 pub const SERVICE_PORT: u16 = 48721;
-/// Desktop UI â‡„ desktop core, loopback only.
-pub const LOOPBACK_IPC_PORT: u16 = 48723;
 
 pub const MAX_CONTROL_JSON: usize = 1024 * 1024;
 pub const MAX_VIDEO_PAYLOAD: usize = 8 * 1024 * 1024;

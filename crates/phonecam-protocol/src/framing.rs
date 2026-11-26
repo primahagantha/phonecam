@@ -316,40 +316,6 @@ pub fn write_video_packet(header: &VideoPacketHeader, payload: &[u8]) -> Result<
 }
 
 /* ------------------------------------------------------------------ */
-/* Loopback multiplex (§9) — one tag byte, then the tagged payload     */
-/* ------------------------------------------------------------------ */
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum LoopbackTag {
-    /// `u32 jsonLen` + JSON — a command or reply.
-    Control = 0x01,
-    /// 24-byte video header + payload, no outer length.
-    Video = 0x02,
-    /// `u32 jsonLen` + JSON — an unsolicited event.
-    Event = 0x03,
-}
-
-impl LoopbackTag {
-    pub fn from_wire(value: u8) -> Option<Self> {
-        match value {
-            0x01 => Some(Self::Control),
-            0x02 => Some(Self::Video),
-            0x03 => Some(Self::Event),
-            _ => None,
-        }
-    }
-}
-
-/// Frames one loopback message: tag byte, then the tagged body.
-pub fn write_loopback(tag: LoopbackTag, body: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(1 + body.len());
-    buf.push(tag as u8);
-    buf.extend_from_slice(body);
-    buf
-}
-
-/* ------------------------------------------------------------------ */
 
 fn require_magic(bytes: &[u8]) -> Result<()> {
     let magic = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -436,14 +402,6 @@ mod tests {
             VideoPacketHeader::parse(&b),
             Err(ProtocolError::MalformedAuth)
         ));
-    }
-
-    #[test]
-    fn loopback_tag_bytes_match_spec() {
-        assert_eq!(LoopbackTag::Control as u8, 0x01);
-        assert_eq!(LoopbackTag::Video as u8, 0x02);
-        assert_eq!(LoopbackTag::Event as u8, 0x03);
-        assert_eq!(LoopbackTag::from_wire(0x04), None);
     }
 
     #[test]

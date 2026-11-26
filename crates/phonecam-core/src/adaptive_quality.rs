@@ -274,7 +274,7 @@ impl AdaptiveQuality {
         }
 
         let clean = sample.dropped_percent < CLEAN_DROP_PERCENT
-            && (sample.rtt_us == 0 || sample.rtt_us < CLEAN_RTT_US)
+            && (sample.rtt_us > 0 && sample.rtt_us < CLEAN_RTT_US)
             && !thermal
             && !sample.decode_struggling;
         if !clean {
@@ -542,12 +542,9 @@ mod tests {
         // or a stream nobody has measured would climb the ladder.
         s.rtt_us = 0;
         s.dropped_percent = 0.0;
-        q.observe(&s, 0);
+        assert_eq!(q.observe(&s, 0).action, QualityAction::Hold);
         // It also must not count as struggling, so it holds rather than drops.
-        assert_eq!(
-            q.observe(&s, STEP_UP_DWELL_MS).action,
-            QualityAction::StepUp(QualityRung::P1080_60)
-        );
+        assert_eq!(q.observe(&s, STEP_UP_DWELL_MS).action, QualityAction::Hold);
     }
 
     #[test]

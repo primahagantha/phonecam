@@ -739,7 +739,15 @@ pub fn read_control_frame(conn: &Connection) -> FramedRead {
     let mut payload = vec![0u8; len];
     match conn.read_exact(&mut payload) {
         ReadResult::Ok(_) => FramedRead::Frame(payload),
-        ReadResult::Timeout => FramedRead::Idle,
+        ReadResult::Timeout => {
+            // Bytes for the 4-byte length prefix were already consumed. Returning
+            // Idle here would leave the stream out of frame alignment on the next read.
+            tracing::warn!(
+                "control frame payload timed out mid-frame ({len} bytes expected); closing"
+            );
+            conn.close();
+            FramedRead::Closed
+        }
         ReadResult::Closed => FramedRead::Closed,
     }
 }
@@ -850,7 +858,7 @@ impl StatsWindow {
         let elapsed_s = elapsed_us as f64 / 1_000_000.0;
 
         let fps = self.frames as f64 / elapsed_s;
-        let bitrate = (self.bytes as f64 / elapsed_s) as u64;
+        let bitrate = (self.bytes as f64 * 8.0 / elapsed_s) as u64;
 
         let offered = decoded + dropped;
         let dropped_percent = if offered > 0 {
@@ -891,12 +899,12 @@ impl StatsWindow {
 
 /// Monotonic microseconds, for timing rather than for display.
 pub fn now_us() -> i64 {
+    use std::sync::OnceLock;
     use std::time::Instant;
-    // A process-lifetime origin is enough: only differences are used.
-    thread_local! {
-        static ORIGIN: Instant = Instant::now();
-    }
-    ORIGIN.with(|origin| origin.elapsed().as_micros() as i64)
+    // Process-wide origin so timestamps produced on one thread (e.g. stats ping)
+    // and subtracted on another (e.g. control pong) share the exact same epoch.
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_micros() as i64
 }
 
 /// Milliseconds since the Unix epoch, for anything shown or persisted.
@@ -1033,9 +1041,42 @@ mod tests {
         }
         let stats = window.take(1_000_000, 25_000, 30, 0);
         assert!((stats.fps - 30.0).abs() < 0.01, "fps was {}", stats.fps);
-        assert_eq!(stats.bitrate, 300_000);
+        assert_eq!(stats.bitrate, 2_400_000);
         assert!((stats.latency_ms - 25.0).abs() < 0.01);
         assert_eq!(stats.quality, "excellent");
+    }
+
+    #[test]
+    fn now_us_is_consistent_across_threads() {
+        let t0 = now_us();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let t1 = std::thread::spawn(now_us).join().unwrap();
+        assert!(
+            t1 >= t0,
+            "cross-thread now_us went backwards: t0={t0}, t1={t1}"
+        );
+    }
+
+    #[test]
+    fn read_control_frame_closes_on_mid_frame_timeout() {
+        use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+        let conn = Connection::new(server_stream).unwrap();
+        conn.set_read_timeout(Some(Duration::from_millis(60)))
+            .unwrap();
+
+        // Send a 4-byte length prefix claiming 16 bytes, then stall without sending payload.
+        client.write_all(&16u32.to_be_bytes()).unwrap();
+        client.flush().unwrap();
+
+        assert!(matches!(read_control_frame(&conn), FramedRead::Closed));
+        assert!(conn.is_closed());
     }
 
     #[test]

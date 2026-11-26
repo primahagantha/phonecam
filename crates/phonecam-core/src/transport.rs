@@ -14,7 +14,13 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use socket2::{SockRef, TcpKeepalive};
+
+/// Maximum time `write_all` will retry `WouldBlock`/`TimedOut` before declaring
+/// the peer dead and closing the socket.
+const WRITE_RETRY_DEADLINE: Duration = Duration::from_secs(5);
 
 /// The outcome of a read attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +59,10 @@ pub struct Connection {
 impl Connection {
     pub fn new(stream: TcpStream) -> std::io::Result<Self> {
         stream.set_nodelay(true)?;
+        let keepalive = TcpKeepalive::new()
+            .with_time(Duration::from_secs(5))
+            .with_interval(Duration::from_secs(2));
+        let _ = SockRef::from(&stream).set_tcp_keepalive(&keepalive);
         Ok(Self {
             stream,
             closed: AtomicBool::new(false),
@@ -111,8 +121,10 @@ impl Connection {
 
     /// Fills `buf` completely, or reports why it could not.
     ///
-    /// A timeout part-way through is `Timeout`, and the caller must decide
-    /// whether to retry â€” it must never treat a partial fill as a frame.
+    /// A timeout before any byte arrives is `Timeout`. A timeout after one or
+    /// more bytes have already been consumed (`filled > 0`) closes the socket
+    /// and returns `Closed` so partially consumed frames never desynchronise the
+    /// stream.
     pub fn read_exact(&self, buf: &mut [u8]) -> ReadResult {
         let mut filled = 0usize;
         while filled < buf.len() {
@@ -123,9 +135,11 @@ impl Connection {
                     if filled == 0 {
                         return ReadResult::Timeout;
                     }
-                    // Partially read: the peer stopped mid-frame. Treating this
-                    // as a frame would desynchronise the stream permanently.
-                    return ReadResult::Timeout;
+                    // Partially read: bytes were already consumed from the TCP
+                    // stream, so returning Timeout would discard them and corrupt
+                    // framing on the next read.
+                    self.close();
+                    return ReadResult::Closed;
                 }
                 ReadResult::Closed => return ReadResult::Closed,
             }
@@ -133,22 +147,40 @@ impl Connection {
         ReadResult::Ok(filled)
     }
 
-    /// Writes a whole frame, retrying on a send timeout.
+    /// Writes a whole frame, retrying on transient send timeouts up to
+    /// [`WRITE_RETRY_DEADLINE`].
     ///
-    /// Returns false only when the peer is actually gone.
-    pub fn write_all(&self, mut data: &[u8]) -> bool {
+    /// Returns false (and closes the connection) when the peer is gone or the
+    /// send deadline expires.
+    pub fn write_all(&self, data: &[u8]) -> bool {
+        self.write_all_with_deadline(data, WRITE_RETRY_DEADLINE)
+    }
+
+    fn write_all_with_deadline(&self, mut data: &[u8], max_retry: Duration) -> bool {
         if self.is_closed() {
             return false;
         }
+        let deadline = Instant::now() + max_retry;
         let mut stream = &self.stream;
         while !data.is_empty() {
             match stream.write(data) {
-                Ok(0) => return false,
+                Ok(0) => {
+                    self.close();
+                    return false;
+                }
                 Ok(n) => data = &data[n..],
                 Err(e) => match e.kind() {
-                    // A slow peer is not a gone peer. Retrying is what keeps the
-                    // frame intact.
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => continue,
+                    // A slow peer is not immediately a gone peer, but a half-open
+                    // Wi-Fi drop must not hang the control loop forever.
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                        if Instant::now() >= deadline {
+                            self.close();
+                            return false;
+                        }
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
                     std::io::ErrorKind::Interrupted => continue,
                     _ => {
                         self.closed.store(true, Ordering::Relaxed);
@@ -392,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn read_exact_reports_a_partial_frame_as_timeout() {
+    fn read_exact_closes_on_a_partial_frame_timeout() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -406,10 +438,36 @@ mod tests {
         let mut buf = [0u8; 10];
         assert_eq!(
             conn.read_exact(&mut buf),
-            ReadResult::Timeout,
-            "a partial read must never be reported as a complete frame"
+            ReadResult::Closed,
+            "a partial read timeout must close the stream rather than discard consumed bytes"
         );
-        assert!(!conn.is_closed());
+        assert!(conn.is_closed());
+    }
+
+    #[test]
+    fn write_all_stops_after_retry_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+        server_stream.set_nonblocking(true).unwrap();
+        let conn = Connection::new(server_stream).unwrap();
+
+        // Fill the OS send buffer until non-blocking writes stall with WouldBlock,
+        // then verify the bounded deadline returns false and closes the connection.
+        let chunk = vec![0xABu8; 256 * 1024];
+        let mut hit_deadline = false;
+        for _ in 0..128 {
+            if !conn.write_all_with_deadline(&chunk, Duration::from_millis(30)) {
+                hit_deadline = true;
+                break;
+            }
+        }
+        assert!(
+            hit_deadline,
+            "write_all must fail once the deadline expires"
+        );
+        assert!(conn.is_closed());
     }
 
     #[test]

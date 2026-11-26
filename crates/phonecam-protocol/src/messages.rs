@@ -500,13 +500,15 @@ pub struct PhoneState {
     pub thermal: ThermalState,
     #[serde(default, rename = "antiFlicker")]
     pub anti_flicker: AntiFlickerMode,
+    #[serde(default)]
+    pub orientation: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct PhoneStats {
     pub fps: f64,
     pub bitrate: u64,
-    pub dropped: u64,
+    pub dropped: f64,
     #[serde(rename = "encodedFrames")]
     pub encoded_frames: u64,
     #[serde(rename = "rttUs")]
@@ -631,7 +633,7 @@ impl<'de> Deserialize<'de> for FpsValue {
 }
 
 /* ------------------------------------------------------------------ */
-/* Loopback: desktop UI → core (§9)                                    */
+/* Core UI state types                                                 */
 /* ------------------------------------------------------------------ */
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -656,93 +658,6 @@ impl LogLevel {
         }
     }
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "t")]
-#[serde(rename_all = "snake_case")]
-pub enum DesktopToCore {
-    /// Start/stop `0x02` video forwarding.
-    #[serde(rename = "sub_video")]
-    SubVideo { enabled: bool },
-    #[serde(rename = "get_state")]
-    GetState,
-    #[serde(rename = "arm_pairing")]
-    ArmPairing {
-        #[serde(rename = "ttlMs")]
-        ttl_ms: i64,
-    },
-    #[serde(rename = "disarm_pairing")]
-    DisarmPairing,
-    #[serde(rename = "forget_device")]
-    ForgetDevice {
-        #[serde(rename = "deviceId")]
-        device_id: String,
-    },
-    #[serde(rename = "connect_usb")]
-    ConnectUsb { serial: Option<String> },
-    #[serde(rename = "disconnect_usb")]
-    DisconnectUsb,
-    /// Re-locates adb and re-runs device discovery (the UI's "check again").
-    #[serde(rename = "refresh_usb")]
-    RefreshUsb,
-    #[serde(rename = "set_output")]
-    SetOutput {
-        mirror: bool,
-        rotation: u32,
-        width: u32,
-        height: u32,
-    },
-    #[serde(rename = "set_vcam")]
-    SetVcam { enabled: bool },
-    #[serde(rename = "export_diagnostics")]
-    ExportDiagnostics { path: String },
-    #[serde(rename = "log_level")]
-    LogLevel { level: LogLevel },
-    #[serde(rename = "pair_decision")]
-    PairDecision {
-        #[serde(rename = "deviceId")]
-        device_id: String,
-        approved: bool,
-    },
-    #[serde(rename = "set_video")]
-    SetVideo {
-        resolution: String,
-        fps: FpsValue,
-        bitrate: u64,
-    },
-    #[serde(rename = "set_camera")]
-    SetCamera { camera: String },
-    #[serde(rename = "set_image")]
-    SetImage {
-        mirror: bool,
-        rotation: u32,
-        zoom: f32,
-    },
-    #[serde(rename = "set_torch")]
-    SetTorch { enabled: bool },
-    #[serde(rename = "set_exposure")]
-    SetExposure { compensation: i32 },
-    #[serde(rename = "set_white_balance")]
-    SetWhiteBalance { kelvin: Option<u32> },
-    #[serde(rename = "set_focus")]
-    SetFocus { distance: Option<f32> },
-    #[serde(rename = "set_audio_stream")]
-    SetAudioStream { enabled: bool },
-    #[serde(rename = "set_anti_flicker")]
-    SetAntiFlicker { mode: AntiFlickerMode },
-    #[serde(rename = "set_screen")]
-    SetScreen { mode: ScreenMode },
-    #[serde(rename = "set_quality_mode")]
-    SetQualityMode { mode: QualityMode },
-    #[serde(rename = "start_stream")]
-    StartStream,
-    #[serde(rename = "stop_stream")]
-    StopStream,
-}
-
-/* ------------------------------------------------------------------ */
-/* Loopback: core → desktop UI (§9)                                    */
-/* ------------------------------------------------------------------ */
 
 /// The core's session phase (§12).
 ///
@@ -965,68 +880,6 @@ pub struct CoreError {
     pub message: String,
 }
 
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "t")]
-pub enum CoreToDesktop {
-    #[serde(rename = "state")]
-    State { state: CoreState },
-    #[serde(rename = "pairing")]
-    Pairing {
-        open: bool,
-        #[serde(rename = "pairingId")]
-        pairing_id: Option<String>,
-        #[serde(rename = "expiresAt")]
-        expires_at: Option<i64>,
-        hosts: Vec<String>,
-        #[serde(rename = "qrPayloads")]
-        qr_payloads: Vec<String>,
-    },
-    #[serde(rename = "pairing_result")]
-    PairingResult {
-        ok: bool,
-        #[serde(rename = "deviceId")]
-        device_id: Option<String>,
-        name: Option<String>,
-        error: Option<String>,
-    },
-    /// The desktop must prompt the user.
-    #[serde(rename = "pair_request")]
-    PairRequest {
-        #[serde(rename = "deviceId")]
-        device_id: String,
-        name: String,
-        model: String,
-    },
-    #[serde(rename = "phone_state")]
-    PhoneState { state: PhoneState },
-    #[serde(rename = "phone_stats")]
-    PhoneStats { stats: PhoneStats },
-    #[serde(rename = "phone_capabilities")]
-    PhoneCapabilities { capabilities: CapabilitiesPayload },
-    /// The following `state` carries `nearby_phones`.
-    #[serde(rename = "nearby_phones_changed")]
-    NearbyPhonesChanged,
-    /// The adaptive controller moved the ladder (§11).
-    #[serde(rename = "quality_changed")]
-    QualityChanged {
-        rung: String,
-        resolution: String,
-        fps: u32,
-        bitrate: u64,
-        reason: String,
-        automatic: bool,
-    },
-    #[serde(rename = "log")]
-    Log {
-        level: LogLevel,
-        message: String,
-        ts: i64,
-    },
-    #[serde(rename = "error")]
-    Error { code: String, message: String },
-}
-
 /// The reply the core sends to a UI command, on the control tag.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommandReply {
@@ -1090,8 +943,46 @@ mod tests {
                 assert!(s.streaming);
                 assert_eq!(s.actual_resolution, "1280x720");
                 assert_eq!(s.thermal, ThermalState::Moderate);
+                assert_eq!(s.orientation, None);
             }
             other => panic!("expected state, got {other:?}"),
+        }
+
+        let json_with_orientation = r#"{"t":"state","streaming":true,"camera":"back","resolution":"1920x1080",
+            "fps":30,"actualResolution":"1920x1080","actualFps":30,"bitrate":8000000,
+            "mirror":false,"rotation":0,"torch":false,"zoom":1.0,"battery":90,
+            "charging":false,"thermal":"none","orientation":90}"#;
+        let m2: PhoneToDesktop = serde_json::from_str(json_with_orientation).unwrap();
+        match m2 {
+            PhoneToDesktop::State(s) => assert_eq!(s.orientation, Some(90)),
+            other => panic!("expected state, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phone_stats_parses_float_and_int_dropped() {
+        let float_json = r#"{"t":"stats","fps":30.0,"bitrate":8000000,"dropped":0.0,"encodedFrames":120,"rttUs":15000,"thermal":"none"}"#;
+        match serde_json::from_str::<PhoneToDesktop>(float_json).unwrap() {
+            PhoneToDesktop::Stats(s) => {
+                assert_eq!(s.dropped, 0.0);
+                assert_eq!(s.encoded_frames, 120);
+            }
+            other => panic!("expected stats, got {other:?}"),
+        }
+
+        let frac_json = r#"{"t":"stats","fps":29.5,"bitrate":4000000,"dropped":2.5,"encodedFrames":300,"rttUs":20000,"thermal":"light"}"#;
+        match serde_json::from_str::<PhoneToDesktop>(frac_json).unwrap() {
+            PhoneToDesktop::Stats(s) => {
+                assert!((s.dropped - 2.5).abs() < f64::EPSILON);
+                assert_eq!(s.thermal, ThermalState::Light);
+            }
+            other => panic!("expected stats, got {other:?}"),
+        }
+
+        let int_json = r#"{"t":"stats","fps":30,"bitrate":8000000,"dropped":3,"encodedFrames":60,"rttUs":10000,"thermal":"none"}"#;
+        match serde_json::from_str::<PhoneToDesktop>(int_json).unwrap() {
+            PhoneToDesktop::Stats(s) => assert_eq!(s.dropped, 3.0),
+            other => panic!("expected stats, got {other:?}"),
         }
     }
 
@@ -1151,21 +1042,6 @@ mod tests {
         assert_eq!(v["pairingOpen"], true);
         assert_eq!(v["pairingId"], "b41c");
         assert_eq!(v["pairedDeviceIds"][0], "android-a");
-    }
-
-    #[test]
-    fn core_to_desktop_round_trips() {
-        let e = CoreToDesktop::QualityChanged {
-            rung: "720p30".into(),
-            resolution: "1280x720".into(),
-            fps: 30,
-            bitrate: 4_000_000,
-            reason: "frames dropped".into(),
-            automatic: true,
-        };
-        let text = serde_json::to_string(&e).unwrap();
-        let back: CoreToDesktop = serde_json::from_str(&text).unwrap();
-        assert_eq!(e, back);
     }
 
     #[test]

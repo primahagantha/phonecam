@@ -1,28 +1,27 @@
-//! JNI bridge exposing PhoneCam's Rust protocol, framing, QR/discovery
-//! parsing, and adaptive quality ladder to the Android Kotlin app and JVM unit
-//! tests.
+//! JNI bridge exposing PhoneCam's Rust protocol, framing, and QR/discovery
+//! parsing to the Android Kotlin app and JVM unit tests.
 
-use std::borrow::Cow;
-use std::fmt::Write as _;
 use std::ptr;
 
 use jni::objects::{JByteArray, JClass, JString};
-use jni::sys::{jboolean, jbyteArray, jdouble, jint, jintArray, jlong, jlongArray, jstring};
+use jni::sys::{jbyteArray, jint, jintArray, jlong, jlongArray, jstring};
 use jni::JNIEnv;
-use parking_lot::Mutex;
-use phonecam_core::adaptive_quality::{AdaptiveQuality, QualityAction, QualityRung, QualitySample};
 use phonecam_core::pairing::random_hex as core_random_hex;
 use phonecam_core::session::MAX_HANDSHAKE_AUTH;
 use phonecam_protocol::{
     device_secret_auth, pair_request_auth, secret_fingerprint, DesktopBeacon, HandshakeStatus,
-    QrPayload, ServerGreeting, ThermalState, CLIENT_HANDSHAKE_SIZE, MAGIC, MAGIC_BYTES,
-    MAX_CONTROL_JSON, MAX_VIDEO_PAYLOAD, PROTOCOL_VERSION, SERVER_GREETING_SIZE,
-    SERVER_RESPONSE_SIZE, SERVICE_PORT, VIDEO_HEADER_SIZE,
+    QrPayload, ServerGreeting, CLIENT_HANDSHAKE_SIZE, MAGIC, MAGIC_BYTES, MAX_CONTROL_JSON,
+    MAX_VIDEO_PAYLOAD, PROTOCOL_VERSION, SERVER_GREETING_SIZE, SERVER_RESPONSE_SIZE, SERVICE_PORT,
+    VIDEO_HEADER_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const NATIVE_VERSION: &str = "phonecam-android-core/1.0.0 (protocol v1)";
+pub const NATIVE_VERSION: &str = concat!(
+    "phonecam-android-core/",
+    env!("CARGO_PKG_VERSION"),
+    " (protocol v1)"
+);
 
 /// Typed failure mapped onto the exact Java exception expected by callers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -419,195 +418,6 @@ pub fn parse_discovery_beacon(json_bytes: &[u8]) -> Option<String> {
 }
 
 /* ------------------------------------------------------------------ */
-/* AdaptiveQuality handle + helpers                                    */
-/* ------------------------------------------------------------------ */
-
-struct AdaptiveQualityState {
-    controller: AdaptiveQuality,
-    fallback_rung: QualityRung,
-}
-
-pub struct AdaptiveQualityHandle {
-    inner: Mutex<AdaptiveQualityState>,
-}
-
-impl AdaptiveQualityHandle {
-    pub fn new(enabled: bool, init_res: &str, init_fps: i32) -> Self {
-        let mut controller = AdaptiveQuality::new();
-        controller.set_enabled(enabled);
-        let fallback_rung = resolve_rung(init_res, init_fps, QualityRung::default());
-        Self {
-            inner: Mutex::new(AdaptiveQualityState {
-                controller,
-                fallback_rung,
-            }),
-        }
-    }
-
-    pub fn set_enabled(&self, enabled: bool) {
-        self.inner.lock().controller.set_enabled(enabled);
-    }
-
-    pub fn confirm(&self, res: &str, fps: i32) {
-        if let Some(rung) = parse_exact_rung(res, fps) {
-            self.inner.lock().controller.confirm(rung);
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn observe_str(
-        &self,
-        now_ms: i64,
-        cur_res: &str,
-        cur_fps: i32,
-        max_res: &str,
-        max_fps: i32,
-        dropped_pct: f64,
-        rtt_us: i64,
-        thermal: &str,
-        decode_struggling: bool,
-    ) -> Cow<'static, str> {
-        let mut guard = self.inner.lock();
-        let current = resolve_rung(cur_res, cur_fps, guard.fallback_rung);
-        guard.fallback_rung = current;
-        let max_rung = resolve_rung(max_res, max_fps, QualityRung::P1080_60);
-
-        let sample = QualitySample {
-            current,
-            max_rung,
-            dropped_percent: dropped_pct,
-            rtt_us,
-            thermal: parse_thermal(thermal),
-            decode_struggling,
-        };
-        let decision = guard.controller.observe(&sample, now_ms);
-        drop(guard);
-
-        match decision.action {
-            QualityAction::Hold => Cow::Borrowed(hold_json_for(current)),
-            QualityAction::StepDown(target) => Cow::Owned(format_quality_decision(
-                "step_down",
-                target,
-                decision.reason,
-            )),
-            QualityAction::StepUp(target) => {
-                Cow::Owned(format_quality_decision("step_up", target, decision.reason))
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn observe(
-        &self,
-        now_ms: i64,
-        cur_res: &str,
-        cur_fps: i32,
-        max_res: &str,
-        max_fps: i32,
-        dropped_pct: f64,
-        rtt_us: i64,
-        thermal: &str,
-        decode_struggling: bool,
-    ) -> String {
-        self.observe_str(
-            now_ms,
-            cur_res,
-            cur_fps,
-            max_res,
-            max_fps,
-            dropped_pct,
-            rtt_us,
-            thermal,
-            decode_struggling,
-        )
-        .into_owned()
-    }
-}
-
-const HOLD_JSON_480P: &str = r#"{"action":"hold","resolution":"640x480","fps":30,"bitrate":1500000,"label":"480p","reason":""}"#;
-const HOLD_JSON_720P: &str = r#"{"action":"hold","resolution":"1280x720","fps":30,"bitrate":4000000,"label":"720p","reason":""}"#;
-const HOLD_JSON_1080P30: &str = r#"{"action":"hold","resolution":"1920x1080","fps":30,"bitrate":8000000,"label":"1080p30","reason":""}"#;
-const HOLD_JSON_1080P60: &str = r#"{"action":"hold","resolution":"1920x1080","fps":60,"bitrate":12000000,"label":"1080p60","reason":""}"#;
-
-fn hold_json_for(rung: QualityRung) -> &'static str {
-    match rung {
-        QualityRung::P480_30 => HOLD_JSON_480P,
-        QualityRung::P720_30 => HOLD_JSON_720P,
-        QualityRung::P1080_30 => HOLD_JSON_1080P30,
-        QualityRung::P1080_60 => HOLD_JSON_1080P60,
-    }
-}
-
-fn format_quality_decision(action: &'static str, target: QualityRung, reason: &str) -> String {
-    let mut out = String::with_capacity(140 + reason.len());
-    let _ = write!(
-        out,
-        r#"{{"action":"{action}","resolution":"{}","fps":{},"bitrate":{},"label":"{}","reason":""#,
-        target.resolution(),
-        target.fps(),
-        target.bitrate(),
-        target.label()
-    );
-    for ch in reason.chars() {
-        match ch {
-            '"' => out.push_str(r#"\""#),
-            '\\' => out.push_str(r#"\\"#),
-            '\n' => out.push_str(r#"\n"#),
-            '\r' => out.push_str(r#"\r"#),
-            '\t' => out.push_str(r#"\t"#),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push_str(r#""}"#);
-    out
-}
-
-fn parse_exact_rung(res: &str, fps: i32) -> Option<QualityRung> {
-    let fps_u32 = u32::try_from(fps).ok()?;
-    QualityRung::for_stream(res.trim(), fps_u32)
-}
-
-fn resolve_rung(res: &str, fps: i32, fallback: QualityRung) -> QualityRung {
-    if let Some(exact) = parse_exact_rung(res, fps) {
-        return exact;
-    }
-    match res.trim() {
-        "640x480" => QualityRung::P480_30,
-        "1280x720" => QualityRung::P720_30,
-        "1920x1080" => {
-            if fps >= 60 {
-                QualityRung::P1080_60
-            } else {
-                QualityRung::P1080_30
-            }
-        }
-        _ => fallback,
-    }
-}
-
-fn parse_thermal(thermal: &str) -> ThermalState {
-    let trimmed = thermal.trim();
-    if trimmed.eq_ignore_ascii_case("light") {
-        ThermalState::Light
-    } else if trimmed.eq_ignore_ascii_case("moderate") {
-        ThermalState::Moderate
-    } else if trimmed.eq_ignore_ascii_case("severe") {
-        ThermalState::Severe
-    } else if trimmed.eq_ignore_ascii_case("critical") {
-        ThermalState::Critical
-    } else if trimmed.eq_ignore_ascii_case("emergency") {
-        ThermalState::Emergency
-    } else if trimmed.eq_ignore_ascii_case("shutdown") {
-        ThermalState::Shutdown
-    } else {
-        ThermalState::None
-    }
-}
-
-/* ------------------------------------------------------------------ */
 /* JNI utilities                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -666,43 +476,6 @@ fn read_exact_jbyte_array<const N: usize>(
     env.get_byte_array_region(arr, 0, &mut buf)
         .map_err(|e| NativeError::Io(format!("failed to copy byte array: {e}")))?;
     Ok(buf.map(|b| b as u8))
-}
-
-enum SmallText<const N: usize> {
-    Stack([u8; N], usize),
-    Heap(String),
-    Empty,
-}
-
-impl<const N: usize> SmallText<N> {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Stack(buf, len) => std::str::from_utf8(&buf[..*len]).unwrap_or(""),
-            Self::Heap(s) => s.as_str(),
-            Self::Empty => "",
-        }
-    }
-}
-
-fn read_optional_small_jstring<const N: usize>(
-    env: &mut JNIEnv<'_>,
-    s: &JString<'_>,
-) -> SmallText<N> {
-    if s.is_null() {
-        return SmallText::Empty;
-    }
-    let Ok(jstr) = env.get_string(s) else {
-        return SmallText::Empty;
-    };
-    let cow: Cow<'_, str> = (&jstr).into();
-    let bytes = cow.as_bytes();
-    if bytes.len() <= N {
-        let mut buf = [0u8; N];
-        buf[..bytes.len()].copy_from_slice(bytes);
-        SmallText::Stack(buf, bytes.len())
-    } else {
-        SmallText::Heap(cow.into_owned())
-    }
 }
 
 fn to_jstring(env: &mut JNIEnv<'_>, value: &str) -> jstring {
@@ -1066,114 +839,6 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_parseDisco
     }
 }
 
-#[no_mangle]
-pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_adaptiveQualityCreate<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _cls: JClass<'local>,
-    enabled: jboolean,
-    init_res: JString<'local>,
-    init_fps: jint,
-) -> jlong {
-    let res_str = read_optional_jstring(&mut env, &init_res, "initRes")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let handle = Box::new(AdaptiveQualityHandle::new(enabled != 0, &res_str, init_fps));
-    Box::into_raw(handle) as jlong
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_adaptiveQualitySetEnabled<
-    'local,
->(
-    _env: JNIEnv<'local>,
-    _cls: JClass<'local>,
-    handle: jlong,
-    enabled: jboolean,
-) {
-    if handle == 0 {
-        return;
-    }
-    let state = unsafe { &*(handle as *const AdaptiveQualityHandle) };
-    state.set_enabled(enabled != 0);
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_adaptiveQualityConfirm<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _cls: JClass<'local>,
-    handle: jlong,
-    res: JString<'local>,
-    fps: jint,
-) {
-    if handle == 0 {
-        return;
-    }
-    let Ok(Some(res_str)) = read_optional_jstring(&mut env, &res, "res") else {
-        return;
-    };
-    let state = unsafe { &*(handle as *const AdaptiveQualityHandle) };
-    state.confirm(&res_str, fps);
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_adaptiveQualityObserve<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _cls: JClass<'local>,
-    handle: jlong,
-    now_ms: jlong,
-    cur_res: JString<'local>,
-    cur_fps: jint,
-    max_res: JString<'local>,
-    max_fps: jint,
-    dropped_pct: jdouble,
-    rtt_us: jlong,
-    thermal: JString<'local>,
-    decode_struggling: jboolean,
-) -> jstring {
-    if handle == 0 {
-        return to_jstring(&mut env, HOLD_JSON_1080P30);
-    }
-    let cur = read_optional_small_jstring::<32>(&mut env, &cur_res);
-    let max = read_optional_small_jstring::<32>(&mut env, &max_res);
-    let therm = read_optional_small_jstring::<32>(&mut env, &thermal);
-    let state = unsafe { &*(handle as *const AdaptiveQualityHandle) };
-    let json = state.observe_str(
-        now_ms,
-        cur.as_str(),
-        cur_fps,
-        max.as_str(),
-        max_fps,
-        dropped_pct,
-        rtt_us,
-        therm.as_str(),
-        decode_struggling != 0,
-    );
-    to_jstring(&mut env, json.as_ref())
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_adaptiveQualityDestroy<
-    'local,
->(
-    _env: JNIEnv<'local>,
-    _cls: JClass<'local>,
-    handle: jlong,
-) {
-    if handle == 0 {
-        return;
-    }
-    unsafe {
-        drop(Box::from_raw(handle as *mut AdaptiveQualityHandle));
-    }
-}
-
 /* ------------------------------------------------------------------ */
 /* Unit tests                                                          */
 /* ------------------------------------------------------------------ */
@@ -1181,7 +846,6 @@ pub extern "system" fn Java_com_phonecam_camera_nativecore_NativeCore_adaptiveQu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phonecam_core::adaptive_quality::{SLOW_RTT_US, STEP_DOWN_DWELL_MS, STEP_UP_DWELL_MS};
     use phonecam_protocol::{
         verify_device_secret, verify_pair_request, write_server_greeting, write_server_response,
         AuthMode, ChannelRole, ClientHandshake, VideoCodec, VideoFlags, VideoPacketHeader,
@@ -1189,7 +853,14 @@ mod tests {
 
     #[test]
     fn native_version_matches_contract() {
-        assert_eq!(NATIVE_VERSION, "phonecam-android-core/1.0.0 (protocol v1)");
+        assert_eq!(
+            NATIVE_VERSION,
+            concat!(
+                "phonecam-android-core/",
+                env!("CARGO_PKG_VERSION"),
+                " (protocol v1)"
+            )
+        );
     }
 
     #[test]
@@ -1458,149 +1129,6 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_quality_steps_down_steps_up_and_respects_manual_mode() {
-        // Step down on packet drop after dwell.
-        let aq = AdaptiveQualityHandle::new(true, "1920x1080", 30);
-        let d0: Value = serde_json::from_str(&aq.observe(
-            0,
-            "1920x1080",
-            30,
-            "1920x1080",
-            60,
-            10.0,
-            20_000,
-            "none",
-            false,
-        ))
-        .unwrap();
-        assert_eq!(d0["action"], "hold");
-
-        let d1: Value = serde_json::from_str(&aq.observe(
-            STEP_DOWN_DWELL_MS,
-            "1920x1080",
-            30,
-            "1920x1080",
-            60,
-            10.0,
-            20_000,
-            "none",
-            false,
-        ))
-        .unwrap();
-        assert_eq!(d1["action"], "step_down");
-        assert_eq!(d1["resolution"], "1280x720");
-        assert_eq!(d1["fps"], 30);
-        assert_eq!(d1["bitrate"], 4_000_000);
-        assert_eq!(d1["label"], "720p");
-
-        // Confirm pending rung, then recover on clean stream after 30s.
-        aq.confirm("1280x720", 30);
-        let u0: Value = serde_json::from_str(&aq.observe(
-            STEP_DOWN_DWELL_MS + 100,
-            "1280x720",
-            30,
-            "1920x1080",
-            60,
-            0.0,
-            20_000,
-            "none",
-            false,
-        ))
-        .unwrap();
-        assert_eq!(u0["action"], "hold");
-
-        let u1: Value = serde_json::from_str(&aq.observe(
-            STEP_DOWN_DWELL_MS + 100 + STEP_UP_DWELL_MS,
-            "1280x720",
-            30,
-            "1920x1080",
-            60,
-            0.0,
-            20_000,
-            "none",
-            false,
-        ))
-        .unwrap();
-        assert_eq!(u1["action"], "step_up");
-        assert_eq!(u1["resolution"], "1920x1080");
-        assert_eq!(u1["fps"], 30);
-
-        // Critical thermal skips dwell immediately.
-        let aq_therm = AdaptiveQualityHandle::new(true, "1920x1080", 30);
-        let dt: Value = serde_json::from_str(&aq_therm.observe(
-            0,
-            "1920x1080",
-            30,
-            "1920x1080",
-            60,
-            0.0,
-            20_000,
-            "critical",
-            false,
-        ))
-        .unwrap();
-        assert_eq!(dt["action"], "step_down");
-        assert_eq!(dt["resolution"], "1280x720");
-
-        // Slow RTT steps down after dwell.
-        let aq_rtt = AdaptiveQualityHandle::new(true, "1920x1080", 30);
-        aq_rtt.observe(
-            0,
-            "1920x1080",
-            30,
-            "1920x1080",
-            30,
-            0.0,
-            SLOW_RTT_US + 1,
-            "none",
-            false,
-        );
-        let dr: Value = serde_json::from_str(&aq_rtt.observe(
-            STEP_DOWN_DWELL_MS,
-            "1920x1080",
-            30,
-            "1920x1080",
-            30,
-            0.0,
-            SLOW_RTT_US + 1,
-            "none",
-            false,
-        ))
-        .unwrap();
-        assert_eq!(dr["action"], "step_down");
-
-        // Manual mode holds even under critical thermal & 90% drops.
-        let aq_manual = AdaptiveQualityHandle::new(false, "1920x1080", 30);
-        let dm0: Value = serde_json::from_str(&aq_manual.observe(
-            0,
-            "1920x1080",
-            30,
-            "1920x1080",
-            60,
-            90.0,
-            500_000,
-            "critical",
-            true,
-        ))
-        .unwrap();
-        assert_eq!(dm0["action"], "hold");
-        aq_manual.set_enabled(false);
-        let dm1: Value = serde_json::from_str(&aq_manual.observe(
-            100_000,
-            "1920x1080",
-            30,
-            "1920x1080",
-            60,
-            90.0,
-            500_000,
-            "critical",
-            true,
-        ))
-        .unwrap();
-        assert_eq!(dm1["action"], "hold");
-    }
-
-    #[test]
     fn encode_video_packet_header_into_matches_allocating_and_checks_bounds() {
         let mut scratch = [0xEEu8; 32];
         encode_video_packet_header_into(
@@ -1648,43 +1176,6 @@ mod tests {
     }
 
     #[test]
-    fn observe_str_borrows_static_hold_json_and_escapes_decisions() {
-        let aq = AdaptiveQualityHandle::new(true, "1920x1080", 30);
-        let hold = aq.observe_str(
-            0,
-            "1920x1080",
-            30,
-            "1920x1080",
-            60,
-            0.0,
-            10_000,
-            "NONE",
-            false,
-        );
-        assert!(matches!(hold, Cow::Borrowed(_)));
-        assert_eq!(hold.as_ref(), HOLD_JSON_1080P30);
-
-        let down = aq.observe_str(
-            1000,
-            "1920x1080",
-            30,
-            "1920x1080",
-            60,
-            0.0,
-            10_000,
-            "CRITICAL",
-            false,
-        );
-        let parsed: Value = serde_json::from_str(down.as_ref()).unwrap();
-        assert_eq!(parsed["action"], "step_down");
-        assert_eq!(parsed["resolution"], "1280x720");
-        assert_eq!(parsed["fps"], 30);
-        assert_eq!(parsed["bitrate"], 4_000_000);
-        assert_eq!(parsed["label"], "720p");
-        assert!(!parsed["reason"].as_str().unwrap().is_empty());
-    }
-
-    #[test]
     fn rust_hot_path_throughput_and_latency() {
         let mut scratch = [0u8; 28];
         let header_start = std::time::Instant::now();
@@ -1703,27 +1194,9 @@ mod tests {
         }
         let auth_elapsed = auth_start.elapsed();
 
-        let aq = AdaptiveQualityHandle::new(true, "1920x1080", 30);
-        let aq_start = std::time::Instant::now();
-        for i in 0..1_000i64 {
-            let out = aq.observe_str(
-                i * 100,
-                "1920x1080",
-                30,
-                "1920x1080",
-                60,
-                0.1,
-                15_000,
-                "none",
-                false,
-            );
-            std::hint::black_box(out);
-        }
-        let aq_elapsed = aq_start.elapsed();
-
         println!(
-            "perf(phonecam-android-core): 10k headers={:?}, 1k auth={:?}, 1k aq_observe={:?}",
-            header_elapsed, auth_elapsed, aq_elapsed
+            "perf(phonecam-android-core): 10k headers={:?}, 1k auth={:?}",
+            header_elapsed, auth_elapsed
         );
         assert!(
             header_elapsed.as_millis() < 500,
@@ -1732,10 +1205,6 @@ mod tests {
         assert!(
             auth_elapsed.as_millis() < 1000,
             "auth too slow: {auth_elapsed:?}"
-        );
-        assert!(
-            aq_elapsed.as_millis() < 500,
-            "aq observe too slow: {aq_elapsed:?}"
         );
     }
 }
