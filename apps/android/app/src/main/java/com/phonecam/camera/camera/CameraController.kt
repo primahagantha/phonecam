@@ -160,11 +160,19 @@ class CameraController(private val context: Context) {
     val resolvedConfig: ResolvedVideoConfig?
         get() = activeConfig
 
-    /** Sizes this camera can capture in a high speed session, which is where 60 fps lives. */
+    /**
+     * Sizes this camera can capture at >= 60 fps in a constrained high-speed session.
+     */
     fun highSpeedSizes(cameraId: String): List<Pair<Int, Int>> {
         val map = getCharacteristics(cameraId)
             ?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return emptyList()
-        return map.highSpeedVideoSizes?.map { it.width to it.height } ?: emptyList()
+        val sizes = map.highSpeedVideoSizes ?: return emptyList()
+        return sizes
+            .filter { size ->
+                runCatching { map.getHighSpeedVideoFpsRangesFor(size)?.any { it.upper >= 60 } == true }
+                    .getOrDefault(false)
+            }
+            .map { it.width to it.height }
     }
 
     /** True when normal AE ranges support 60 fps (e.g. `[60, 60]` or `[30, 60]`). */
@@ -286,10 +294,20 @@ class CameraController(private val context: Context) {
         activeConfig = resolved
 
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val exact = map?.let { outputSizes(it) }?.firstOrNull { size ->
-             (size.width == resolved.width && size.height == resolved.height) ||
-                 (size.width == resolved.height && size.height == resolved.width)
-         }
+        val useHighSpeedSizeMatch = !supportsNormalAe60(cameraId) && resolved.fps >= 60
+        val highSpeedExact = if (useHighSpeedSizeMatch) {
+            map?.highSpeedVideoSizes?.firstOrNull { size ->
+                size.width == resolved.width && size.height == resolved.height
+            } ?: map?.highSpeedVideoSizes?.firstOrNull { size ->
+                size.width == resolved.height && size.height == resolved.width
+            }
+        } else {
+            null
+        }
+        val exact = highSpeedExact ?: map?.let { outputSizes(it) }?.firstOrNull { size ->
+            (size.width == resolved.width && size.height == resolved.height) ||
+                (size.width == resolved.height && size.height == resolved.width)
+        }
         val targetSize = exact ?: Size(resolved.width, resolved.height)
 
         val generation = cameraGeneration
@@ -377,19 +395,19 @@ class CameraController(private val context: Context) {
     }
 
     /**
-     * Frame rate range for a high speed session.
+     * Frame rate range for a constrained high-speed session.
      *
-     * Unlike a normal session, Camera2 only accepts a range the high speed
-     * configuration itself advertises. The narrowest one that still reaches 60 is
-     * chosen, so a device that also offers `[60,60]` is not run at its 120 fps
-     * maximum for a 60 fps request.
+     * Camera2 only accepts a range the high-speed configuration itself advertises
+     * for [size]. Prefers `[60, 60]`, then `[30, 60]`, then `[30, 120]` / lowest
+     * upper bound `>= 60` so devices whose AE ranges top out at 30 fps (e.g.
+     * Snapdragon 680 exposing 1280x720 `[30, 120]` / `[120, 120]`) run reliably.
      */
     private fun selectHighSpeedRange(characteristics: CameraCharacteristics, size: Size): Range<Int> {
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val ranges = map?.getHighSpeedVideoFpsRangesFor(size)
-        return ranges?.filter { it.upper >= 60 }?.minByOrNull { it.upper }
-            ?: ranges?.maxByOrNull { it.upper }
-            ?: Range(30, 120)
+        val ranges = runCatching { map?.getHighSpeedVideoFpsRangesFor(size) }.getOrNull() ?: emptyArray()
+        val pairs = ranges.map { (it.lower ?: 0) to (it.upper ?: 0) }
+        val chosen = selectHighSpeedRangeFromPairs(pairs)
+        return Range(chosen.first, chosen.second)
     }
 
     /**
@@ -513,6 +531,7 @@ class CameraController(private val context: Context) {
         onError: (String) -> Unit,
         previewSurface: Surface?,
         generation: Long,
+        allowHighSpeed: Boolean = true,
     ) {
         try {
             if (generation != cameraGeneration) return
@@ -532,9 +551,15 @@ class CameraController(private val context: Context) {
             val streamMap = characteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val aeRanges = characteristics?.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
             val hasAe60 = aeRanges.any { it.upper >= 60 }
-            val highSpeed = !hasAe60 && resolved.fps >= 60 && streamMap?.highSpeedVideoSizes?.any { size ->
+            val highSpeed = allowHighSpeed && !hasAe60 && resolved.fps >= 60 && streamMap?.highSpeedVideoSizes?.any { size ->
                 size.width == targetSize.width && size.height == targetSize.height
             } == true
+
+            // Constrained high-speed sessions strictly reject surfaces whose dimensions do
+            // not match the high-speed video configuration (such as the UI TextureView).
+            // Omit the viewfinder surface in high-speed mode so 60 FPS capture succeeds reliably.
+            val attachPreview = hasValidPreview && !highSpeed
+
             val fpsRange = when {
                 highSpeed -> selectHighSpeedRange(characteristics!!, targetSize)
                 characteristics != null -> selectFpsRange(characteristics, resolved.fps)
@@ -547,7 +572,7 @@ class CameraController(private val context: Context) {
                 // to the repeating request rather than opening a second session is
                 // what keeps preview and encode on the same frames: the user sees
                 // exactly what the PC receives, with no extra camera open.
-                if (hasValidPreview) previewSurface?.let { addTarget(it) }
+                if (attachPreview) previewSurface?.let { addTarget(it) }
                 set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                 if (manualFocusDistance != null) {
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
@@ -641,7 +666,7 @@ class CameraController(private val context: Context) {
 
             val surfaces = buildList {
                 add(targetSurface)
-                if (hasValidPreview) previewSurface?.let { add(it) }
+                if (attachPreview) previewSurface?.let { add(it) }
             }
             val outputs = surfaces.map { OutputConfiguration(it) }
             // The executor must hold the handler this session was built on, not
@@ -689,7 +714,8 @@ class CameraController(private val context: Context) {
                         Log.i(
                             TAG,
                             "streaming ${targetSize.width}x${targetSize.height}@${resolved.fps} " +
-                                "(${resolved.bitrate}bps) camera=${camera.id}",
+                                "(${resolved.bitrate}bps, fpsRange=$fpsRange, highSpeed=$highSpeed, preview=$attachPreview) " +
+                                "camera=${camera.id}",
                         )
                         onStarted(resolved)
                     } catch (t: Throwable) {
@@ -699,7 +725,7 @@ class CameraController(private val context: Context) {
                 }
 
                 override fun onConfigureFailed(configured: CameraCaptureSession) {
-                    if (hasValidPreview) {
+                    if (attachPreview) {
                         Log.w(TAG, "createCaptureSession failed with preview surface; retrying with encoder target only")
                         createSession(
                             camera = camera,
@@ -710,6 +736,23 @@ class CameraController(private val context: Context) {
                             onError = onError,
                             previewSurface = null,
                             generation = generation,
+                            allowHighSpeed = allowHighSpeed,
+                        )
+                        return
+                    }
+                    if (highSpeed) {
+                        Log.w(TAG, "constrained high-speed session failed for ${targetSize.width}x${targetSize.height}; falling back to regular session")
+                        val fallbackFps = resolved.fps.coerceAtMost(30)
+                        createSession(
+                            camera = camera,
+                            targetSurface = targetSurface,
+                            targetSize = targetSize,
+                            resolved = resolved.copy(fps = fallbackFps, substituted = true),
+                            onStarted = onStarted,
+                            onError = onError,
+                            previewSurface = previewSurface,
+                            generation = generation,
+                            allowHighSpeed = false,
                         )
                         return
                     }
@@ -722,8 +765,24 @@ class CameraController(private val context: Context) {
             }
 
             if (highSpeed) {
-                @Suppress("DEPRECATION")
-                camera.createConstrainedHighSpeedCaptureSession(surfaces, stateCallback, handler)
+                try {
+                    @Suppress("DEPRECATION")
+                    camera.createConstrainedHighSpeedCaptureSession(surfaces, stateCallback, handler)
+                } catch (hsErr: Throwable) {
+                    Log.w(TAG, "createConstrainedHighSpeedCaptureSession threw ${hsErr.javaClass.simpleName}; falling back to regular session", hsErr)
+                    val fallbackFps = resolved.fps.coerceAtMost(30)
+                    createSession(
+                        camera = camera,
+                        targetSurface = targetSurface,
+                        targetSize = targetSize,
+                        resolved = resolved.copy(fps = fallbackFps, substituted = true),
+                        onStarted = onStarted,
+                        onError = onError,
+                        previewSurface = previewSurface,
+                        generation = generation,
+                        allowHighSpeed = false,
+                    )
+                }
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 val config = SessionConfiguration(
                     SessionConfiguration.SESSION_REGULAR,
@@ -885,7 +944,13 @@ class CameraController(private val context: Context) {
     fun setFrameRate(fps: Int) {
         val builder = requestBuilder ?: return
         val characteristics = device?.id?.let { getCharacteristics(it) }
-        val range = characteristics?.let { selectFpsRange(it, fps) } ?: Range(fps, fps)
+        val activeSession = session
+        val range = if (activeSession is CameraConstrainedHighSpeedCaptureSession && characteristics != null) {
+            val size = sessionRequest?.targetSize
+            if (size != null) selectHighSpeedRange(characteristics, size) else Range(fps, fps)
+        } else {
+            characteristics?.let { selectFpsRange(it, fps) } ?: Range(fps, fps)
+        }
         runCatching {
             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, range)
             applyRequest(builder)
@@ -907,6 +972,9 @@ class CameraController(private val context: Context) {
         val cameraHandler = handler
         val rebuild = Runnable {
             if (this@CameraController.previewSurface !== surface) return@Runnable
+            // Constrained high-speed sessions omit the preview surface so Camera2
+            // never rejects mismatched viewfinder sizes; avoid disrupting the live 60 FPS stream.
+            if (session is CameraConstrainedHighSpeedCaptureSession) return@Runnable
             val request = sessionRequest ?: return@Runnable
             val camera = device ?: return@Runnable
             // Camera2 does not allow overlapping capture sessions on one device.
@@ -1038,6 +1106,32 @@ class CameraController(private val context: Context) {
         }
 
         fun kelvinToRggb(kelvin: Int): RggbChannelVector = kelvinToColorGains(kelvin).toRggbVector()
+
+        fun selectHighSpeedRangeFromPairs(ranges: List<Pair<Int, Int>>): Pair<Int, Int> {
+            if (ranges.isEmpty()) return 30 to 120
+
+            // 1. Exact fixed [60, 60]
+            ranges.firstOrNull { it.first == 60 && it.second == 60 }?.let { return it }
+
+            // 2. Variable [30, 60] (or any upper == 60, preferring highest lower <= 60)
+            val upper60 = ranges.filter { it.second == 60 }
+            if (upper60.isNotEmpty()) {
+                return upper60.firstOrNull { it.first == 30 }
+                    ?: upper60.maxByOrNull { it.first }!!
+            }
+
+            // 3. Any range supporting >= 60: pick lowest upper >= 60 (e.g. 120 over 240),
+            // preferring variable lower == 30 (e.g. [30, 120] over [120, 120]) for indoor AE headroom.
+            val atLeast60 = ranges.filter { it.second >= 60 }
+            if (atLeast60.isNotEmpty()) {
+                val minUpper = atLeast60.minOf { it.second }
+                val candidates = atLeast60.filter { it.second == minUpper }
+                return candidates.firstOrNull { it.first == 30 }
+                    ?: candidates.minByOrNull { it.first }!!
+            }
+
+            return ranges.maxByOrNull { it.second } ?: (30 to 120)
+        }
 
         fun selectFpsRangeFromPairs(ranges: List<Pair<Int, Int>>, targetFps: Int): Pair<Int, Int> {
             if (targetFps >= 60) {

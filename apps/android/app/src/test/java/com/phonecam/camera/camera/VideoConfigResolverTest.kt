@@ -227,4 +227,24 @@ class VideoConfigResolverTest {
         assertEquals(60, resolved.fps)
         assertTrue(resolved.substituted)
     }
+
+    @Test
+    fun `picks largest highSpeedSizes resolution at or below requested 1080p60`() {
+        // Snapdragon 680 / Redmi Note 11 style capabilities: normal AE tops at 30fps,
+        // high-speed configs expose 1280x720, 720x480, 640x480.
+        val resolved = VideoConfigResolver.resolve(
+            requestedResolution = "1920x1080",
+            requestedFps = 60,
+            requestedBitrate = null,
+            supportedSizes = listOf(1920 to 1080, 1280 to 720, 720 to 480, 640 to 480),
+            supportedFps = listOf(24, 30),
+            highSpeedSizes = listOf(640 to 480, 1280 to 720, 720 to 480),
+            supportsNormalAe60 = false,
+        )
+
+        assertEquals(1280, resolved.width)
+        assertEquals(720, resolved.height)
+        assertEquals(60, resolved.fps)
+        assertTrue(resolved.substituted)
+    }
 }

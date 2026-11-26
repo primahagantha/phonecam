@@ -204,7 +204,7 @@ private fun MutedProse(text: String, modifier: Modifier = Modifier) {
     )
 }
 
-/** A recessed well for content that is itself a surface, such as the log. */
+/** A recessed well for content that is itself a surface, such as logs or release notes. */
 @Composable
 fun InsetWell(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(
@@ -212,8 +212,9 @@ fun InsetWell(modifier: Modifier = Modifier, content: @Composable ColumnScope.()
             .fillMaxWidth()
             .clip(PhoneCamShapes.Field)
             .background(MaterialTheme.colorScheme.surfaceVariant)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PhoneCamShapes.Field)
             .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
         content = content,
     )
 }

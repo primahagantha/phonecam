@@ -130,6 +130,7 @@ class PeerConnection(
     companion object {
         private const val TAG = "PeerConnection"
         private const val SOCKET_BUFFER = 256 * 1024
+        private const val VIDEO_SOCKET_SEND_BUFFER = 128 * 1024
         private const val CONNECT_TIMEOUT_MS = 4000
         private const val HANDSHAKE_TIMEOUT_MS = 8000
 
@@ -153,11 +154,17 @@ class PeerConnection(
             val socket = Socket()
             return try {
                 socket.tcpNoDelay = true
+                if (role == ChannelRole.VIDEO) {
+                    // Keep kernel TCP send buffer bounded so stale H.264 frames never pile up
+                    // into hundreds of milliseconds of bufferbloat on congested Wi-Fi links.
+                    runCatching { socket.sendBufferSize = VIDEO_SOCKET_SEND_BUFFER }
+                }
                 socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
                 socket.soTimeout = handshakeTimeoutMs
 
+                val outBufSize = if (role == ChannelRole.VIDEO) VIDEO_SOCKET_SEND_BUFFER else SOCKET_BUFFER
                 val input = DataInputStream(BufferedInputStream(socket.getInputStream(), SOCKET_BUFFER))
-                val output = DataOutputStream(BufferedOutputStream(socket.getOutputStream(), SOCKET_BUFFER))
+                val output = DataOutputStream(BufferedOutputStream(socket.getOutputStream(), outBufSize))
 
                 val greeting = Framing.readGreeting(input)
                 if (greeting.protoVersion != Proto.VERSION) {

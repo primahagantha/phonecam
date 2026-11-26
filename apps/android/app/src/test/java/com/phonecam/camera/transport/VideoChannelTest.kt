@@ -220,4 +220,10 @@ class VideoChannelTest {
 
         assertTrue("onRequestKeyframe should be called when frames are evicted", keyframeRequested)
     }
+
+    @Test
+    fun `video channel enforces tight 3-frame queue and 128KB send buffer for low latency`() {
+        assertEquals(3, VideoChannel.QUEUE_CAPACITY)
+        assertEquals(128 * 1024, VideoChannel.VIDEO_SEND_BUFFER_BYTES)
+    }
 }

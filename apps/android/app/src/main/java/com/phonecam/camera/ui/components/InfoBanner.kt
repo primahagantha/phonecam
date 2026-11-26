@@ -55,7 +55,11 @@ fun InfoBanner(
             .fillMaxWidth()
             .clip(PhoneCamShapes.Panel)
             .background(MaterialTheme.colorScheme.infoContainer)
-            .border(1.dp, MaterialTheme.colorScheme.infoContainer, PhoneCamShapes.Panel)
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.onInfoContainer.copy(alpha = 0.25f),
+                PhoneCamShapes.Panel,
+            )
             .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp)
             .semantics { liveRegion = LiveRegionMode.Polite },
         verticalAlignment = Alignment.CenterVertically,

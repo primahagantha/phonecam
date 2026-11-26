@@ -288,4 +288,22 @@
     <string name="clipboard_crash_report">Crash Report</string>
     <string name="clipboard_diagnostics_report">Diagnostics Report</string>
     <string name="clipboard_log">PhoneCam log</string>
+
+    <!-- Software updates (manual, user-initiated only) -->
+    <string name="section_updates">Software Updates</string>
+    <string name="updates_subtitle">Checks GitHub Releases only when you tap below. PhoneCam never checks in the background.</string>
+    <string name="updates_current_version">Current version</string>
+    <string name="action_check_updates">Check for Updates</string>
+    <string name="action_download_github">Download on GitHub</string>
+    <string name="updates_checking">Checking GitHub Releases…</string>
+    <string name="updates_up_to_date">You\'re up to date (%1$s).</string>
+    <string name="updates_available_title">Update available</string>
+    <string name="updates_published_on">Released %1$s</string>
+    <string name="updates_changelog_label">What\'s new</string>
+    <string name="updates_changelog_empty">No release notes were provided for this release.</string>
+    <string name="updates_error_network">Couldn\'t reach GitHub. Check your internet connection and try again.</string>
+    <string name="updates_error_rate_limited">GitHub API rate limit reached. Please try again in a few minutes.</string>
+    <string name="updates_error_no_release">No published releases were found on GitHub yet.</string>
+    <string name="updates_error_server">GitHub returned an unexpected error (HTTP %1$s).</string>
+    <string name="updates_error_invalid_response">Received an unreadable response from GitHub.</string>
 </resources>

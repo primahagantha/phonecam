@@ -62,6 +62,9 @@ class VideoChannel(
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        // Enforce low-latency TCP socket tuning even if connection was supplied directly.
+        runCatching { connection.socket.tcpNoDelay = true }
+        runCatching { connection.socket.sendBufferSize = VIDEO_SEND_BUFFER_BYTES }
         writerThread = Thread({ writeLoop() }, "phonecam-video-writer").apply {
             priority = Thread.MAX_PRIORITY
             start()
@@ -134,14 +137,13 @@ class VideoChannel(
         // arrives, all queued frames belong to the obsolete previous GOP. Evict them
         // so the stream catches up instantly to real-time, but keep any frame where
         // codecConfig == true so SPS/PPS is not dropped.
-        if (pending.keyframe && queue.size >= 3) {
+        if (pending.keyframe && queue.size >= KEYFRAME_EVICT_THRESHOLD) {
             evictStaleFramesOnKeyframe()
         }
 
         if (!queue.offer(pending)) {
-            // Prefer dropping non-keyframes; a keyframe starts a new independent GOP,
-            // so evict all stale queued frames to make room for the keyframe.
-            if (pending.keyframe) {
+            // Prefer dropping non-keyframes; a keyframe or codecConfig must replace stale frames.
+            if (pending.keyframe || pending.codecConfig) {
                 evictStaleFramesOnKeyframe()
                 if (!queue.offer(pending)) {
                     droppedFrames.incrementAndGet()
@@ -264,7 +266,7 @@ class VideoChannel(
         lastDropped = dropped
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "VideoChannel"
         const val CODEC_H264 = 1
 
@@ -272,10 +274,12 @@ class VideoChannel(
         const val REPORT_INTERVAL_MS = 1_000L
 
         /**
-         * Deep enough to absorb a scheduling hiccup (~266ms at 30 FPS), shallow enough that a
-         * congested link shows up as dropped frames rather than accumulating stale latency.
+         * Tight 3-frame ceiling keeps end-to-end queuing delay under ~50ms at 60 FPS
+         * (~100ms at 30 FPS) while still absorbing single-frame scheduler jitter.
          */
-        const val QUEUE_CAPACITY = 8
+        const val QUEUE_CAPACITY = 3
+        const val KEYFRAME_EVICT_THRESHOLD = 2
+        const val VIDEO_SEND_BUFFER_BYTES = 128 * 1024
         const val POOL_CAPACITY = QUEUE_CAPACITY + 2
         const val MIN_POOLED_FRAME_BYTES = 192 * 1024
         const val MAX_POOLED_FRAME_BYTES = 512 * 1024

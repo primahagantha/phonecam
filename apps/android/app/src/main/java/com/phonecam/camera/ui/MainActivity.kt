@@ -40,6 +40,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Output
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -58,6 +59,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -114,13 +116,16 @@ import com.phonecam.camera.ui.components.HealthCard
 import com.phonecam.camera.ui.components.Hint
 import com.phonecam.camera.ui.components.SectionCard
 import com.phonecam.camera.ui.components.InfoBanner
+import com.phonecam.camera.ui.components.InsetWell
 import com.phonecam.camera.ui.components.NotificationPermissionNote
 import com.phonecam.camera.ui.components.OutputCard
 import com.phonecam.camera.ui.components.PermissionDeniedCard
 import com.phonecam.camera.ui.components.PhasePill
 import com.phonecam.camera.ui.components.StatusCard
+import com.phonecam.camera.ui.components.UpdateCard
 import com.phonecam.camera.ui.theme.PhoneCamShapes
 import com.phonecam.camera.ui.theme.PhoneCamTheme
+import com.phonecam.camera.update.UpdateCheckState
 
 /**
  * PhoneCam's control panel, as four screens behind a bottom bar.
@@ -198,6 +203,7 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
     val camerasProbed by viewModel.camerasProbed.collectAsState()
     val notificationNoteDismissed by viewModel.notificationNoteDismissed.collectAsState()
     val previewEnabled by viewModel.previewEnabled.collectAsState()
+    val updateState by viewModel.updateState.collectAsState()
 
     // The desktop's `set_screen` choice or local phone blackout, applied to this window.
     // Active only while streaming, so opening the app never pins the screen on.
@@ -368,18 +374,21 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                 com.phonecam.camera.protocol.CrashReporter.clearPendingCrashReport(context)
                 pendingCrashReport = null
             },
+            containerColor = MaterialTheme.colorScheme.surface,
             title = { Text(stringResource(R.string.crash_dialog_title)) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
                         stringResource(R.string.crash_dialog_body),
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    Text(
-                        report.take(300) + if (report.length > 300) "..." else "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    InsetWell {
+                        Text(
+                            report.take(300) + if (report.length > 300) "..." else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -442,18 +451,35 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         onStart = startOrRequestCamera,
                         onStop = { viewModel.stopSession() },
                     )
-                    NavigationBar {
+                    Hairline()
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 0.dp,
+                    ) {
                         ScreenDestination.entries.forEachIndexed { index, item ->
                             NavigationBarItem(
                                 selected = item == destination,
                                 onClick = { destinationOrdinal = index },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
                                 icon = {
                                     Icon(
                                         imageVector = item.icon,
                                         contentDescription = null,
                                     )
                                 },
-                                label = { Text(stringResource(item.labelRes)) },
+                                label = {
+                                    Text(
+                                        text = stringResource(item.labelRes),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                },
                             )
                         }
                     }
@@ -519,6 +545,8 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         encoderLabel = encoderLabel,
                         camerasProbed = camerasProbed,
                         appVersion = viewModel.appVersion,
+                        updateState = updateState,
+                        onCheckForUpdates = { viewModel.checkForUpdates() },
                         logLines = logLines,
                         buildReport = buildReport,
                         onRefreshCapabilities = { viewModel.refreshCapabilities() },
@@ -647,12 +675,14 @@ private fun StatusStrip(
             )
             Button(
                 onClick = if (isRunning) onStop else onStart,
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 6.dp),
+                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
             ) {
                 Text(
-                    stringResource(
+                    text = stringResource(
                         if (isRunning) R.string.action_stop_session else R.string.action_start_session,
                     ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -961,9 +991,11 @@ private fun PowerSavingCard(
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = "⚡",
-                    fontSize = 18.sp,
+                Icon(
+                    imageVector = Icons.Filled.Bolt,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(20.dp),
                 )
             }
             Text(
@@ -971,6 +1003,7 @@ private fun PowerSavingCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
             )
         }
 
@@ -989,13 +1022,21 @@ private fun PowerSavingCard(
                 onClick = onEnablePreview,
                 modifier = Modifier.weight(1f),
             ) {
-                Text(stringResource(R.string.action_show_preview))
+                Text(
+                    text = stringResource(R.string.action_show_preview),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             OutlinedButton(
                 onClick = onEnableBlackout,
                 modifier = Modifier.weight(1f),
             ) {
-                Text(stringResource(R.string.action_blackout_oled))
+                Text(
+                    text = stringResource(R.string.action_blackout_oled),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -1101,7 +1142,7 @@ private fun PreviewSettingsCard(
     }
 }
 
-/** Numbers and the log. */
+/** Software updates, diagnostics numbers, and the log. */
 @Composable
 private fun DiagnosticsScreen(
     state: SessionState,
@@ -1109,12 +1150,19 @@ private fun DiagnosticsScreen(
     encoderLabel: String,
     camerasProbed: Boolean,
     appVersion: String,
+    updateState: UpdateCheckState,
+    onCheckForUpdates: () -> Unit,
     logLines: List<String>,
     buildReport: () -> String,
     onRefreshCapabilities: () -> Unit,
     onClearLog: () -> Unit,
 ) {
     ScreenScroll {
+        UpdateCard(
+            appVersion = appVersion,
+            updateState = updateState,
+            onCheckForUpdates = onCheckForUpdates,
+        )
         DiagnosticsCard(
             deviceId = identity.deviceId,
             deviceName = identity.deviceName,

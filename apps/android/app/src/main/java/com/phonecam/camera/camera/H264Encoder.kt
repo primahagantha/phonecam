@@ -143,16 +143,45 @@ class H264Encoder(
                 MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
             ) ?: true
 
-            val format = configureMediaFormat(cand, isCbr = isCbr, specificCodecName = specificCodecName)
+            val format = configureMediaFormat(
+                cand = cand,
+                isCbr = isCbr,
+                specificCodecName = specificCodecName,
+                includeOperatingRate = true,
+            )
 
             var configured = false
             try {
                 created.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 configured = true
             } catch (e: Throwable) {
-                Log.w(TAG, "configure failed on ${created.name} (${cand.width}x${cand.height}): ${e.message}")
+                Log.w(TAG, "configure failed on ${created.name} (${cand.width}x${cand.height}, operatingRate): ${e.message}")
                 runCatching { created.release() }
                 created = null
+            }
+
+            if (!configured) {
+                // Retry low-latency format without KEY_OPERATING_RATE in case the OEM DSP rejects it.
+                created = if (specificCodecName != null) {
+                    runCatching { MediaCodec.createByCodecName(specificCodecName) }.getOrNull() ?: return null
+                } else {
+                    runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull() ?: return null
+                }
+
+                val noOpRateFormat = configureMediaFormat(
+                    cand = cand,
+                    isCbr = isCbr,
+                    specificCodecName = specificCodecName,
+                    includeOperatingRate = false,
+                )
+                try {
+                    created.configure(noOpRateFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                    configured = true
+                } catch (e: Throwable) {
+                    Log.w(TAG, "configure without operating rate failed on ${created.name}: ${e.message}")
+                    runCatching { created.release() }
+                    created = null
+                }
             }
 
             if (!configured) {
@@ -357,6 +386,7 @@ class H264Encoder(
         isCbr: Boolean = true,
         specificCodecName: String? = null,
         iFrameInterval: Int = I_FRAME_INTERVAL_SECONDS,
+        includeOperatingRate: Boolean = true,
     ): MediaFormat = configureMediaFormat(
         width = cand.width,
         height = cand.height,
@@ -365,14 +395,17 @@ class H264Encoder(
         isCbr = isCbr,
         specificCodecName = specificCodecName,
         iFrameInterval = iFrameInterval,
+        includeOperatingRate = includeOperatingRate,
     )
 
     companion object {
         private const val TAG = "H264Encoder"
         private const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
         private const val I_FRAME_INTERVAL_SECONDS = 1
-        private const val DEQUEUE_TIMEOUT_US = 10_000L
+        internal const val DEQUEUE_TIMEOUT_US = 2_000L
         private const val DRAIN_JOIN_TIMEOUT_MS = 500L
+
+        internal fun operatingRateFor(fps: Int): Int = (fps * 2).coerceAtLeast(60)
 
         internal fun createBasicMediaFormat(
             width: Int,
@@ -410,6 +443,7 @@ class H264Encoder(
             isCbr: Boolean = true,
             specificCodecName: String? = null,
             iFrameInterval: Int = I_FRAME_INTERVAL_SECONDS,
+            includeOperatingRate: Boolean = true,
         ): MediaFormat {
             val format = MediaFormat.createVideoFormat(MIME, width, height).apply {
                 setInteger(
@@ -434,6 +468,11 @@ class H264Encoder(
                     MediaFormat.KEY_PROFILE,
                     MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
                 )
+
+                // Keep hardware encoder DSP clocked up for real-time low latency (API 23+).
+                if (includeOperatingRate && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    setInteger(MediaFormat.KEY_OPERATING_RATE, operatingRateFor(fps))
+                }
 
                 // Disallow B-frames to prevent reordering latency (API 29+)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

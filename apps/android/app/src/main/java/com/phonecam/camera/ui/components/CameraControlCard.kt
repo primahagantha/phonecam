@@ -256,14 +256,19 @@ private fun CameraTile(
         label,
     )
     val container = if (selected) {
-        MaterialTheme.colorScheme.secondaryContainer
+        MaterialTheme.colorScheme.primaryContainer
     } else {
-        MaterialTheme.colorScheme.surface
+        MaterialTheme.colorScheme.surfaceVariant
     }
     val content = if (selected) {
-        MaterialTheme.colorScheme.onSecondaryContainer
+        MaterialTheme.colorScheme.onPrimaryContainer
     } else {
         MaterialTheme.colorScheme.onSurface
+    }
+    val borderColor = if (selected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+    } else {
+        MaterialTheme.colorScheme.outlineVariant
     }
     // A plain clickable Surface, not an icon-toggle: the tile holds an icon and
     // two lines of text, and the toggle component would centre and clip them.
@@ -273,12 +278,8 @@ private fun CameraTile(
         shape = MaterialTheme.shapes.large,
         color = container,
         contentColor = content,
-        border = if (selected) {
-            null
-        } else {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-        },
-        tonalElevation = if (selected) 2.dp else 0.dp,
+        border = BorderStroke(1.dp, borderColor),
+        tonalElevation = 0.dp,
         modifier = Modifier
             .widthIn(min = 132.dp)
             .semantics { contentDescription = description },

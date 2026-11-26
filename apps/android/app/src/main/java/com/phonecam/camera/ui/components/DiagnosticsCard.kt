@@ -5,7 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
@@ -21,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.phonecam.camera.R
 
@@ -39,6 +41,7 @@ import com.phonecam.camera.R
  * rather than competing with the cards. The log itself is the exception, and gets
  * a recessed well because it is a surface inside a surface.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DiagnosticsCard(
     deviceId: String,
@@ -103,7 +106,11 @@ fun DiagnosticsCard(
             value = appVersion,
         )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
             TextButton(onClick = onRefreshCapabilities) {
                 Text(stringResource(R.string.action_refresh_capabilities))
             }
@@ -117,7 +124,11 @@ fun DiagnosticsCard(
         }
 
         if (showLog) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 TextButton(
                     onClick = {
                         copyToClipboard(context, logLines)
@@ -139,7 +150,11 @@ fun DiagnosticsCard(
             // paired with questions about which phone and which settings; the
             // report carries that context with it, which is what makes it
             // possible to act on without a round trip.
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 TextButton(
                     onClick = {
                         copyToClipboard(context, listOf(buildReport()))
@@ -195,7 +210,9 @@ fun DiagnosticsCard(
                     logLines.forEach { line ->
                         Text(
                             text = line,
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                            ),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }

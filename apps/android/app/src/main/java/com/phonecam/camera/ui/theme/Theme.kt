@@ -92,11 +92,13 @@ private val PhoneCamTypography = Typography().let { base ->
     base.copy(
         titleMedium = base.titleMedium.copy(
             fontSize = 17.sp,
+            lineHeight = 23.sp,
             fontWeight = FontWeight.SemiBold,
-            letterSpacing = 0.sp,
+            letterSpacing = (-0.1).sp,
         ),
         titleSmall = base.titleSmall.copy(
             fontSize = 15.sp,
+            lineHeight = 21.sp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 0.sp,
         ),
@@ -105,12 +107,20 @@ private val PhoneCamTypography = Typography().let { base ->
             lineHeight = 22.sp,
         ),
         labelLarge = base.labelLarge.copy(
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 0.1.sp,
         ),
+        labelMedium = base.labelMedium.copy(
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 0.2.sp,
+        ),
         bodySmall = base.bodySmall.copy(
             fontSize = 13.sp,
-            lineHeight = 18.sp,
+            lineHeight = 19.sp,
         ),
     )
 }
@@ -157,12 +167,9 @@ private fun phoneCamDarkColors() = darkColorScheme(
     outline = colorResource(R.color.phonecam_outline),
     outlineVariant = colorResource(R.color.phonecam_outline_variant),
 
-    // `surfaceTint` is what Material mixes into an elevated surface. Its baseline
-    // value is the Material purple, and any component that reaches for it would
-    // paint a second accent into an otherwise single-accent app. Nothing here
-    // currently elevates, so this is insurance rather than a fix, but a
-    // purple-tinted card appearing later would be a real colour-lock break.
-    surfaceTint = colorResource(R.color.phonecam_primary),
+    // Disable tonal surface tinting so obsidian surfaces stay neutral and crisp
+    // without Material3 blending accent colour into dialogs or navigation chrome.
+    surfaceTint = Color.Transparent,
 
     secondary = colorResource(R.color.phonecam_info_container),
     onSecondary = colorResource(R.color.phonecam_on_info_container),
@@ -212,7 +219,7 @@ private fun phoneCamLightColors() = lightColorScheme(
     outline = colorResource(R.color.phonecam_light_outline),
     outlineVariant = colorResource(R.color.phonecam_light_outline_variant),
 
-    surfaceTint = colorResource(R.color.phonecam_light_primary),
+    surfaceTint = Color.Transparent,
 
     secondary = colorResource(R.color.phonecam_light_info_container),
     onSecondary = colorResource(R.color.phonecam_light_on_info_container),

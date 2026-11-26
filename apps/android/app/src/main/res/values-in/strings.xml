@@ -266,4 +266,22 @@
     <string name="clipboard_crash_report">Laporan Crash</string>
     <string name="clipboard_diagnostics_report">Laporan Diagnostik</string>
     <string name="clipboard_log">Log PhoneCam</string>
+
+    <!-- Software updates (manual, user-initiated only) -->
+    <string name="section_updates">Pembaruan Perangkat Lunak</string>
+    <string name="updates_subtitle">Hanya memeriksa GitHub Releases saat Anda mengetuk tombol di bawah. PhoneCam tidak pernah memeriksa di latar belakang.</string>
+    <string name="updates_current_version">Versi saat ini</string>
+    <string name="action_check_updates">Periksa Pembaruan</string>
+    <string name="action_download_github">Unduh di GitHub</string>
+    <string name="updates_checking">Memeriksa GitHub Releases…</string>
+    <string name="updates_up_to_date">Aplikasi sudah versi terbaru (%1$s).</string>
+    <string name="updates_available_title">Pembaruan tersedia</string>
+    <string name="updates_published_on">Dirilis %1$s</string>
+    <string name="updates_changelog_label">Yang baru</string>
+    <string name="updates_changelog_empty">Tidak ada catatan rilis untuk versi ini.</string>
+    <string name="updates_error_network">Tidak dapat menghubungi GitHub. Periksa koneksi internet Anda lalu coba lagi.</string>
+    <string name="updates_error_rate_limited">Batas permintaan API GitHub tercapai. Coba lagi beberapa menit lagi.</string>
+    <string name="updates_error_no_release">Belum ada rilis publik yang ditemukan di GitHub.</string>
+    <string name="updates_error_server">GitHub mengembalikan respons tak terduga (HTTP %1$s).</string>
+    <string name="updates_error_invalid_response">Menerima respons yang tidak dapat dibaca dari GitHub.</string>
 </resources>

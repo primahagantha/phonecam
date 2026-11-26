@@ -20,23 +20,23 @@
     listed next to each role so a future edit can be re-checked without guessing.
 -->
 <resources>
-    <!-- Dark: the default. A phone used as a webcam is often the only light in
-         the room, so the dark scheme is the one that must be right. -->
+    <!-- Dark: the default. Obsidian studio palette aligned with PhoneCam Desktop
+         so the phone sits beside the PC without visual drift or harsh glare. -->
     <color name="phonecam_background">#0B0F14</color>
-    <color name="phonecam_on_background">#E6EAF0</color>
+    <color name="phonecam_on_background">#E8EDF4</color>
 
-    <!-- Card surface, lifted off the background by one step plus a hairline. -->
-    <color name="phonecam_surface">#171F29</color>
-    <color name="phonecam_on_surface">#E6EAF0</color>
+    <!-- Card surface, lifted one crisp obsidian step off the canvas plus a 1dp hairline. -->
+    <color name="phonecam_surface">#111720</color>
+    <color name="phonecam_on_surface">#E8EDF4</color>
 
-    <!-- Inset wells (log box, disabled chip): recessed, not lifted. -->
-    <color name="phonecam_surface_variant">#232D3A</color>
-    <color name="phonecam_on_surface_variant">#A9B4C0</color>
+    <!-- Inset wells (log box, changelog, pills): recessed slate tone. -->
+    <color name="phonecam_surface_variant">#1A2330</color>
+    <color name="phonecam_on_surface_variant">#9EAEC0</color>
 
-    <!-- Strong stroke: pill outlines and card edges. 4.27:1 on surface. -->
-    <color name="phonecam_outline">#72829E</color>
-    <!-- Hairline separator. Structural only, carries no meaning on its own. -->
-    <color name="phonecam_outline_variant">#2A3542</color>
+    <!-- Strong stroke: pill outlines and focused borders. >= 3.5:1 on surface. -->
+    <color name="phonecam_outline">#64768E</color>
+    <!-- Muted 1dp hairline separator for obsidian cards and wells. -->
+    <color name="phonecam_outline_variant">#253140</color>
 
     <!-- The accent. -->
     <color name="phonecam_primary">#6FD08C</color>

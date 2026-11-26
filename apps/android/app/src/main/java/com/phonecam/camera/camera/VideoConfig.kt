@@ -121,15 +121,22 @@ object VideoConfigResolver {
         }
 
         val requested = requestedFps?.takeIf { it > 0 }
+        val effectiveSupportedFps = if (!supportsNormalAe60 && highSpeedSizes.isNotEmpty()) {
+            (supportedFps + 60).distinct()
+        } else {
+            supportedFps
+        }
         val chosenFps = when {
-            requested == null -> supportedFps.maxOrNull()?.coerceAtMost(30) ?: 30
-            supportedFps.isEmpty() -> requested
-            else -> nearestFps(requested, supportedFps)
+            requested == null -> effectiveSupportedFps.maxOrNull()?.coerceAtMost(30) ?: 30
+            effectiveSupportedFps.isEmpty() -> requested
+            else -> nearestFps(requested, effectiveSupportedFps)
         }
 
         // Only constrain to high-speed sizes when normal AE 60 fps is not available.
+        // Pick the largest high-speed resolution at or below the requested size (e.g.
+        // 1080p60 -> 720p60 high-speed) so 60 fps succeeds instead of dropping to 30 fps.
         val finalSize = if (chosenFps >= 60 && !supportsNormalAe60 && highSpeedSizes.isNotEmpty()) {
-            nearestSize(chosenSize.first, chosenSize.second, highSpeedSizes)
+            largestHighSpeedAtOrBelow(chosenSize.first, chosenSize.second, highSpeedSizes)
         } else {
             chosenSize
         }
@@ -172,6 +179,32 @@ object VideoConfigResolver {
         val capped = landscape.filter { (w, h) -> w <= 1920 && h <= 1080 }
         val pool = if (capped.isNotEmpty()) capped else landscape
         return pool.maxByOrNull { it.first.toLong() * it.second } ?: pool.first()
+    }
+
+    /**
+     * Picks the largest high-speed video resolution at or below [width] x [height]
+     * (landscape-normalised), falling back to [nearestSize] only if every
+     * high-speed size exceeds the request.
+     */
+    internal fun largestHighSpeedAtOrBelow(
+        width: Int,
+        height: Int,
+        highSpeedSizes: List<Pair<Int, Int>>,
+    ): Pair<Int, Int> {
+        val targetW = maxOf(width, height)
+        val targetH = minOf(width, height)
+        val landscape = highSpeedSizes.map { (w, h) -> if (w >= h) w to h else h to w }.distinct()
+        landscape.firstOrNull { it.first == targetW && it.second == targetH }?.let { return it }
+
+        val targetAspect = targetW.toDouble() / targetH
+        val fitting = landscape.filter { (w, h) -> w <= targetW && h <= targetH }
+        if (fitting.isNotEmpty()) {
+            return fitting.maxWith(
+                compareBy<Pair<Int, Int>> { it.first.toLong() * it.second }
+                    .thenByDescending { -kotlin.math.abs(it.first.toDouble() / it.second - targetAspect) },
+            )
+        }
+        return nearestSize(targetW, targetH, landscape)
     }
 
     /**

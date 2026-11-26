@@ -332,4 +332,41 @@ class ProCameraControlsTest {
         val faceEmpty = intArrayOf()
         assertNull(CameraController.resolveFaceDetectModeFromModes(faceEmpty))
     }
+
+    @Test
+    fun `selectHighSpeedRangeFromPairs prefers 60_60 then 30_60 then 30_120 over 120_120`() {
+        // Prefers [60, 60] when available
+        assertEquals(
+            60 to 60,
+            CameraController.selectHighSpeedRangeFromPairs(
+                listOf(30 to 120, 120 to 120, 30 to 60, 60 to 60),
+            ),
+        )
+        // Prefers [30, 60] when [60, 60] is absent
+        assertEquals(
+            30 to 60,
+            CameraController.selectHighSpeedRangeFromPairs(
+                listOf(30 to 120, 120 to 120, 30 to 60),
+            ),
+        )
+        // Snapdragon 680 / Redmi Note 11: [30, 120] preferred over [120, 120] and [30, 240]
+        assertEquals(
+            30 to 120,
+            CameraController.selectHighSpeedRangeFromPairs(
+                listOf(120 to 120, 30 to 120, 30 to 240),
+            ),
+        )
+        // Only fixed [120, 120] available
+        assertEquals(
+            120 to 120,
+            CameraController.selectHighSpeedRangeFromPairs(listOf(120 to 120)),
+        )
+    }
+
+    @Test
+    fun `H264Encoder uses 2ms dequeue timeout and high operating rate`() {
+        assertEquals(2_000L, H264Encoder.DEQUEUE_TIMEOUT_US)
+        assertEquals(60, H264Encoder.operatingRateFor(30))
+        assertEquals(120, H264Encoder.operatingRateFor(60))
+    }
 }

@@ -19,6 +19,8 @@ import com.phonecam.camera.session.rememberedTransport
 import com.phonecam.camera.session.withCameras
 import com.phonecam.camera.service.CameraStreamService
 import com.phonecam.camera.transport.DiscoveredServer
+import com.phonecam.camera.update.GitHubUpdateChecker
+import com.phonecam.camera.update.UpdateCheckState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -164,6 +166,16 @@ class PhoneCamViewModel(application: Application) : AndroidViewModel(application
     val camerasProbed: StateFlow<Boolean> = _camerasProbed.asStateFlow()
 
     val appVersion: String = BuildConfig.VERSION_NAME
+
+    private val _updateState = MutableStateFlow<UpdateCheckState>(UpdateCheckState.Idle)
+
+    /**
+     * State of the manual GitHub Releases update check.
+     *
+     * Remains [UpdateCheckState.Idle] until the user explicitly invokes
+     * [checkForUpdates], preserving PhoneCam's zero-telemetry invariant.
+     */
+    val updateState: StateFlow<UpdateCheckState> = _updateState.asStateFlow()
 
     /**
      * The banner text for `SessionState.notice`, or `null` when there is nothing
@@ -316,6 +328,17 @@ class PhoneCamViewModel(application: Application) : AndroidViewModel(application
     fun clearLog() {
         Log.clear()
         _logLines.value = Log.snapshot()
+    }
+
+    /**
+     * User-initiated check against GitHub Releases. Never called automatically.
+     */
+    fun checkForUpdates() {
+        if (_updateState.value is UpdateCheckState.Checking) return
+        _updateState.value = UpdateCheckState.Checking
+        viewModelScope.launch {
+            _updateState.value = GitHubUpdateChecker.checkForUpdates(currentVersion = appVersion)
+        }
     }
 
     fun forgetPairing() {
