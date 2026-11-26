@@ -9,7 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.5.0] - 2026-11-27
+
 ### Added
+- **Adaptive Android Studio UI/UX Redesign & Undistorted 16:9 Camera Preview** (`9b28ca8`):
+  - Redesigned the Android companion app with a dark obsidian Studio shell: cutout-safe left `NavigationRail`, compact `StudioTopBar`, subtle danger `Stop` action, and independently scrollable `ConnectionCard` in landscape, plus clean portrait ergonomics and `CameraPreviewTransformTest` unit coverage.
+  - Fixed camera preview stretching ("gepeng") across portrait and landscape orientations by computing aspect-ratio-preserving `TextureView` transforms (`FitCenter` 16:9) from sensor orientation, display rotation, and stream dimensions.
 - **Opt-In GitHub Update Checker (Desktop & Android)** (`6073fc4`, `29715d7`, `af2ade9`):
   - Added user-initiated GitHub Releases update checkers (`crates/phonecam-app/src/updater.rs`, `apps/android/.../update/GitHubUpdateChecker.kt`) with SemVer 2.0.0 comparison, inline release changelog preview, EN/ID Android localization, and strict `https://github.com/primahagantha/phonecam` URL validation. Strictly opt-in: never executes on startup or background timers.
 - **Bundled Typography & Studio UI Overhaul** (`29715d7`, `af2ade9`):
