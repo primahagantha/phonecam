@@ -140,9 +140,17 @@ pub enum BlurIntensity {
 impl BlurIntensity {
     pub fn radius(&self) -> usize {
         match self {
-            Self::Soft => 3,
-            Self::Studio => 6,
-            Self::Dreamy => 10,
+            Self::Soft => 4,
+            Self::Studio => 8,
+            Self::Dreamy => 14,
+        }
+    }
+
+    pub fn default_amount(&self) -> f32 {
+        match self {
+            Self::Soft => 0.65,
+            Self::Studio => 0.85,
+            Self::Dreamy => 1.0,
         }
     }
 
@@ -155,6 +163,46 @@ impl BlurIntensity {
     }
 }
 
+/// Reusable scratch buffers for zero-allocation post-processing effects on the 60 FPS hot path.
+#[derive(Debug, Clone, Default)]
+pub struct EffectsScratch {
+    blur_src: Vec<u8>,
+    blur_tmp: Vec<u8>,
+    col_sums: Vec<u32>,
+    scale_x0: Vec<usize>,
+    scale_x1: Vec<usize>,
+    scale_wx: Vec<u16>,
+}
+
+impl EffectsScratch {
+    /// Creates a new empty `EffectsScratch` buffer pool.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Applies a portrait bokeh effect to a BGRA buffer with zero per-frame allocations once
+/// `scratch` is warmed up. Uses a separable O(W*H) sliding-window box blur and centers the
+/// sharp foreground region around `face` when provided (falling back to `(0.50, 0.45)` when `None`).
+pub fn apply_portrait_blur_with_scratch(
+    bgra: &mut [u8],
+    width: u32,
+    height: u32,
+    intensity: BlurIntensity,
+    face: Option<crate::face_detect::FaceRect>,
+    scratch: &mut EffectsScratch,
+) {
+    apply_portrait_blur_impl(
+        bgra,
+        width as usize,
+        height as usize,
+        intensity,
+        intensity.default_amount(),
+        face,
+        scratch,
+    );
+}
+
 /// Applies a portrait bokeh effect to a BGRA buffer. Keeps an elliptical central region
 /// (person subject) in sharp focus and smoothly blurs the background.
 pub fn apply_portrait_blur(
@@ -164,6 +212,33 @@ pub fn apply_portrait_blur(
     intensity: BlurIntensity,
     amount: f32,
 ) {
+    thread_local! {
+        static LEGACY_SCRATCH: std::cell::RefCell<EffectsScratch> =
+            std::cell::RefCell::new(EffectsScratch::new());
+    }
+    let handled = LEGACY_SCRATCH.with(|cell| {
+        if let Ok(mut scratch) = cell.try_borrow_mut() {
+            apply_portrait_blur_impl(bgra, width, height, intensity, amount, None, &mut scratch);
+            true
+        } else {
+            false
+        }
+    });
+    if !handled {
+        let mut fallback = EffectsScratch::new();
+        apply_portrait_blur_impl(bgra, width, height, intensity, amount, None, &mut fallback);
+    }
+}
+
+fn apply_portrait_blur_impl(
+    bgra: &mut [u8],
+    width: usize,
+    height: usize,
+    intensity: BlurIntensity,
+    amount: f32,
+    face: Option<crate::face_detect::FaceRect>,
+    scratch: &mut EffectsScratch,
+) {
     if amount <= 0.001 || width == 0 || height == 0 {
         return;
     }
@@ -172,97 +247,184 @@ pub fn apply_portrait_blur(
         return;
     }
 
-    let total_pixels = width * height;
-    if bgra.len() < total_pixels * 4 {
+    let Some(total_pixels) = width.checked_mul(height) else {
+        return;
+    };
+    let Some(byte_len) = total_pixels.checked_mul(4) else {
+        return;
+    };
+    if bgra.len() < byte_len {
         return;
     }
 
-    // Allocate temporary buffer for separable box blur
-    let mut blurred = bgra.to_vec();
-    let mut temp = vec![0u8; bgra.len()];
+    // Reuse scratch buffers without reallocating on steady-state frames.
+    scratch.blur_src.resize(byte_len, 0);
+    scratch.blur_src.copy_from_slice(&bgra[..byte_len]);
+    scratch.blur_tmp.resize(byte_len, 0);
+    scratch.col_sums.resize(width * 3, 0);
 
-    // Horizontal 1D box blur pass
-    let r = radius as isize;
+    let row_bytes = width * 4;
+    let r = radius.min(width.max(height));
+
+    // 1. Horizontal O(W*H) sliding-window box blur: blur_src -> blur_tmp
     for y in 0..height {
-        let row_start = y * width * 4;
+        let row_off = y * row_bytes;
+        let src_row = &scratch.blur_src[row_off..row_off + row_bytes];
+        let dst_row = &mut scratch.blur_tmp[row_off..row_off + row_bytes];
+
+        let init_end = r.min(width - 1);
+        let mut sum_b = 0u32;
+        let mut sum_g = 0u32;
+        let mut sum_r = 0u32;
+        let mut count = (init_end + 1) as u32;
+
+        for ix in 0..=init_end {
+            let i = ix * 4;
+            sum_b += src_row[i] as u32;
+            sum_g += src_row[i + 1] as u32;
+            sum_r += src_row[i + 2] as u32;
+        }
+
+        dst_row[0] = (sum_b / count) as u8;
+        dst_row[1] = (sum_g / count) as u8;
+        dst_row[2] = (sum_r / count) as u8;
+        dst_row[3] = src_row[3];
+
+        for x in 1..width {
+            if let Some(x_add) = x.checked_add(r).filter(|&v| v < width) {
+                let i = x_add * 4;
+                sum_b += src_row[i] as u32;
+                sum_g += src_row[i + 1] as u32;
+                sum_r += src_row[i + 2] as u32;
+                count += 1;
+            }
+            if x > r {
+                let x_rem = x - r - 1;
+                let i = x_rem * 4;
+                sum_b -= src_row[i] as u32;
+                sum_g -= src_row[i + 1] as u32;
+                sum_r -= src_row[i + 2] as u32;
+                count -= 1;
+            }
+
+            let out = x * 4;
+            dst_row[out] = (sum_b / count) as u8;
+            dst_row[out + 1] = (sum_g / count) as u8;
+            dst_row[out + 2] = (sum_r / count) as u8;
+            dst_row[out + 3] = src_row[out + 3];
+        }
+    }
+
+    // 2. Vertical O(W*H) sliding-window box blur (row-major for L1 cache locality): blur_tmp -> blur_src
+    let col_sums = &mut scratch.col_sums[..width * 3];
+    col_sums.fill(0);
+    let init_y_end = r.min(height - 1);
+    let mut v_count = (init_y_end + 1) as u32;
+
+    for iy in 0..=init_y_end {
+        let src_row = &scratch.blur_tmp[iy * row_bytes..(iy + 1) * row_bytes];
         for x in 0..width {
-            let mut sum_b = 0u32;
-            let mut sum_g = 0u32;
-            let mut sum_r = 0u32;
-            let mut count = 0u32;
-
-            let x_start = (x as isize - r).max(0) as usize;
-            let x_end = (x as isize + r).min(width as isize - 1) as usize;
-
-            for ix in x_start..=x_end {
-                let idx = row_start + ix * 4;
-                sum_b += blurred[idx] as u32;
-                sum_g += blurred[idx + 1] as u32;
-                sum_r += blurred[idx + 2] as u32;
-                count += 1;
-            }
-
-            let out_idx = row_start + x * 4;
-            temp[out_idx] = (sum_b / count) as u8;
-            temp[out_idx + 1] = (sum_g / count) as u8;
-            temp[out_idx + 2] = (sum_r / count) as u8;
-            temp[out_idx + 3] = blurred[out_idx + 3];
+            let si = x * 4;
+            let ci = x * 3;
+            col_sums[ci] += src_row[si] as u32;
+            col_sums[ci + 1] += src_row[si + 1] as u32;
+            col_sums[ci + 2] += src_row[si + 2] as u32;
         }
     }
 
-    // Vertical 1D box blur pass
-    for x in 0..width {
-        for y in 0..height {
-            let mut sum_b = 0u32;
-            let mut sum_g = 0u32;
-            let mut sum_r = 0u32;
-            let mut count = 0u32;
-
-            let y_start = (y as isize - r).max(0) as usize;
-            let y_end = (y as isize + r).min(height as isize - 1) as usize;
-
-            for iy in y_start..=y_end {
-                let idx = (iy * width + x) * 4;
-                sum_b += temp[idx] as u32;
-                sum_g += temp[idx + 1] as u32;
-                sum_r += temp[idx + 2] as u32;
-                count += 1;
-            }
-
-            let out_idx = (y * width + x) * 4;
-            blurred[out_idx] = (sum_b / count) as u8;
-            blurred[out_idx + 1] = (sum_g / count) as u8;
-            blurred[out_idx + 2] = (sum_r / count) as u8;
+    {
+        let out_row = &mut scratch.blur_src[..row_bytes];
+        for x in 0..width {
+            let ci = x * 3;
+            let oi = x * 4;
+            out_row[oi] = (col_sums[ci] / v_count) as u8;
+            out_row[oi + 1] = (col_sums[ci + 1] / v_count) as u8;
+            out_row[oi + 2] = (col_sums[ci + 2] / v_count) as u8;
         }
     }
 
-    // Blend: Portrait vignette mask centered on (0.50, 0.45)
-    let center_x = width as f32 * 0.50;
-    let center_y = height as f32 * 0.45;
-    let semi_x = width as f32 * 0.30;
-    let semi_y = height as f32 * 0.40;
+    for y in 1..height {
+        if let Some(y_add) = y.checked_add(r).filter(|&v| v < height) {
+            let add_row = &scratch.blur_tmp[y_add * row_bytes..(y_add + 1) * row_bytes];
+            for x in 0..width {
+                let si = x * 4;
+                let ci = x * 3;
+                col_sums[ci] += add_row[si] as u32;
+                col_sums[ci + 1] += add_row[si + 1] as u32;
+                col_sums[ci + 2] += add_row[si + 2] as u32;
+            }
+            v_count += 1;
+        }
+        if y > r {
+            let y_rem = y - r - 1;
+            let rem_row = &scratch.blur_tmp[y_rem * row_bytes..(y_rem + 1) * row_bytes];
+            for x in 0..width {
+                let si = x * 4;
+                let ci = x * 3;
+                col_sums[ci] -= rem_row[si] as u32;
+                col_sums[ci + 1] -= rem_row[si + 1] as u32;
+                col_sums[ci + 2] -= rem_row[si + 2] as u32;
+            }
+            v_count -= 1;
+        }
 
+        let out_row = &mut scratch.blur_src[y * row_bytes..(y + 1) * row_bytes];
+        for x in 0..width {
+            let ci = x * 3;
+            let oi = x * 4;
+            out_row[oi] = (col_sums[ci] / v_count) as u8;
+            out_row[oi + 1] = (col_sums[ci + 1] / v_count) as u8;
+            out_row[oi + 2] = (col_sums[ci + 2] / v_count) as u8;
+        }
+    }
+
+    // 3. Blend: Protected sharp region centered & scaled around `face` (fallback to (0.50, 0.45))
+    let (center_x, center_y, semi_x, semi_y) = if let Some(f) = face {
+        let cx = f.center_x.clamp(0.05, 0.95) * width as f32;
+        let cy = (f.center_y + f.height * 0.20).clamp(0.05, 0.95) * height as f32;
+        let sx = (f.width * 1.35).clamp(0.18, 0.42) * width as f32;
+        let sy = (f.height * 1.75).clamp(0.24, 0.52) * height as f32;
+        (cx, cy, sx, sy)
+    } else {
+        (
+            width as f32 * 0.50,
+            height as f32 * 0.45,
+            width as f32 * 0.30,
+            height as f32 * 0.40,
+        )
+    };
+
+    let inv_semi_x = 1.0 / semi_x.max(1.0);
+    let inv_semi_y = 1.0 / semi_y.max(1.0);
     let eff_amount = amount.clamp(0.0, 1.0);
+    let blurred = &scratch.blur_src[..byte_len];
+
+    const INNER_D: f32 = 0.85;
+    const OUTER_D: f32 = 1.40;
+    const INNER_D2: f32 = INNER_D * INNER_D;
+    const OUTER_D2: f32 = OUTER_D * OUTER_D;
+    const INV_SPAN: f32 = 1.0 / (OUTER_D - INNER_D);
 
     for y in 0..height {
-        let dy = (y as f32 - center_y) / semi_y;
+        let dy = (y as f32 - center_y) * inv_semi_y;
         let dy2 = dy * dy;
-        let row_offset = y * width * 4;
+        let row_offset = y * row_bytes;
 
         for x in 0..width {
-            let dx = (x as f32 - center_x) / semi_x;
-            let d = (dx * dx + dy2).sqrt();
+            let dx = (x as f32 - center_x) * inv_semi_x;
+            let d2 = dx * dx + dy2;
 
-            // Smooth feathering: 0.0 inside subject, transitions 1.0 to 1.6 to background
-            let blend = if d < 0.85 {
-                0.0
-            } else if d > 1.40 {
+            if d2 <= INNER_D2 {
+                continue;
+            }
+
+            let blend = if d2 >= OUTER_D2 {
                 eff_amount
             } else {
-                let t = (d - 0.85) / (1.40 - 0.85);
+                let d = d2.sqrt();
+                let t = (d - INNER_D) * INV_SPAN;
                 // Hermite smoothstep: 3*t^2 - 2*t^3
-                let s = t * t * (3.0 - 2.0 * t);
-                s * eff_amount
+                (t * t * (3.0 - 2.0 * t)) * eff_amount
             };
 
             if blend > 0.005 {
@@ -463,15 +625,35 @@ impl AutoFramingTracker {
         face
     }
 
-    /// Advances the smoothing interpolation toward the target center and target zoom.
+    /// Advances the smoothing interpolation toward the target center and target zoom
+    /// assuming a nominal 30 FPS step (`dt_secs = 1.0 / 30.0`).
     pub fn step(&mut self) {
-        if !self.tracking_locked {
-            self.current_center_x +=
-                (self.target_center_x - self.current_center_x) * self.smoothing;
-            self.current_center_y +=
-                (self.target_center_y - self.current_center_y) * self.smoothing;
+        self.step_with_dt(None, 1.0 / 30.0);
+    }
+
+    /// Frame-rate independent smoothing step with optional fresh face target and delta time in seconds.
+    ///
+    /// Normalizes `self.smoothing` (tuned at 30 FPS) via `alpha = 1 - (1 - s)^(dt * 30)`.
+    pub fn step_with_dt(&mut self, face: Option<crate::face_detect::FaceRect>, dt_secs: f32) {
+        if let Some(f) = face {
+            self.update_face(Some(f));
         }
-        self.zoom += (self.target_zoom - self.zoom) * self.smoothing;
+
+        let dt = dt_secs.clamp(0.0, 1.0);
+        if dt <= 0.0 {
+            return;
+        }
+        let alpha = if self.smoothing >= 1.0 {
+            1.0
+        } else {
+            1.0 - (1.0 - self.smoothing).powf(dt * 30.0)
+        };
+
+        if !self.tracking_locked {
+            self.current_center_x += (self.target_center_x - self.current_center_x) * alpha;
+            self.current_center_y += (self.target_center_y - self.current_center_y) * alpha;
+        }
+        self.zoom += (self.target_zoom - self.zoom) * alpha;
     }
 
     /// Computes the cropped sub-rectangle matching the original aspect ratio.
@@ -515,7 +697,122 @@ impl AutoFramingTracker {
         }
     }
 
-    /// Crops and rescales a BGRA source image into a destination buffer.
+    /// Crops and bilinear-rescales a BGRA source image into a destination buffer with zero
+    /// per-frame allocations once `scratch` is warmed up.
+    #[allow(clippy::too_many_arguments)]
+    pub fn crop_bgra_with_scratch(
+        src: &[u8],
+        src_w: usize,
+        src_h: usize,
+        crop: &CropRect,
+        dst: &mut [u8],
+        dst_w: usize,
+        dst_h: usize,
+        scratch: &mut EffectsScratch,
+    ) {
+        if src_w == 0
+            || src_h == 0
+            || dst_w == 0
+            || dst_h == 0
+            || crop.width == 0
+            || crop.height == 0
+        {
+            return;
+        }
+        let Some(src_bytes) = src_w.checked_mul(src_h).and_then(|p| p.checked_mul(4)) else {
+            return;
+        };
+        let Some(dst_bytes) = dst_w.checked_mul(dst_h).and_then(|p| p.checked_mul(4)) else {
+            return;
+        };
+        if src.len() < src_bytes || dst.len() < dst_bytes {
+            return;
+        }
+
+        let crop_x = (crop.x as usize).min(src_w - 1);
+        let crop_y = (crop.y as usize).min(src_h - 1);
+        let crop_w = (crop.width as usize).min(src_w - crop_x);
+        let crop_h = (crop.height as usize).min(src_h - crop_y);
+        if crop_w == 0 || crop_h == 0 {
+            return;
+        }
+
+        // Fast 1:1 crop copy when crop matches destination dimensions
+        if crop_w == dst_w && crop_h == dst_h {
+            let row_bytes = dst_w * 4;
+            for dy in 0..dst_h {
+                let s_off = ((crop_y + dy) * src_w + crop_x) * 4;
+                let d_off = dy * row_bytes;
+                dst[d_off..d_off + row_bytes].copy_from_slice(&src[s_off..s_off + row_bytes]);
+            }
+            return;
+        }
+
+        scratch.scale_x0.resize(dst_w, 0);
+        scratch.scale_x1.resize(dst_w, 0);
+        scratch.scale_wx.resize(dst_w, 0);
+
+        let max_x = crop_x + crop_w - 1;
+        let max_y = crop_y + crop_h - 1;
+        let min_x_fp = (crop_x as i64) * 256;
+        let max_x_fp = (max_x as i64) * 256;
+        let min_y_fp = (crop_y as i64) * 256;
+        let max_y_fp = (max_y as i64) * 256;
+
+        for dx in 0..dst_w {
+            let fx = (crop_x as i64) * 256
+                + (((2 * dx as i64 + 1) * (crop_w as i64) * 256) / (2 * dst_w as i64))
+                - 128;
+            let clamped = fx.clamp(min_x_fp, max_x_fp);
+            let x0 = (clamped >> 8) as usize;
+            let wx = (clamped & 0xFF) as u16;
+            let x1 = (x0 + 1).min(max_x);
+            scratch.scale_x0[dx] = x0 * 4;
+            scratch.scale_x1[dx] = x1 * 4;
+            scratch.scale_wx[dx] = wx;
+        }
+
+        let src_row_bytes = src_w * 4;
+        let dst_row_bytes = dst_w * 4;
+
+        for dy in 0..dst_h {
+            let fy = (crop_y as i64) * 256
+                + (((2 * dy as i64 + 1) * (crop_h as i64) * 256) / (2 * dst_h as i64))
+                - 128;
+            let clamped_y = fy.clamp(min_y_fp, max_y_fp);
+            let y0 = (clamped_y >> 8) as usize;
+            let wy = (clamped_y & 0xFF) as u32;
+            let inv_wy = 256 - wy;
+            let y1 = (y0 + 1).min(max_y);
+
+            let row0 = &src[y0 * src_row_bytes..(y0 + 1) * src_row_bytes];
+            let row1 = &src[y1 * src_row_bytes..(y1 + 1) * src_row_bytes];
+            let dst_row = &mut dst[dy * dst_row_bytes..(dy + 1) * dst_row_bytes];
+
+            for dx in 0..dst_w {
+                let x0_off = scratch.scale_x0[dx];
+                let x1_off = scratch.scale_x1[dx];
+                let wx = scratch.scale_wx[dx] as u32;
+                let inv_wx = 256 - wx;
+
+                let w00 = inv_wx * inv_wy;
+                let w10 = wx * inv_wy;
+                let w01 = inv_wx * wy;
+                let w11 = wx * wy;
+
+                let d_off = dx * 4;
+                for c in 0..4 {
+                    let v = row0[x0_off + c] as u32 * w00
+                        + row0[x1_off + c] as u32 * w10
+                        + row1[x0_off + c] as u32 * w01
+                        + row1[x1_off + c] as u32 * w11;
+                    dst_row[d_off + c] = ((v + 32_768) >> 16) as u8;
+                }
+            }
+        }
+    }
+
+    /// Crops and bilinear-rescales a BGRA source image into a destination buffer.
     pub fn crop_bgra(
         src: &[u8],
         src_w: usize,
@@ -525,30 +822,106 @@ impl AutoFramingTracker {
         dst_w: usize,
         dst_h: usize,
     ) {
-        if dst_w == 0 || dst_h == 0 || crop.width == 0 || crop.height == 0 {
-            return;
+        thread_local! {
+            static CROP_SCRATCH: std::cell::RefCell<EffectsScratch> =
+                std::cell::RefCell::new(EffectsScratch::new());
         }
-
-        let crop_x = crop.x as usize;
-        let crop_y = crop.y as usize;
-        let crop_w = crop.width as usize;
-        let crop_h = crop.height as usize;
-
-        for dy in 0..dst_h {
-            let sy = crop_y + (dy * crop_h) / dst_h;
-            let src_row = sy.min(src_h - 1) * src_w * 4;
-            let dst_row = dy * dst_w * 4;
-
-            for dx in 0..dst_w {
-                let sx = crop_x + (dx * crop_w) / dst_w;
-                let src_idx = src_row + sx.min(src_w - 1) * 4;
-                let dst_idx = dst_row + dx * 4;
-
-                dst[dst_idx] = src[src_idx];
-                dst[dst_idx + 1] = src[src_idx + 1];
-                dst[dst_idx + 2] = src[src_idx + 2];
-                dst[dst_idx + 3] = src[src_idx + 3];
+        let handled = CROP_SCRATCH.with(|cell| {
+            if let Ok(mut scratch) = cell.try_borrow_mut() {
+                Self::crop_bgra_with_scratch(src, src_w, src_h, crop, dst, dst_w, dst_h, &mut scratch);
+                true
+            } else {
+                false
             }
+        });
+        if !handled {
+            let mut fallback = EffectsScratch::new();
+            Self::crop_bgra_with_scratch(src, src_w, src_h, crop, dst, dst_w, dst_h, &mut fallback);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* BGRA -> NV12 Color Conversion (Virtual Camera Parity)              */
+/* ------------------------------------------------------------------ */
+
+/// Converts a premultiplied BGRA buffer (`width * height * 4` bytes) into packed NV12
+/// (`width * height * 3 / 2` bytes) so post-processed BGRA frames can be written directly
+/// to the virtual camera framebus without preview/vcam drift.
+///
+/// Uses ITU-R BT.709 limited-range coefficients for HD (`width >= 1280 || height >= 720`)
+/// and BT.601 limited-range coefficients for SD.
+pub fn bgra_to_nv12(bgra: &[u8], width: u32, height: u32, out_nv12: &mut [u8]) {
+    let w = width as usize;
+    let h = height as usize;
+    if w < 2 || h < 2 || (w & 1) != 0 || (h & 1) != 0 {
+        return;
+    }
+    let Some(luma_len) = w.checked_mul(h) else {
+        return;
+    };
+    let Some(bgra_len) = luma_len.checked_mul(4) else {
+        return;
+    };
+    let nv12_len = luma_len + luma_len / 2;
+    if bgra.len() < bgra_len || out_nv12.len() < nv12_len {
+        return;
+    }
+
+    // 10-bit fixed-point limited-range coefficients (Y in [16, 235], UV in [16, 240]).
+    let (yr, yg, yb, ur, ug, ub, vr, vg, vb) = if width >= 1280 || height >= 720 {
+        // ITU-R BT.709
+        (187i32, 629i32, 63i32, -103i32, -347i32, 450i32, 450i32, -409i32, -41i32)
+    } else {
+        // ITU-R BT.601
+        (263i32, 516i32, 100i32, -152i32, -298i32, 450i32, 450i32, -377i32, -73i32)
+    };
+
+    let (y_plane, uv_plane) = out_nv12[..nv12_len].split_at_mut(luma_len);
+    let row_bgra = w * 4;
+
+    for py in 0..h {
+        let src_row = &bgra[py * row_bgra..(py + 1) * row_bgra];
+        let y_row = &mut y_plane[py * w..(py + 1) * w];
+        for px in 0..w {
+            let si = px * 4;
+            let b = src_row[si] as i32;
+            let g = src_row[si + 1] as i32;
+            let r = src_row[si + 2] as i32;
+            let y = ((yr * r + yg * g + yb * b + 512) >> 10) + 16;
+            y_row[px] = y.clamp(16, 235) as u8;
+        }
+    }
+
+    let pair_rows = h / 2;
+    let pair_cols = w / 2;
+    for cy in 0..pair_rows {
+        let row0 = &bgra[(cy * 2) * row_bgra..(cy * 2 + 1) * row_bgra];
+        let row1 = &bgra[(cy * 2 + 1) * row_bgra..(cy * 2 + 2) * row_bgra];
+        let uv_row = &mut uv_plane[cy * w..(cy + 1) * w];
+
+        for cx in 0..pair_cols {
+            let i0 = cx * 8;
+            let i1 = i0 + 4;
+            let b_sum = row0[i0] as i32 + row0[i1] as i32 + row1[i0] as i32 + row1[i1] as i32;
+            let g_sum = row0[i0 + 1] as i32
+                + row0[i1 + 1] as i32
+                + row1[i0 + 1] as i32
+                + row1[i1 + 1] as i32;
+            let r_sum = row0[i0 + 2] as i32
+                + row0[i1 + 2] as i32
+                + row1[i0 + 2] as i32
+                + row1[i1 + 2] as i32;
+
+            let b = (b_sum + 2) >> 2;
+            let g = (g_sum + 2) >> 2;
+            let r = (r_sum + 2) >> 2;
+
+            let u = ((ur * r + ug * g + ub * b + 512) >> 10) + 128;
+            let v = ((vr * r + vg * g + vb * b + 512) >> 10) + 128;
+
+            uv_row[cx * 2] = u.clamp(16, 240) as u8;
+            uv_row[cx * 2 + 1] = v.clamp(16, 240) as u8;
         }
     }
 }
@@ -776,5 +1149,201 @@ mod tests {
         let mut inactive = peace_event;
         inactive.triggered = false;
         assert_eq!(tracker.handle_gesture(&inactive), None);
+    }
+
+    #[test]
+    fn portrait_blur_with_scratch_tracks_face_and_differentiates_intensities() {
+        let (w, h) = (64u32, 48u32);
+        let mut base = vec![0u8; (w * h * 4) as usize];
+        // Checkerboard pattern across the whole frame so blur visibly lowers contrast.
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let val = if (x + y) % 2 == 0 { 220 } else { 40 };
+                let idx = (y * w as usize + x) * 4;
+                base[idx] = val;
+                base[idx + 1] = val;
+                base[idx + 2] = val;
+                base[idx + 3] = 255;
+            }
+        }
+
+        // Face placed in top-left quadrant (0.25, 0.25)
+        let face = crate::face_detect::FaceRect::new(0.15, 0.15, 0.20, 0.20, 0.9);
+        let mut scratch = EffectsScratch::new();
+
+        let mut soft_buf = base.clone();
+        apply_portrait_blur_with_scratch(
+            &mut soft_buf,
+            w,
+            h,
+            BlurIntensity::Soft,
+            Some(face),
+            &mut scratch,
+        );
+        // Warmed scratch pointer/capacity stability on subsequent call
+        let cap_before = scratch.blur_src.capacity();
+        let ptr_before = scratch.blur_src.as_ptr();
+
+        let mut dreamy_buf = base.clone();
+        apply_portrait_blur_with_scratch(
+            &mut dreamy_buf,
+            w,
+            h,
+            BlurIntensity::Dreamy,
+            Some(face),
+            &mut scratch,
+        );
+        assert_eq!(scratch.blur_src.capacity(), cap_before);
+        assert_eq!(scratch.blur_src.as_ptr(), ptr_before);
+
+        // Pixel inside face center (16, 12) must remain sharp (220 or 40 unchanged)
+        let face_px = (12 * w as usize + 16) * 4;
+        assert_eq!(dreamy_buf[face_px], base[face_px]);
+
+        // Pixel far in bottom-right background (56, 40) must be blurred toward ~130
+        let bg_px = (40 * w as usize + 56) * 4;
+        let orig_diff = (base[bg_px] as i32 - 130).abs();
+        let soft_diff = (soft_buf[bg_px] as i32 - 130).abs();
+        let dreamy_diff = (dreamy_buf[bg_px] as i32 - 130).abs();
+        assert!(soft_diff < orig_diff, "Soft blur should soften background");
+        assert!(
+            dreamy_diff < soft_diff,
+            "Dreamy blur ({dreamy_diff}) should blur more strongly than Soft ({soft_diff})"
+        );
+    }
+
+    #[test]
+    fn auto_framing_step_with_dt_is_framerate_independent() {
+        let mut t30 = AutoFramingTracker::new(1.0, 0.20);
+        let mut t60 = AutoFramingTracker::new(1.0, 0.20);
+        let face = crate::face_detect::FaceRect::new(0.70, 0.30, 0.10, 0.15, 0.9);
+
+        t30.set_zoom(2.0);
+        t60.set_zoom(2.0);
+        t30.step_with_dt(Some(face), 1.0 / 30.0);
+
+        // Two 60 FPS steps equal one 30 FPS step
+        t60.step_with_dt(Some(face), 1.0 / 60.0);
+        t60.step_with_dt(None, 1.0 / 60.0);
+
+        assert!((t30.current_center_x - t60.current_center_x).abs() < 1e-5);
+        assert!((t30.current_center_y - t60.current_center_y).abs() < 1e-5);
+        assert!((t30.zoom - t60.zoom).abs() < 1e-5);
+    }
+
+    #[test]
+    fn crop_bgra_bilinear_interpolates_smoothly() {
+        // 2x2 horizontal gradient: [0, 200] on both rows
+        let src = vec![
+            0, 0, 0, 255, 200, 200, 200, 255, // row 0
+            0, 0, 0, 255, 200, 200, 200, 255, // row 1
+        ];
+        let crop = CropRect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let mut dst = vec![0u8; 4 * 4 * 4];
+        let mut scratch = EffectsScratch::new();
+        AutoFramingTracker::crop_bgra_with_scratch(
+            &src,
+            2,
+            2,
+            &crop,
+            &mut dst,
+            4,
+            4,
+            &mut scratch,
+        );
+
+        // Inner columns (dx=1, dx=2) must be smoothly interpolated between 0 and 200 (50 and 150)
+        assert_eq!(dst[0], 0);
+        assert_eq!(dst[4], 50);
+        assert_eq!(dst[8], 150);
+        assert_eq!(dst[12], 200);
+    }
+
+    #[test]
+    fn bgra_to_nv12_parity_bt601_and_bt709() {
+        // 1. SD (BT.601): 4x4 pure red and pure green blocks
+        let (sw, sh) = (4u32, 4u32);
+        let mut sd_bgra = vec![0u8; (sw * sh * 4) as usize];
+        for (i, px) in sd_bgra.chunks_exact_mut(4).enumerate() {
+            if i < 8 {
+                // Pure Red (BGRA)
+                px.copy_from_slice(&[0, 0, 255, 255]);
+            } else {
+                // Neutral gray
+                px.copy_from_slice(&[128, 128, 128, 255]);
+            }
+        }
+        let mut sd_nv12 = vec![0u8; (sw * sh * 3 / 2) as usize];
+        bgra_to_nv12(&sd_bgra, sw, sh, &mut sd_nv12);
+
+        // Round-trip back via write_planes_bgra (SD -> BT.601)
+        let luma_len = (sw * sh) as usize;
+        let cw = (sw / 2) as usize;
+        let ch = (sh / 2) as usize;
+        let mut u_plane = Vec::with_capacity(cw * ch);
+        let mut v_plane = Vec::with_capacity(cw * ch);
+        for pair in sd_nv12[luma_len..].chunks_exact(2) {
+            u_plane.push(pair[0]);
+            v_plane.push(pair[1]);
+        }
+        let planes = crate::YuvPlanes {
+            width: sw,
+            height: sh,
+            y: &sd_nv12[..luma_len],
+            u: &u_plane,
+            v: &v_plane,
+            y_stride: sw as usize,
+            u_stride: cw,
+            v_stride: cw,
+        };
+        let mut rt_bgra = vec![0u8; sd_bgra.len()];
+        assert!(crate::write_planes_bgra(&planes, &mut rt_bgra, sw as usize));
+        for i in 0..sd_bgra.len() {
+            let diff = (sd_bgra[i] as i32 - rt_bgra[i] as i32).abs();
+            assert!(diff <= 3, "SD round-trip drift at byte {i}: {diff}");
+        }
+
+        // 2. HD (BT.709): 1280x720 pure red -> Y ~63, U ~102, V ~240 (distinct from BT.601 Y ~81, U ~90, V ~240)
+        let (hw, hh) = (1280u32, 720u32);
+        let mut hd_bgra = vec![0u8; (hw * hh * 4) as usize];
+        for px in hd_bgra.chunks_exact_mut(4) {
+            px.copy_from_slice(&[0, 0, 255, 255]);
+        }
+        let mut hd_nv12 = vec![0u8; (hw * hh * 3 / 2) as usize];
+        bgra_to_nv12(&hd_bgra, hw, hh, &mut hd_nv12);
+        // BT.709 pure red luma is ~63 (BT.601 is ~81)
+        assert!(
+            (hd_nv12[0] as i32 - 63).abs() <= 2,
+            "Expected BT.709 red luma ~63, got {}",
+            hd_nv12[0]
+        );
+        // Round-trip HD via write_planes_bgra (HD -> BT.709)
+        let h_luma = (hw * hh) as usize;
+        let h_cw = (hw / 2) as usize;
+        let h_ch = (hh / 2) as usize;
+        let mut hu = Vec::with_capacity(h_cw * h_ch);
+        let mut hv = Vec::with_capacity(h_cw * h_ch);
+        for pair in hd_nv12[h_luma..].chunks_exact(2) {
+            hu.push(pair[0]);
+            hv.push(pair[1]);
+        }
+        let h_planes = crate::YuvPlanes {
+            width: hw,
+            height: hh,
+            y: &hd_nv12[..h_luma],
+            u: &hu,
+            v: &hv,
+            y_stride: hw as usize,
+            u_stride: h_cw,
+            v_stride: h_cw,
+        };
+        let mut h_rt = vec![0u8; hd_bgra.len()];
+        assert!(crate::write_planes_bgra(&h_planes, &mut h_rt, hw as usize));
+        assert!(h_rt[2] >= 252 && h_rt[1] <= 3 && h_rt[0] <= 3);
     }
 }

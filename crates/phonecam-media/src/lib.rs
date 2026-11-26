@@ -25,22 +25,20 @@
 
 pub mod effects;
 pub mod face_detect;
-pub mod flicker;
 pub mod gesture;
-pub mod pacer;
 pub mod sps;
 
 pub use effects::{
-    apply_lut, apply_portrait_blur, AutoFramingTracker, BlurIntensity, CropRect, LutPreset,
+    apply_lut, apply_portrait_blur, apply_portrait_blur_with_scratch, bgra_to_nv12,
+    AutoFramingTracker, BlurIntensity, CropRect, EffectsScratch, LutPreset,
 };
 pub use face_detect::{detect_face, FaceDetector, FaceRect};
-pub use flicker::{FlickerDetector, FlickerEvent, LUMA_JUMP_THRESHOLD};
 pub use gesture::{detect_gesture, GestureDetector, GestureEvent, HandGesture};
-pub use pacer::{FramePacer, PaceAction, TARGET_FPS, TARGET_FRAME_DURATION_US};
 pub use sps::{parse_avc_dimensions, Dimensions};
 
 use openh264::decoder::Decoder;
 use openh264::formats::YUVSource;
+use phonecam_protocol::{NAL_IDR, NAL_SPS};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
@@ -68,6 +66,21 @@ pub struct YuvPlanes<'a> {
     pub v_stride: usize,
 }
 
+/// Computes the mean luma (Y plane) by sampling every 16th pixel.
+fn compute_mean_luma(luma: &[u8], width: usize, height: usize) -> u8 {
+    let samples = width.saturating_mul(height);
+    if samples == 0 || luma.len() < samples {
+        return 0;
+    }
+    let mut sum: u64 = 0;
+    let mut count: u64 = 0;
+    for i in (0..samples).step_by(16) {
+        sum += luma[i] as u64;
+        count += 1;
+    }
+    sum.checked_div(count).map(|v| v as u8).unwrap_or(0)
+}
+
 impl<'a> YuvPlanes<'a> {
     /// Computes the mean luma by sampling every 16th pixel across the active
     /// `width * height` picture, matching [`DecodedFrame::mean_luma`] even when
@@ -79,7 +92,7 @@ impl<'a> YuvPlanes<'a> {
             return 0;
         }
         if self.y_stride == w {
-            return flicker::FlickerDetector::compute_mean_luma(self.y, w, h);
+            return compute_mean_luma(self.y, w, h);
         }
         let mut sum: u64 = 0;
         let mut count: u64 = 0;
@@ -143,11 +156,7 @@ impl DecodedFrame {
 
     /// Computes the mean luma of this decoded frame.
     pub fn mean_luma(&self) -> u8 {
-        flicker::FlickerDetector::compute_mean_luma(
-            &self.yuv,
-            self.width as usize,
-            self.height as usize,
-        )
+        compute_mean_luma(&self.yuv, self.width as usize, self.height as usize)
     }
 
     /// Interleaves the chroma planes into NV12: luma, then UV pairs.
@@ -285,16 +294,43 @@ pub fn write_planes_nv12(planes: &YuvPlanes<'_>, dst: &mut [u8]) -> bool {
     true
 }
 
-// BT.601 limited range fixed-point constants (scaled by 2^10).
-const BT601_SCALE: i32 = 10;
-const BT601_HALF: i32 = 1 << (BT601_SCALE - 1);
-const BT601_Y_GAIN: i32 = 1192;
-const BT601_RV: i32 = 1634;
-const BT601_GV: i32 = 833;
-const BT601_GU: i32 = 400;
-const BT601_BU: i32 = 2066;
-const BT601_Y_OFFSET: i32 = BT601_Y_GAIN * 16;
-const BT601_BASE_BIAS: i32 = BT601_HALF - BT601_Y_OFFSET;
+// Limited-range YUV->BGRA fixed-point constants (scaled by 2^10).
+const CSC_SCALE: i32 = 10;
+const CSC_HALF: i32 = 1 << (CSC_SCALE - 1);
+const CSC_Y_GAIN: i32 = 1192;
+const CSC_Y_OFFSET: i32 = CSC_Y_GAIN * 16;
+const CSC_BASE_BIAS: i32 = CSC_HALF - CSC_Y_OFFSET;
+
+#[derive(Debug, Clone, Copy)]
+struct YuvMatrix {
+    rv: i32,
+    gv: i32,
+    gu: i32,
+    bu: i32,
+}
+
+const BT601_MATRIX: YuvMatrix = YuvMatrix {
+    rv: 1634,
+    gv: 833,
+    gu: 400,
+    bu: 2066,
+};
+
+const BT709_MATRIX: YuvMatrix = YuvMatrix {
+    rv: 1836,
+    gv: 546,
+    gu: 218,
+    bu: 2163,
+};
+
+#[inline]
+fn matrix_for_dimensions(width: usize, height: usize) -> YuvMatrix {
+    if width >= 1280 || height >= 720 {
+        BT709_MATRIX
+    } else {
+        BT601_MATRIX
+    }
+}
 
 #[inline(always)]
 fn clamp_u8(value: i32) -> u8 {
@@ -310,15 +346,15 @@ unsafe fn write_bgra_pair_ptr(
     g_term: i32,
     r_term: i32,
 ) {
-    let y0_gain = BT601_Y_GAIN * (*y_ptr as i32);
-    let b0 = clamp_u8((y0_gain + b_term) >> BT601_SCALE);
-    let g0 = clamp_u8((y0_gain + g_term) >> BT601_SCALE);
-    let r0 = clamp_u8((y0_gain + r_term) >> BT601_SCALE);
+    let y0_gain = CSC_Y_GAIN * (*y_ptr as i32);
+    let b0 = clamp_u8((y0_gain + b_term) >> CSC_SCALE);
+    let g0 = clamp_u8((y0_gain + g_term) >> CSC_SCALE);
+    let r0 = clamp_u8((y0_gain + r_term) >> CSC_SCALE);
 
-    let y1_gain = BT601_Y_GAIN * (*y_ptr.add(1) as i32);
-    let b1 = clamp_u8((y1_gain + b_term) >> BT601_SCALE);
-    let g1 = clamp_u8((y1_gain + g_term) >> BT601_SCALE);
-    let r1 = clamp_u8((y1_gain + r_term) >> BT601_SCALE);
+    let y1_gain = CSC_Y_GAIN * (*y_ptr.add(1) as i32);
+    let b1 = clamp_u8((y1_gain + b_term) >> CSC_SCALE);
+    let g1 = clamp_u8((y1_gain + g_term) >> CSC_SCALE);
+    let r1 = clamp_u8((y1_gain + r_term) >> CSC_SCALE);
 
     let out = [b0, g0, r0, 255, b1, g1, r1, 255];
     std::ptr::copy_nonoverlapping(out.as_ptr(), dst_ptr, 8);
@@ -331,18 +367,19 @@ unsafe fn write_planes_bgra_avx2(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_
 
     let width = planes.width as usize;
     let height = planes.height as usize;
+    let matrix = matrix_for_dimensions(width, height);
     let chroma_pairs = width / 2;
     let dst_stride_bytes = stride_pixels * 4;
 
     let v_128_128 = _mm_set1_epi32(128);
-    let v_bu_128 = _mm_set1_epi32(BT601_BU);
-    let v_gu_128 = _mm_set1_epi32(BT601_GU);
-    let v_gv_128 = _mm_set1_epi32(BT601_GV);
-    let v_rv_128 = _mm_set1_epi32(BT601_RV);
-    let v_bias_128 = _mm_set1_epi32(BT601_BASE_BIAS);
+    let v_bu_128 = _mm_set1_epi32(matrix.bu);
+    let v_gu_128 = _mm_set1_epi32(matrix.gu);
+    let v_gv_128 = _mm_set1_epi32(matrix.gv);
+    let v_rv_128 = _mm_set1_epi32(matrix.rv);
+    let v_bias_128 = _mm_set1_epi32(CSC_BASE_BIAS);
     let perm_dup = _mm256_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3);
 
-    let v_y_gain = _mm256_set1_epi32(BT601_Y_GAIN);
+    let v_y_gain = _mm256_set1_epi32(CSC_Y_GAIN);
     let v_zero = _mm256_setzero_si256();
     let v_255 = _mm256_set1_epi32(255);
     let v_alpha = _mm256_set1_epi32(0xFF00_0000u32 as i32);
@@ -390,21 +427,21 @@ unsafe fn write_planes_bgra_avx2(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_
                 v_255,
                 _mm256_max_epi32(
                     v_zero,
-                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y0_gain, b_term8)),
+                    _mm256_srai_epi32::<CSC_SCALE>(_mm256_add_epi32(y0_gain, b_term8)),
                 ),
             );
             let g0 = _mm256_min_epi32(
                 v_255,
                 _mm256_max_epi32(
                     v_zero,
-                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y0_gain, g_term8)),
+                    _mm256_srai_epi32::<CSC_SCALE>(_mm256_add_epi32(y0_gain, g_term8)),
                 ),
             );
             let r0 = _mm256_min_epi32(
                 v_255,
                 _mm256_max_epi32(
                     v_zero,
-                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y0_gain, r_term8)),
+                    _mm256_srai_epi32::<CSC_SCALE>(_mm256_add_epi32(y0_gain, r_term8)),
                 ),
             );
             let bgra0 = _mm256_or_si256(
@@ -420,21 +457,21 @@ unsafe fn write_planes_bgra_avx2(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_
                 v_255,
                 _mm256_max_epi32(
                     v_zero,
-                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y1_gain, b_term8)),
+                    _mm256_srai_epi32::<CSC_SCALE>(_mm256_add_epi32(y1_gain, b_term8)),
                 ),
             );
             let g1 = _mm256_min_epi32(
                 v_255,
                 _mm256_max_epi32(
                     v_zero,
-                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y1_gain, g_term8)),
+                    _mm256_srai_epi32::<CSC_SCALE>(_mm256_add_epi32(y1_gain, g_term8)),
                 ),
             );
             let r1 = _mm256_min_epi32(
                 v_255,
                 _mm256_max_epi32(
                     v_zero,
-                    _mm256_srai_epi32::<BT601_SCALE>(_mm256_add_epi32(y1_gain, r_term8)),
+                    _mm256_srai_epi32::<CSC_SCALE>(_mm256_add_epi32(y1_gain, r_term8)),
                 ),
             );
             let bgra1 = _mm256_or_si256(
@@ -450,9 +487,9 @@ unsafe fn write_planes_bgra_avx2(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_
             let px = cp * 2;
             let u = *u_row.add(cp) as i32 - 128;
             let v = *v_row.add(cp) as i32 - 128;
-            let b_term = BT601_BU * u + BT601_BASE_BIAS;
-            let g_term = BT601_BASE_BIAS - (BT601_GV * v + BT601_GU * u);
-            let r_term = BT601_RV * v + BT601_BASE_BIAS;
+            let b_term = matrix.bu * u + CSC_BASE_BIAS;
+            let g_term = CSC_BASE_BIAS - (matrix.gv * v + matrix.gu * u);
+            let r_term = matrix.rv * v + CSC_BASE_BIAS;
 
             write_bgra_pair_ptr(y0_row.add(px), d0_row.add(px * 4), b_term, g_term, r_term);
             write_bgra_pair_ptr(y1_row.add(px), d1_row.add(px * 4), b_term, g_term, r_term);
@@ -464,6 +501,7 @@ unsafe fn write_planes_bgra_avx2(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_
 fn write_planes_bgra_scalar(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_pixels: usize) {
     let width = planes.width as usize;
     let height = planes.height as usize;
+    let matrix = matrix_for_dimensions(width, height);
     let chroma_pairs = width / 2;
     let dst_stride_bytes = stride_pixels * 4;
     let pair_rows = height / 2;
@@ -489,9 +527,9 @@ fn write_planes_bgra_scalar(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_pixel
                 let px = cp * 2;
                 let u = *u_row.add(cp) as i32 - 128;
                 let v = *v_row.add(cp) as i32 - 128;
-                let b_term = BT601_BU * u + BT601_BASE_BIAS;
-                let g_term = BT601_BASE_BIAS - (BT601_GV * v + BT601_GU * u);
-                let r_term = BT601_RV * v + BT601_BASE_BIAS;
+                let b_term = matrix.bu * u + CSC_BASE_BIAS;
+                let g_term = CSC_BASE_BIAS - (matrix.gv * v + matrix.gu * u);
+                let r_term = matrix.rv * v + CSC_BASE_BIAS;
 
                 write_bgra_pair_ptr(y0_row.add(px), d0_row.add(px * 4), b_term, g_term, r_term);
                 write_bgra_pair_ptr(y1_row.add(px), d1_row.add(px * 4), b_term, g_term, r_term);
@@ -528,6 +566,43 @@ pub fn write_planes_bgra(planes: &YuvPlanes<'_>, dst: &mut [u8], stride_pixels: 
     true
 }
 
+/// Zero-allocation Annex-B prefix scan returning `(has_sps, has_idr)`.
+/// Stops at the first VCL slice NAL (`1..=5`), making P-frame checks O(1).
+#[inline]
+fn scan_access_unit_flags(data: &[u8]) -> (bool, bool) {
+    let mut has_sps = false;
+    let mut has_idr = false;
+    let mut i = 0usize;
+    while i + 3 < data.len() {
+        let sc_len = if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            3
+        } else if i + 4 < data.len()
+            && data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+        {
+            4
+        } else {
+            i += 1;
+            continue;
+        };
+
+        let nal_type = data[i + sc_len] & 0x1F;
+        match nal_type {
+            NAL_SPS => has_sps = true,
+            NAL_IDR => {
+                has_idr = true;
+                break;
+            }
+            1..=4 => break,
+            _ => {}
+        }
+        i += sc_len + 1;
+    }
+    (has_sps, has_idr)
+}
+
 /// A streaming H.264 decoder.
 pub struct H264Decoder {
     inner: Decoder,
@@ -537,6 +612,8 @@ pub struct H264Decoder {
     dimensions: Option<Dimensions>,
     /// Reusable buffer for prepending parameter sets to access units.
     combined_buf: Vec<u8>,
+    /// True after decoder init/reset/parameter-set update until a frame decodes.
+    needs_parameter_sets: bool,
 }
 
 impl std::fmt::Debug for H264Decoder {
@@ -555,6 +632,7 @@ impl H264Decoder {
             parameter_sets: Vec::new(),
             dimensions: None,
             combined_buf: Vec::new(),
+            needs_parameter_sets: true,
         })
     }
 
@@ -576,6 +654,7 @@ impl H264Decoder {
                 self.parameter_sets.clear();
                 self.parameter_sets.extend_from_slice(data);
                 self.dimensions = Some(dims);
+                self.needs_parameter_sets = true;
                 let _ = self.inner.decode(data);
                 true
             }
@@ -599,18 +678,26 @@ impl H264Decoder {
             return Err(DecodeError::Rejected);
         }
 
-        // Re-read the size from every keyframe: the adaptive ladder restarts the
-        // phone's encoder at a new size, and a decoder sized to the first one
+        let (has_sps, has_idr) = scan_access_unit_flags(access_unit);
+
+        // Re-read the size from keyframes carrying SPS: the adaptive ladder restarts
+        // the phone's encoder at a new size, and a decoder sized to the first one
         // rejects every frame after the change.
-        let parsed_dims = parse_avc_dimensions(access_unit);
-        if let Some(dims) = parsed_dims {
-            if self.dimensions != Some(dims) {
-                tracing::info!("stream resized to {}x{}", dims.width, dims.height);
-                self.dimensions = Some(dims);
+        if has_sps {
+            if let Some(dims) = parse_avc_dimensions(access_unit) {
+                if self.dimensions != Some(dims) {
+                    tracing::info!("stream resized to {}x{}", dims.width, dims.height);
+                    self.dimensions = Some(dims);
+                }
             }
         }
 
-        let input = if parsed_dims.is_none() && !self.parameter_sets.is_empty() {
+        // Only prepend SPS/PPS on IDR keyframes without inline SPS, or right after
+        // decoder init/reset. Normal P-frames pass through with zero copy.
+        let input = if !has_sps
+            && !self.parameter_sets.is_empty()
+            && (has_idr || self.needs_parameter_sets)
+        {
             self.combined_buf.clear();
             self.combined_buf
                 .reserve(self.parameter_sets.len() + access_unit.len());
@@ -629,6 +716,8 @@ impl H264Decoder {
                 DecodeError::Rejected
             })?
             .ok_or(DecodeError::NoPicture)?;
+
+        self.needs_parameter_sets = false;
 
         let (width, height) = yuv.dimensions();
         let (w, h) = (width as u32, height as u32);
@@ -724,6 +813,7 @@ impl H264Decoder {
 
     /// Drops the current picture state so the next keyframe re-syncs.
     pub fn reset(&mut self) {
+        self.needs_parameter_sets = true;
         if let Ok(mut fresh) = Decoder::new() {
             if !self.parameter_sets.is_empty() {
                 let _ = fresh.decode(&self.parameter_sets);
@@ -1008,6 +1098,17 @@ mod tests {
         assert!(parse_avc_dimensions(&standalone_idr).is_none());
         // Decoding malformed NAL payload fails, but combined buffer was formed and rejected cleanly
         assert!(decoder.decode(&standalone_idr).is_err());
+        assert!(!decoder.combined_buf.is_empty());
+
+        // Once parameter sets have been consumed, a normal P-frame must NOT copy into combined_buf
+        decoder.needs_parameter_sets = false;
+        decoder.combined_buf.clear();
+        let p_frame = vec![0u8, 0, 0, 1, 0x41, 0x9A, 0x11];
+        let _ = decoder.decode(&p_frame);
+        assert!(
+            decoder.combined_buf.is_empty(),
+            "P-frames must not copy SPS/PPS + payload into combined_buf"
+        );
     }
 
     fn grey_frame() -> DecodedFrame {
@@ -1150,6 +1251,64 @@ mod tests {
     }
 
     #[test]
+    fn bgra_matches_reference_bt709_math_for_hd() {
+        // Test HD threshold: width >= 1280 || height >= 720
+        for &(w, h) in &[(1280usize, 4usize), (8usize, 720usize)] {
+            let luma_len = w * h;
+            let cw = w / 2;
+            let ch = h / 2;
+            let mut yuv = Vec::with_capacity(luma_len * 3 / 2);
+            for i in 0..luma_len {
+                yuv.push(((i * 37 + 16) % 220 + 16) as u8);
+            }
+            for i in 0..(cw * ch) {
+                yuv.push(((i * 29 + 32) % 200 + 20) as u8);
+            }
+            for i in 0..(cw * ch) {
+                yuv.push(((i * 53 + 80) % 200 + 20) as u8);
+            }
+
+            let frame = DecodedFrame {
+                width: w as u32,
+                height: h as u32,
+                yuv: yuv.clone(),
+                pts_us: 0,
+            };
+            let mut bgra = vec![0u8; w * h * 4];
+            assert!(frame.write_bgra(&mut bgra, w));
+
+            let (u_plane, v_plane) = yuv[luma_len..].split_at(cw * ch);
+            const SCALE: i32 = 10;
+            const HALF: i32 = 1 << (SCALE - 1);
+            const Y_GAIN: i32 = 1192;
+            const RV: i32 = 1836;
+            const GV: i32 = 546;
+            const GU: i32 = 218;
+            const BU: i32 = 2163;
+
+            for y in 0..h {
+                for x in 0..w {
+                    let luma = yuv[y * w + x] as i32 - 16;
+                    let c_idx = (y / 2) * cw + (x / 2);
+                    let u = u_plane[c_idx] as i32 - 128;
+                    let v = v_plane[c_idx] as i32 - 128;
+                    let c = Y_GAIN * luma;
+
+                    let b_ref = ((c + BU * u + HALF) >> SCALE).clamp(0, 255) as u8;
+                    let g_ref = ((c - GV * v - GU * u + HALF) >> SCALE).clamp(0, 255) as u8;
+                    let r_ref = ((c + RV * v + HALF) >> SCALE).clamp(0, 255) as u8;
+
+                    let offset = (y * w + x) * 4;
+                    assert_eq!(bgra[offset], b_ref, "HD B mismatch at ({x},{y}) {w}x{h}");
+                    assert_eq!(bgra[offset + 1], g_ref, "HD G mismatch at ({x},{y}) {w}x{h}");
+                    assert_eq!(bgra[offset + 2], r_ref, "HD R mismatch at ({x},{y}) {w}x{h}");
+                    assert_eq!(bgra[offset + 3], 255);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn nv12_matches_reference_interleave() {
         let (w, h) = (6usize, 4usize);
         let mut yuv = vec![42u8; w * h];
@@ -1264,6 +1423,9 @@ mod tests {
             (18, 4, 8, 4),
             (32, 8, 64, 32),
             (128, 16, 16, 8),
+            (1280, 4, 0, 0),
+            (1288, 4, 16, 8),
+            (34, 720, 4, 2),
         ] {
             let packed_luma = (w * h) as usize;
             let cw = (w / 2) as usize;

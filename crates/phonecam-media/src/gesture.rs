@@ -124,7 +124,7 @@ impl GestureDetector {
             first_skin_y: [0usize; MAX_GRID_W],
             last_skin_y: [0usize; MAX_GRID_W],
 
-            debounce_frames: 3,
+            debounce_frames: 7,
             cooldown_frames: 45, // ~0.75 - 1.5 seconds at 30-60 FPS
 
             current_candidate: HandGesture::None,
@@ -161,16 +161,18 @@ impl GestureDetector {
             self.cooldown_remaining -= 1;
         }
 
-        // Determine downscaled grid dimensions
+        // Determine downscaled grid dimensions clamped strictly within [MAX_GRID_W, MAX_GRID_H]
         let (grid_w, grid_h) = if width >= height {
             let gw = MAX_GRID_W;
             let gh = ((height * MAX_GRID_W) / width).clamp(45, MAX_GRID_H);
             (gw, gh)
         } else {
-            let gh = MAX_GRID_W;
-            let gw = ((width * MAX_GRID_W) / height).clamp(45, MAX_GRID_H);
+            let gh = MAX_GRID_H;
+            let gw = ((width * MAX_GRID_H) / height).clamp(45, MAX_GRID_W);
             (gw, gh)
         };
+        let grid_w = grid_w.min(MAX_GRID_W);
+        let grid_h = grid_h.min(MAX_GRID_H);
 
         let grid_cells = grid_w * grid_h;
         if grid_cells > MAX_GRID_CELLS {
@@ -542,11 +544,17 @@ impl GestureDetector {
             // Classify with priority and precision:
             //
             // 1. Pinch / OK Sign (🤏)
-            // Presence of internal enclosed hole (circle loop) between thumb and index finger
-            if (enclosed_hole_cells >= 1 && (0.65..=2.30).contains(&aspect) && lower_fill >= 0.20)
-                || (enclosed_hole_cells >= 2 && (0.50..=2.80).contains(&aspect))
+            // Presence of meaningful enclosed hole (circle loop) between thumb and index finger
+            let bbox_area = bw * bh;
+            let min_hole_cells = (cand.pixel_count / 20).max(6);
+            let hole_to_bbox = enclosed_hole_cells as f32 / bbox_area.max(1) as f32;
+            if enclosed_hole_cells >= min_hole_cells
+                && (0.04..=0.55).contains(&hole_to_bbox)
+                && (0.65..=2.30).contains(&aspect)
+                && lower_fill >= 0.25
+                && fill >= 0.25
             {
-                let hole_score = (enclosed_hole_cells as f32 / 4.0).clamp(0.4, 1.0);
+                let hole_score = (enclosed_hole_cells as f32 / 16.0).clamp(0.4, 1.0);
                 let fill_score = (1.0 - ((fill - 0.50).abs() / 0.40)).clamp(0.2, 1.0);
                 confidence = (hole_score * 0.6 + fill_score * 0.4).clamp(0.0, 1.0);
                 gesture = HandGesture::PinchOk;
@@ -744,7 +752,7 @@ mod tests {
 
         let mut triggered_any = false;
         let mut last_event = GestureEvent::default();
-        for _ in 0..5 {
+        for _ in 0..8 {
             last_event = detector.detect(&bgra, w, h, None);
             if last_event.triggered {
                 triggered_any = true;
@@ -774,7 +782,7 @@ mod tests {
 
         let mut triggered_any = false;
         let mut last_event = GestureEvent::default();
-        for _ in 0..5 {
+        for _ in 0..8 {
             last_event = detector.detect(&bgra, w, h, None);
             if last_event.triggered {
                 triggered_any = true;
@@ -803,7 +811,7 @@ mod tests {
 
         let mut triggered_any = false;
         let mut last_event = GestureEvent::default();
-        for _ in 0..5 {
+        for _ in 0..8 {
             last_event = detector.detect(&bgra, w, h, None);
             if last_event.triggered {
                 triggered_any = true;
@@ -834,7 +842,7 @@ mod tests {
 
         let mut triggered_any = false;
         let mut last_event = GestureEvent::default();
-        for _ in 0..5 {
+        for _ in 0..8 {
             last_event = detector.detect(&bgra, w, h, None);
             if last_event.triggered {
                 triggered_any = true;
@@ -868,7 +876,7 @@ mod tests {
 
         let mut triggered_any = false;
         let mut last_event = GestureEvent::default();
-        for _ in 0..5 {
+        for _ in 0..8 {
             last_event = detector.detect(&bgra, w, h, None);
             if last_event.triggered {
                 triggered_any = true;
@@ -897,7 +905,7 @@ mod tests {
 
         let mut triggered_any = false;
         let mut last_event = GestureEvent::default();
-        for _ in 0..5 {
+        for _ in 0..8 {
             last_event = detector.detect(&bgra, w, h, None);
             if last_event.triggered {
                 triggered_any = true;
@@ -946,5 +954,76 @@ mod tests {
         }
         assert!(detector.queue.capacity() <= MAX_GRID_CELLS);
         assert!(detector.candidates.capacity() <= 32);
+    }
+
+    #[test]
+    fn gesture_detector_portrait_frame_does_not_overflow_grid() {
+        let mut detector = GestureDetector::new();
+        let (w, h) = (240, 320);
+        let mut bgra = make_background(w, h);
+
+        // Open Palm placed near the bottom of a portrait frame (aspect ~1.15)
+        draw_skin_rect(&mut bgra, w, 70, 170, 225, 290);
+        draw_skin_rect(&mut bgra, w, 75, 88, 175, 225);
+        draw_skin_rect(&mut bgra, w, 100, 113, 175, 225);
+        draw_skin_rect(&mut bgra, w, 125, 138, 175, 225);
+        draw_skin_rect(&mut bgra, w, 150, 163, 175, 225);
+
+        let mut last_event = GestureEvent::default();
+        for _ in 0..8 {
+            last_event = detector.detect(&bgra, w, h, None);
+        }
+        assert_eq!(last_event.gesture, HandGesture::OpenPalm);
+        assert!(last_event.center_y > 0.5);
+    }
+
+    #[test]
+    fn gesture_detector_ignores_tiny_hole_in_open_palm_for_pinch_ok() {
+        let mut detector = GestureDetector::new();
+        let (w, h) = (320, 240);
+        let mut bgra = make_background(w, h);
+
+        // Open Palm
+        draw_skin_rect(&mut bgra, w, 120, 200, 130, 190);
+        draw_skin_rect(&mut bgra, w, 125, 135, 70, 130);
+        draw_skin_rect(&mut bgra, w, 145, 155, 70, 130);
+        draw_skin_rect(&mut bgra, w, 165, 175, 70, 130);
+        draw_skin_rect(&mut bgra, w, 185, 195, 70, 130);
+
+        // Single small 2x2 dark speck inside the palm (must NOT trigger PinchOk!)
+        for y in 158..=159 {
+            for x in 158..=159 {
+                let idx = (y * w + x) * 4;
+                bgra[idx] = 20;
+                bgra[idx + 1] = 20;
+                bgra[idx + 2] = 20;
+            }
+        }
+
+        let ev = detector.detect(&bgra, w, h, None);
+        assert_ne!(ev.gesture, HandGesture::PinchOk);
+        assert_eq!(ev.gesture, HandGesture::OpenPalm);
+    }
+
+    #[test]
+    fn gesture_detector_default_debounce_prevents_short_burst_trigger() {
+        let mut detector = GestureDetector::new();
+        assert!(detector.debounce_frames >= 6);
+        let (w, h) = (320, 240);
+        let mut bgra = make_background(w, h);
+        draw_skin_rect(&mut bgra, w, 140, 180, 130, 180);
+        draw_skin_rect(&mut bgra, w, 154, 166, 60, 130);
+
+        for _ in 0..5 {
+            let ev = detector.detect(&bgra, w, h, None);
+            assert!(!ev.triggered, "must not trigger before debounce_frames");
+        }
+        let mut triggered = false;
+        for _ in 0..4 {
+            if detector.detect(&bgra, w, h, None).triggered {
+                triggered = true;
+            }
+        }
+        assert!(triggered, "should trigger once debounce threshold is reached");
     }
 }

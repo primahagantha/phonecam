@@ -3915,6 +3915,7 @@ dependencies = [
 name = "phonecam-framebus"
 version = "1.4.0-nightly.1"
 dependencies = [
+ "libc",
  "thiserror 2.0.21",
  "tracing",
  "windows 0.61.3",

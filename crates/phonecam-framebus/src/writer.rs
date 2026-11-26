@@ -42,6 +42,7 @@ pub struct FrameWriter {
     frame_index: u64,
     last_mean_luma: Option<u8>,
     flicker_reported: bool,
+    placeholder_buf: Vec<u8>,
 }
 
 impl std::fmt::Debug for FrameWriter {
@@ -68,6 +69,9 @@ impl FrameWriter {
             return Err(WriterError::BadDimensions { width, height });
         }
         let inner = imp::Inner::open(path, width, height)?;
+        let cap = crate::nv12_size(width, height) as usize;
+        let mut placeholder_buf = vec![0u8; cap];
+        nv12::fill_black(&mut placeholder_buf, width, height);
         Ok(Self {
             inner,
             width,
@@ -75,6 +79,7 @@ impl FrameWriter {
             frame_index: 0,
             last_mean_luma: None,
             flicker_reported: false,
+            placeholder_buf,
         })
     }
 
@@ -216,17 +221,27 @@ impl FrameWriter {
         self.flicker_reported = false;
     }
 
-    /// Publishes the "PhoneCam disconnected" placeholder.
+    /// Publishes the "PhoneCam disconnected" placeholder using the pre-allocated buffer
+    /// (zero heap allocations per call).
     ///
     /// Black pixels go out alongside the state, not just the state, because a
     /// reader that ignored the header would otherwise keep showing the last
     /// frame of a phone that is gone.
     pub fn publish_placeholder(&mut self, reason: &str) -> Result<(), PublishRejection> {
         tracing::info!("publishing the disconnected placeholder: {reason}");
-        let (w, h) = (self.width, self.height);
-        let mut black = vec![0u8; self.capacity() as usize];
-        nv12::fill_black(&mut black, w, h);
-        self.publish(&black, 0, FrameState::Disconnected)
+        let expected_capacity = self.capacity() as usize;
+        if self.placeholder_buf.len() != expected_capacity {
+            return Err(PublishRejection::SizeMismatch {
+                expected: expected_capacity,
+                actual: self.placeholder_buf.len(),
+            });
+        }
+        self.inner.publish(
+            &self.placeholder_buf,
+            0,
+            FrameState::Disconnected,
+            &mut self.frame_index,
+        )
     }
 
     /// Sets the display transform the camera applies.
@@ -249,7 +264,9 @@ mod imp {
     use std::sync::atomic::{fence, AtomicU32, Ordering};
 
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows::Win32::Foundation::{
+        CloseHandle, LocalFree, ERROR_ACCESS_DENIED, HANDLE, HLOCAL, INVALID_HANDLE_VALUE,
+    };
     use windows::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
@@ -420,7 +437,7 @@ mod imp {
         }
 
         pub fn publish(
-            &self,
+            &mut self,
             frame: &[u8],
             pts_us: u64,
             state: FrameState,
@@ -460,7 +477,7 @@ mod imp {
         }
 
         pub fn publish_with<F>(
-            &self,
+            &mut self,
             expected_capacity: usize,
             pts_us: u64,
             state: FrameState,
@@ -520,7 +537,7 @@ mod imp {
             Ok(mean)
         }
 
-        pub fn set_transform(&self, mirror: bool, rotation: u32) {
+        pub fn set_transform(&mut self, mirror: bool, rotation: u32) {
             let seq = self.seq();
             seq.fetch_add(1, Ordering::SeqCst);
             unsafe {
@@ -553,9 +570,25 @@ mod imp {
         Ok(size as u64)
     }
 
+    struct SecurityDescriptorGuard(PSECURITY_DESCRIPTOR);
+
+    impl Drop for SecurityDescriptorGuard {
+        fn drop(&mut self) {
+            if !self.0 .0.is_null() {
+                // SAFETY: `self.0` was allocated by `ConvertStringSecurityDescriptorToSecurityDescriptorW`
+                // and must be released with `LocalFree`.
+                unsafe {
+                    let _ = LocalFree(Some(HLOCAL(self.0 .0)));
+                }
+            }
+        }
+    }
+
     fn apply_acl(path: &str) -> Result<(), WriterError> {
         let sddl = wide(crate::BUFFER_SDDL);
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: `sddl` is a null-terminated UTF-16 string and `descriptor` receives an allocated
+        // security descriptor freed by `SecurityDescriptorGuard` on all return paths.
         unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 PCWSTR(sddl.as_ptr()),
@@ -564,21 +597,30 @@ mod imp {
                 None,
             )
             .map_err(|e| WriterError::Acl(format!("bad SDDL: {}", e.message())))?;
+        }
+        let _guard = SecurityDescriptorGuard(descriptor);
 
-            let path_w = wide(path);
+        let path_w = wide(path);
+        // SAFETY: `path_w` is null-terminated UTF-16 and `descriptor` is valid for the duration of `_guard`.
+        let res = unsafe {
             SetFileSecurityW(
                 PCWSTR(path_w.as_ptr()),
                 DACL_SECURITY_INFORMATION,
                 descriptor,
             )
-            .ok()
-            .map_err(|e| {
-                WriterError::Acl(format!(
-                    "{} ({})",
-                    e.message(),
-                    std::io::Error::last_os_error()
-                ))
-            })?;
+        };
+        if !res.as_bool() {
+            let err = std::io::Error::last_os_error();
+            // BUFFER_SDDL grants Authenticated Users GRGW without WRITE_DAC. If another session
+            // already created the backing file with valid GRGW access (CreateFileW succeeded above),
+            // tolerate ERROR_ACCESS_DENIED on SetFileSecurityW gracefully.
+            if err.raw_os_error() == Some(ERROR_ACCESS_DENIED.0 as i32) {
+                tracing::warn!(
+                    "skipping framebuffer DACL update (WRITE_DAC denied, GRGW handle already open): {err}"
+                );
+                return Ok(());
+            }
+            return Err(WriterError::Acl(format!("{err}")));
         }
         Ok(())
     }
@@ -593,10 +635,233 @@ mod imp {
 }
 
 /* ------------------------------------------------------------------ */
-/* Non-Windows: the frame bus is Windows-only                          */
+/* Linux: v4l2loopback NV12 output                                    */
 /* ------------------------------------------------------------------ */
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+mod imp {
+    use super::*;
+    use std::ffi::CString;
+
+    const V4L2_BUF_TYPE_VIDEO_OUTPUT: u32 = 2;
+    const V4L2_FIELD_NONE: u32 = 1;
+    const V4L2_PIX_FMT_NV12: u32 = u32::from_le_bytes(*b"NV12");
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct V4l2PixFormat {
+        width: u32,
+        height: u32,
+        pixelformat: u32,
+        field: u32,
+        bytesperline: u32,
+        sizeimage: u32,
+        colorspace: u32,
+        priv_field: u32,
+        flags: u32,
+        ycbcr_enc: u32,
+        quantization: u32,
+        xfer_func: u32,
+    }
+
+    #[repr(C)]
+    union V4l2FormatData {
+        pix: V4l2PixFormat,
+        raw_data: [u8; 200],
+        // Matches C `struct v4l2_window` pointer alignment in `union fmt`.
+        _align: *const libc::c_void,
+    }
+
+    #[repr(C)]
+    struct V4l2Format {
+        r#type: u32,
+        fmt: V4l2FormatData,
+    }
+
+    const fn v4l2_iowr(nr: u32, size: usize) -> libc::c_ulong {
+        ((3u32 << 30) | ((size as u32) << 16) | ((b'V' as u32) << 8) | nr) as libc::c_ulong
+    }
+
+    const VIDIOC_S_FMT: libc::c_ulong = v4l2_iowr(5, std::mem::size_of::<V4l2Format>());
+
+    pub struct Inner {
+        fd: libc::c_int,
+        capacity: usize,
+        staging: Vec<u8>,
+    }
+
+    impl Inner {
+        pub fn open(path: &str, width: u32, height: u32) -> Result<Self, WriterError> {
+            let dev_path = if path.starts_with("/dev/") {
+                path.to_string()
+            } else {
+                std::env::var("PHONECAM_V4L2_DEVICE")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "/dev/video10".to_string())
+            };
+
+            let c_path = CString::new(dev_path.as_str())
+                .map_err(|e| WriterError::Open(format!("invalid v4l2 device path: {e}")))?;
+
+            // SAFETY: `c_path` is a valid NUL-terminated string.
+            let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR) };
+            if fd < 0 {
+                return Err(WriterError::Open(format!(
+                    "failed to open {dev_path}: {}",
+                    std::io::Error::last_os_error()
+                )));
+            }
+
+            let capacity = crate::nv12_size(width, height) as usize;
+            let mut fmt = V4l2Format {
+                r#type: V4L2_BUF_TYPE_VIDEO_OUTPUT,
+                fmt: V4l2FormatData {
+                    raw_data: [0u8; 200],
+                },
+            };
+            // SAFETY: writing the active `pix` variant of the repr(C) union.
+            unsafe {
+                fmt.fmt.pix = V4l2PixFormat {
+                    width,
+                    height,
+                    pixelformat: V4L2_PIX_FMT_NV12,
+                    field: V4L2_FIELD_NONE,
+                    bytesperline: width,
+                    sizeimage: capacity as u32,
+                    colorspace: 0,
+                    priv_field: 0,
+                    flags: 0,
+                    ycbcr_enc: 0,
+                    quantization: 0,
+                    xfer_func: 0,
+                };
+            }
+
+            // SAFETY: `fd` is an open V4L2 device descriptor and `fmt` matches `struct v4l2_format`.
+            let rc = unsafe { libc::ioctl(fd, VIDIOC_S_FMT as _, &mut fmt) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                // SAFETY: `fd` is valid and owned by this function on error path.
+                unsafe {
+                    libc::close(fd);
+                }
+                return Err(WriterError::Resize(format!(
+                    "VIDIOC_S_FMT failed on {dev_path} ({width}x{height} NV12): {err}"
+                )));
+            }
+
+            Ok(Self {
+                fd,
+                capacity,
+                staging: vec![0u8; capacity],
+            })
+        }
+
+        pub fn reader_count(&self) -> u32 {
+            0
+        }
+
+        pub fn publish(
+            &mut self,
+            frame: &[u8],
+            _pts_us: u64,
+            _state: FrameState,
+            frame_index: &mut u64,
+        ) -> Result<(), PublishRejection> {
+            if frame.len() != self.capacity {
+                return Err(PublishRejection::SizeMismatch {
+                    expected: self.capacity,
+                    actual: frame.len(),
+                });
+            }
+            write_all_fd(self.fd, frame)?;
+            *frame_index += 1;
+            Ok(())
+        }
+
+        pub fn publish_with<F>(
+            &mut self,
+            expected_capacity: usize,
+            _pts_us: u64,
+            _state: FrameState,
+            frame_index: &mut u64,
+            sample_luma_dims: Option<(u32, u32)>,
+            write_fn: F,
+        ) -> Result<Option<u8>, PublishRejection>
+        where
+            F: FnOnce(&mut [u8]) -> bool,
+        {
+            if expected_capacity != self.capacity {
+                return Err(PublishRejection::SizeMismatch {
+                    expected: self.capacity,
+                    actual: expected_capacity,
+                });
+            }
+            if self.staging.len() != self.capacity {
+                self.staging.resize(self.capacity, 0);
+            }
+            if !write_fn(&mut self.staging) {
+                return Err(PublishRejection::SizeMismatch {
+                    expected: self.capacity,
+                    actual: 0,
+                });
+            }
+            write_all_fd(self.fd, &self.staging)?;
+            *frame_index += 1;
+
+            let mean = sample_luma_dims
+                .map(|(w, h)| FrameWriter::compute_mean_luma(&self.staging, w, h));
+            Ok(mean)
+        }
+
+        pub fn set_transform(&mut self, _mirror: bool, _rotation: u32) {}
+    }
+
+    impl Drop for Inner {
+        fn drop(&mut self) {
+            if self.fd >= 0 {
+                // SAFETY: `self.fd` is an open file descriptor owned exclusively by `Inner`.
+                unsafe {
+                    libc::close(self.fd);
+                }
+            }
+        }
+    }
+
+    fn write_all_fd(fd: libc::c_int, buf: &[u8]) -> Result<(), PublishRejection> {
+        let mut written = 0usize;
+        while written < buf.len() {
+            // SAFETY: `fd` is open and `buf[written..]` is a valid slice for `buf.len() - written` bytes.
+            let n = unsafe {
+                libc::write(
+                    fd,
+                    buf[written..].as_ptr() as *const libc::c_void,
+                    buf.len() - written,
+                )
+            };
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                tracing::warn!("v4l2loopback write failed: {err}");
+                return Err(PublishRejection::NoBuffer);
+            }
+            if n == 0 {
+                return Err(PublishRejection::NoBuffer);
+            }
+            written += n as usize;
+        }
+        Ok(())
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Unsupported platforms (macOS, etc.)                                */
+/* ------------------------------------------------------------------ */
+
+#[cfg(not(any(windows, target_os = "linux")))]
 mod imp {
     use super::*;
 
@@ -610,7 +875,7 @@ mod imp {
             0
         }
         pub fn publish(
-            &self,
+            &mut self,
             _frame: &[u8],
             _pts_us: u64,
             _state: FrameState,
@@ -619,7 +884,7 @@ mod imp {
             Err(PublishRejection::NoBuffer)
         }
         pub fn publish_with<F>(
-            &self,
+            &mut self,
             _expected_capacity: usize,
             _pts_us: u64,
             _state: FrameState,
@@ -632,7 +897,7 @@ mod imp {
         {
             Err(PublishRejection::NoBuffer)
         }
-        pub fn set_transform(&self, _mirror: bool, _rotation: u32) {}
+        pub fn set_transform(&mut self, _mirror: bool, _rotation: u32) {}
     }
 }
 
@@ -756,6 +1021,45 @@ mod tests {
         assert_eq!(header.frame_index, 1);
         assert_eq!(header.state, FrameState::Live);
         assert_eq!(out, expected);
+
+        drop(reader);
+        drop(writer);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publish_placeholder_reuses_preallocated_buffer_and_writes_black() {
+        let dir = std::env::temp_dir();
+        let unique = format!(
+            "phonecam-placeholder-{}-{}.shm",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = dir.join(unique);
+        let path_str = path.to_string_lossy().to_string();
+
+        let (w, h) = (16u32, 8u32);
+        let mut writer = FrameWriter::open_at(&path_str, w, h).expect("open writer");
+        let ptr_before = writer.placeholder_buf.as_ptr();
+        let cap_before = writer.placeholder_buf.capacity();
+
+        writer.publish_placeholder("test-1").expect("placeholder 1");
+        writer.publish_placeholder("test-2").expect("placeholder 2");
+
+        assert_eq!(writer.placeholder_buf.as_ptr(), ptr_before);
+        assert_eq!(writer.placeholder_buf.capacity(), cap_before);
+        assert_eq!(writer.frame_index(), 2);
+
+        let mut reader = crate::FrameReader::open(&path_str).expect("open reader");
+        let mut out = Vec::new();
+        let header = reader.read(&mut out).expect("read placeholder");
+        assert_eq!(header.state, FrameState::Disconnected);
+        assert!(out[..(w * h) as usize].iter().all(|&b| b == 16));
+        assert!(out[(w * h) as usize..].iter().all(|&b| b == 128));
 
         drop(reader);
         drop(writer);

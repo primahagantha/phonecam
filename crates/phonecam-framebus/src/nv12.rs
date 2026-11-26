@@ -1,20 +1,17 @@
-//! NV12 scaling — nearest neighbour over both planes.
+//! NV12 scaling — area/box downscale and bilinear upscale over both planes.
 //!
-//! Ported from `native/shared/src/nv12.cpp`. The core needs this because the
-//! shared buffer is sized by the **output** setting while the phone encodes at
-//! whatever its camera produced; the core scales each decoded frame into the
-//! buffer, which is the only place the output size can have an effect.
+//! Ported from `native/shared/src/nv12.cpp` and upgraded from nearest-neighbor to
+//! box downscaling + bilinear interpolation for crisp, alias-free resolution
+//! adaptation across both luma (Y) and interleaved chroma (UV) planes.
 //!
-//! `Transform` (rotation + mirror) is deliberately **not** ported: it lives
-//! inside the DLL, which reads `mirror`/`rotation` from the header. The core
-//! writes the metadata and the preview applies its own transform on the GPU, so
-//! there is one implementation of each.
+//! Chroma is subsampled 2x vertically and stored as interleaved U/V pairs, so U
+//! and V channels are always interpolated or averaged independently to prevent
+//! chroma channel swapping.
 
-/// Scales an NV12 frame from `sw x sh` to `tw x th`, nearest neighbour.
-///
-/// Chroma is subsampled 2x vertically and stored as interleaved U/V pairs, so
-/// the horizontal source index is rounded **down to an even byte** — both bytes
-/// of a pair must come from the same source pair, or the colours separate.
+const MAX_LUT_WIDTH: usize = 4096;
+
+/// Scales an NV12 frame from `sw x sh` to `tw x th` using box downscaling when
+/// shrinking (`tw < sw && th < sh`) and bilinear interpolation otherwise.
 pub fn scale(src: &[u8], sw: u32, sh: u32, dst: &mut [u8], tw: u32, th: u32) {
     if sw == 0 || sh == 0 || tw == 0 || th == 0 {
         return;
@@ -39,7 +36,6 @@ pub fn scale(src: &[u8], sw: u32, sh: u32, dst: &mut [u8], tw: u32, th: u32) {
         return;
     }
 
-    const MAX_LUT_WIDTH: usize = 4096;
     if tw <= MAX_LUT_WIDTH && sw <= u16::MAX as usize {
         scale_lut(src, sw, sh, dst, tw, th);
         return;
@@ -48,180 +44,309 @@ pub fn scale(src: &[u8], sw: u32, sh: u32, dst: &mut [u8], tw: u32, th: u32) {
     scale_scalar(src, sw, sh, dst, tw, th);
 }
 
+#[inline]
+fn bilinear_coord(d: usize, s_len: usize, d_len: usize) -> (usize, usize, u32) {
+    let max_fp = ((s_len - 1) as i64) * 256;
+    let fp = (((2 * d as i64 + 1) * (s_len as i64) * 256) / (2 * d_len as i64)) - 128;
+    let clamped = fp.clamp(0, max_fp);
+    let c0 = (clamped >> 8) as usize;
+    let w = (clamped & 0xFF) as u32;
+    let c1 = (c0 + 1).min(s_len - 1);
+    (c0, c1, w)
+}
+
+#[inline]
+fn box_span(d: usize, s_len: usize, d_len: usize) -> (usize, usize) {
+    let s0 = (d * s_len) / d_len;
+    let s1 = (((d + 1) * s_len) / d_len).max(s0 + 1).min(s_len);
+    (s0, s1)
+}
+
 fn scale_lut(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], tw: usize, th: usize) {
-    const MAX_LUT_WIDTH: usize = 4096;
+    if tw < sw && th < sh {
+        scale_box_lut(src, sw, sh, dst, tw, th);
+    } else {
+        scale_bilinear_lut(src, sw, sh, dst, tw, th);
+    }
+}
 
-    // Precompute source X offsets once per frame instead of tw * th integer divisions.
-    let mut x_lut = [0u16; MAX_LUT_WIDTH];
-    for (x, slot) in x_lut[..tw].iter_mut().enumerate() {
-        *slot = ((x * sw) / tw) as u16;
+fn scale_box_lut(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], tw: usize, th: usize) {
+    let mut sx0_lut = [0u16; MAX_LUT_WIDTH];
+    let mut sx1_lut = [0u16; MAX_LUT_WIDTH];
+    for x in 0..tw {
+        let (s0, s1) = box_span(x, sw, tw);
+        sx0_lut[x] = s0 as u16;
+        sx1_lut[x] = s1 as u16;
     }
 
-    let mut prev_sy = usize::MAX;
-    let mut prev_dst_row = 0usize;
-    let src_ptr = src.as_ptr();
-    let dst_ptr = dst.as_mut_ptr();
+    let mut row_sums = [0u32; MAX_LUT_WIDTH];
 
-    // --- luma
-    for y in 0..th {
-        let sy = (y * sh) / th;
-        let dst_row = y * tw;
-        if sy == prev_sy {
-            dst.copy_within(prev_dst_row..prev_dst_row + tw, dst_row);
-            continue;
+    // --- luma box downscale
+    for dy in 0..th {
+        let (sy0, sy1) = box_span(dy, sh, th);
+        let y_count = (sy1 - sy0) as u32;
+        row_sums[..tw].fill(0);
+
+        for sy in sy0..sy1 {
+            let src_row = &src[sy * sw..(sy + 1) * sw];
+            for dx in 0..tw {
+                let s0 = sx0_lut[dx] as usize;
+                let s1 = sx1_lut[dx] as usize;
+                let mut hsum = 0u32;
+                for &px in &src_row[s0..s1] {
+                    hsum += px as u32;
+                }
+                row_sums[dx] += hsum;
+            }
         }
-        prev_sy = sy;
-        prev_dst_row = dst_row;
 
-        let src_row_off = sy * sw;
-        // SAFETY:
-        // - `src.len() >= sw * sh * 3 / 2` and `sy < sh`, so `src_row_off + sw <= src.len()`.
-        // - Every `x_lut[x]` equals `(x * sw) / tw < sw` since `x < tw`.
-        // - `dst.len() >= tw * th * 3 / 2` and `dst_row + tw <= tw * th <= dst.len()`.
-        unsafe {
-            let s = src_ptr.add(src_row_off);
-            let mut d = dst_ptr.add(dst_row);
-            let mut x = 0usize;
-            while x + 8 <= tw {
-                *d = *s.add(*x_lut.get_unchecked(x) as usize);
-                *d.add(1) = *s.add(*x_lut.get_unchecked(x + 1) as usize);
-                *d.add(2) = *s.add(*x_lut.get_unchecked(x + 2) as usize);
-                *d.add(3) = *s.add(*x_lut.get_unchecked(x + 3) as usize);
-                *d.add(4) = *s.add(*x_lut.get_unchecked(x + 4) as usize);
-                *d.add(5) = *s.add(*x_lut.get_unchecked(x + 5) as usize);
-                *d.add(6) = *s.add(*x_lut.get_unchecked(x + 6) as usize);
-                *d.add(7) = *s.add(*x_lut.get_unchecked(x + 7) as usize);
-                d = d.add(8);
-                x += 8;
-            }
-            while x < tw {
-                *d = *s.add(*x_lut.get_unchecked(x) as usize);
-                d = d.add(1);
-                x += 1;
-            }
+        let dst_row = &mut dst[dy * tw..(dy + 1) * tw];
+        for dx in 0..tw {
+            let count = y_count * (sx1_lut[dx] - sx0_lut[dx]) as u32;
+            dst_row[dx] = ((row_sums[dx] + count / 2) / count) as u8;
         }
     }
 
-    // --- chroma: interleaved U/V, sh/2 rows of sw bytes
+    // --- chroma box downscale: interleaved U/V pairs
     let src_chroma = sw * sh;
     let dst_chroma = tw * th;
-    let src_chroma_rows = sh / 2;
-    let dst_chroma_rows = th / 2;
-    if dst_chroma_rows == 0 || src_chroma_rows == 0 {
+    let src_cw = sw / 2;
+    let src_ch = sh / 2;
+    let dst_cw = tw / 2;
+    let dst_ch = th / 2;
+    if src_cw == 0 || src_ch == 0 || dst_cw == 0 || dst_ch == 0 {
         return;
     }
 
-    if (sw & 1) == 0 && (tw & 1) == 0 {
-        let pairs = tw / 2;
-        let mut uv_lut = [0u16; MAX_LUT_WIDTH / 2];
-        for (p, slot) in uv_lut[..pairs].iter_mut().enumerate() {
-            *slot = ((((p * 2) * sw) / tw) & !1usize) as u16;
+    let mut csx0_lut = [0u16; MAX_LUT_WIDTH / 2];
+    let mut csx1_lut = [0u16; MAX_LUT_WIDTH / 2];
+    for cx in 0..dst_cw {
+        let (s0, s1) = box_span(cx, src_cw, dst_cw);
+        csx0_lut[cx] = s0 as u16;
+        csx1_lut[cx] = s1 as u16;
+    }
+    let mut u_sums = [0u32; MAX_LUT_WIDTH / 2];
+    let mut v_sums = [0u32; MAX_LUT_WIDTH / 2];
+
+    for cdy in 0..dst_ch {
+        let (csy0, csy1) = box_span(cdy, src_ch, dst_ch);
+        let y_count = (csy1 - csy0) as u32;
+        u_sums[..dst_cw].fill(0);
+        v_sums[..dst_cw].fill(0);
+
+        for csy in csy0..csy1 {
+            let src_row = &src[src_chroma + csy * sw..src_chroma + (csy + 1) * sw];
+            for cdx in 0..dst_cw {
+                let s0 = csx0_lut[cdx] as usize;
+                let s1 = csx1_lut[cdx] as usize;
+                let mut hu = 0u32;
+                let mut hv = 0u32;
+                for csx in s0..s1 {
+                    hu += src_row[csx * 2] as u32;
+                    hv += src_row[csx * 2 + 1] as u32;
+                }
+                u_sums[cdx] += hu;
+                v_sums[cdx] += hv;
+            }
         }
 
-        let mut prev_sy = usize::MAX;
-        let mut prev_dst_row = 0usize;
-        for y in 0..dst_chroma_rows {
-            let sy = (y * src_chroma_rows) / dst_chroma_rows;
-            let dst_row = dst_chroma + y * tw;
-            if sy == prev_sy {
-                dst.copy_within(prev_dst_row..prev_dst_row + tw, dst_row);
-                continue;
-            }
-            prev_sy = sy;
-            prev_dst_row = dst_row;
-
-            let src_row_off = src_chroma + sy * sw;
-            // SAFETY:
-            // - `sw` is even and `uv_lut[p]` is even and `< sw`, so `uv_lut[p] + 1 < sw`.
-            // - `sy < src_chroma_rows`, so `src_row_off + sw <= src.len()`.
-            // - `tw = 2 * pairs`, so `dst_row + tw <= dst.len()`.
-            unsafe {
-                let s = src_ptr.add(src_row_off);
-                let mut d = dst_ptr.add(dst_row);
-                let mut p = 0usize;
-                while p + 4 <= pairs {
-                    let v0 = std::ptr::read_unaligned(
-                        s.add(*uv_lut.get_unchecked(p) as usize) as *const u16
-                    );
-                    let v1 = std::ptr::read_unaligned(
-                        s.add(*uv_lut.get_unchecked(p + 1) as usize) as *const u16
-                    );
-                    let v2 = std::ptr::read_unaligned(
-                        s.add(*uv_lut.get_unchecked(p + 2) as usize) as *const u16
-                    );
-                    let v3 = std::ptr::read_unaligned(
-                        s.add(*uv_lut.get_unchecked(p + 3) as usize) as *const u16
-                    );
-                    std::ptr::write_unaligned(d as *mut u16, v0);
-                    std::ptr::write_unaligned(d.add(2) as *mut u16, v1);
-                    std::ptr::write_unaligned(d.add(4) as *mut u16, v2);
-                    std::ptr::write_unaligned(d.add(6) as *mut u16, v3);
-                    d = d.add(8);
-                    p += 4;
-                }
-                while p < pairs {
-                    let v = std::ptr::read_unaligned(
-                        s.add(*uv_lut.get_unchecked(p) as usize) as *const u16
-                    );
-                    std::ptr::write_unaligned(d as *mut u16, v);
-                    d = d.add(2);
-                    p += 1;
-                }
-            }
+        let dst_row = &mut dst[dst_chroma + cdy * tw..dst_chroma + (cdy + 1) * tw];
+        for cdx in 0..dst_cw {
+            let count = y_count * (csx1_lut[cdx] - csx0_lut[cdx]) as u32;
+            let half = count / 2;
+            dst_row[cdx * 2] = ((u_sums[cdx] + half) / count) as u8;
+            dst_row[cdx * 2 + 1] = ((v_sums[cdx] + half) / count) as u8;
         }
-    } else {
-        for y in 0..dst_chroma_rows {
-            let sy = (y * src_chroma_rows) / dst_chroma_rows;
-            let src_row = src_chroma + sy * sw;
-            let dst_row = dst_chroma + y * tw;
-            let mut x = 0usize;
-            while x < tw {
-                let sx = ((x * sw) / tw) & !1usize;
-                dst[dst_row + x] = src[src_row + sx];
-                if x + 1 < tw {
-                    let second = if sx + 1 < sw { sx + 1 } else { sx };
-                    dst[dst_row + x + 1] = src[src_row + second];
-                }
-                x += 2;
-            }
+    }
+}
+
+fn scale_bilinear_lut(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], tw: usize, th: usize) {
+    let mut x0_lut = [0u16; MAX_LUT_WIDTH];
+    let mut x1_lut = [0u16; MAX_LUT_WIDTH];
+    let mut wx_lut = [0u16; MAX_LUT_WIDTH];
+    for x in 0..tw {
+        let (x0, x1, wx) = bilinear_coord(x, sw, tw);
+        x0_lut[x] = x0 as u16;
+        x1_lut[x] = x1 as u16;
+        wx_lut[x] = wx as u16;
+    }
+
+    // --- luma bilinear
+    for dy in 0..th {
+        let (y0, y1, wy) = bilinear_coord(dy, sh, th);
+        let inv_wy = 256 - wy;
+        let row0 = &src[y0 * sw..(y0 + 1) * sw];
+        let row1 = &src[y1 * sw..(y1 + 1) * sw];
+        let dst_row = &mut dst[dy * tw..(dy + 1) * tw];
+
+        for dx in 0..tw {
+            let x0 = x0_lut[dx] as usize;
+            let x1 = x1_lut[dx] as usize;
+            let wx = wx_lut[dx] as u32;
+            let inv_wx = 256 - wx;
+
+            let p00 = row0[x0] as u32;
+            let p10 = row0[x1] as u32;
+            let p01 = row1[x0] as u32;
+            let p11 = row1[x1] as u32;
+
+            let val = p00 * inv_wx * inv_wy
+                + p10 * wx * inv_wy
+                + p01 * inv_wx * wy
+                + p11 * wx * wy;
+            dst_row[dx] = ((val + 32_768) >> 16) as u8;
+        }
+    }
+
+    // --- chroma bilinear: interleaved U/V pairs
+    let src_chroma = sw * sh;
+    let dst_chroma = tw * th;
+    let src_cw = sw / 2;
+    let src_ch = sh / 2;
+    let dst_cw = tw / 2;
+    let dst_ch = th / 2;
+    if src_cw == 0 || src_ch == 0 || dst_cw == 0 || dst_ch == 0 {
+        return;
+    }
+
+    let mut cx0_lut = [0u16; MAX_LUT_WIDTH / 2];
+    let mut cx1_lut = [0u16; MAX_LUT_WIDTH / 2];
+    let mut cwx_lut = [0u16; MAX_LUT_WIDTH / 2];
+    for cx in 0..dst_cw {
+        let (x0, x1, wx) = bilinear_coord(cx, src_cw, dst_cw);
+        cx0_lut[cx] = (x0 * 2) as u16;
+        cx1_lut[cx] = (x1 * 2) as u16;
+        cwx_lut[cx] = wx as u16;
+    }
+
+    for cdy in 0..dst_ch {
+        let (cy0, cy1, wy) = bilinear_coord(cdy, src_ch, dst_ch);
+        let inv_wy = 256 - wy;
+        let row0 = &src[src_chroma + cy0 * sw..src_chroma + (cy0 + 1) * sw];
+        let row1 = &src[src_chroma + cy1 * sw..src_chroma + (cy1 + 1) * sw];
+        let dst_row = &mut dst[dst_chroma + cdy * tw..dst_chroma + (cdy + 1) * tw];
+
+        for cdx in 0..dst_cw {
+            let x0 = cx0_lut[cdx] as usize;
+            let x1 = cx1_lut[cdx] as usize;
+            let wx = cwx_lut[cdx] as u32;
+            let inv_wx = 256 - wx;
+
+            let w00 = inv_wx * inv_wy;
+            let w10 = wx * inv_wy;
+            let w01 = inv_wx * wy;
+            let w11 = wx * wy;
+
+            let u = row0[x0] as u32 * w00
+                + row0[x1] as u32 * w10
+                + row1[x0] as u32 * w01
+                + row1[x1] as u32 * w11;
+            let v = row0[x0 + 1] as u32 * w00
+                + row0[x1 + 1] as u32 * w10
+                + row1[x0 + 1] as u32 * w01
+                + row1[x1 + 1] as u32 * w11;
+
+            dst_row[cdx * 2] = ((u + 32_768) >> 16) as u8;
+            dst_row[cdx * 2 + 1] = ((v + 32_768) >> 16) as u8;
         }
     }
 }
 
 fn scale_scalar(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], tw: usize, th: usize) {
-    // --- luma
-    for y in 0..th {
-        let sy = (y * sh) / th;
-        let src_row = sy * sw;
-        let dst_row = y * tw;
-        for x in 0..tw {
-            let sx = (x * sw) / tw;
-            dst[dst_row + x] = src[src_row + sx];
-        }
-    }
-
-    // --- chroma: interleaved U/V, sh/2 rows of sw bytes
     let src_chroma = sw * sh;
     let dst_chroma = tw * th;
-    let src_chroma_rows = sh / 2;
-    let dst_chroma_rows = th / 2;
-    if dst_chroma_rows == 0 || src_chroma_rows == 0 {
-        return;
-    }
-    for y in 0..dst_chroma_rows {
-        let sy = (y * src_chroma_rows) / dst_chroma_rows;
-        let src_row = src_chroma + sy * sw;
-        let dst_row = dst_chroma + y * tw;
-        let mut x = 0usize;
-        while x < tw {
-            // Round down to an even byte so the pair is coherent.
-            let sx = ((x * sw) / tw) & !1usize;
-            dst[dst_row + x] = src[src_row + sx];
-            if x + 1 < tw {
-                let second = if sx + 1 < sw { sx + 1 } else { sx };
-                dst[dst_row + x + 1] = src[src_row + second];
+    let src_cw = sw / 2;
+    let src_ch = sh / 2;
+    let dst_cw = tw / 2;
+    let dst_ch = th / 2;
+
+    if tw < sw && th < sh {
+        // --- luma box downscale
+        for dy in 0..th {
+            let (sy0, sy1) = box_span(dy, sh, th);
+            for dx in 0..tw {
+                let (sx0, sx1) = box_span(dx, sw, tw);
+                let mut sum = 0u32;
+                for sy in sy0..sy1 {
+                    for sx in sx0..sx1 {
+                        sum += src[sy * sw + sx] as u32;
+                    }
+                }
+                let count = ((sy1 - sy0) * (sx1 - sx0)) as u32;
+                dst[dy * tw + dx] = ((sum + count / 2) / count) as u8;
             }
-            x += 2;
+        }
+
+        if src_cw == 0 || src_ch == 0 || dst_cw == 0 || dst_ch == 0 {
+            return;
+        }
+
+        // --- chroma box downscale
+        for cdy in 0..dst_ch {
+            let (csy0, csy1) = box_span(cdy, src_ch, dst_ch);
+            for cdx in 0..dst_cw {
+                let (csx0, csx1) = box_span(cdx, src_cw, dst_cw);
+                let mut u_sum = 0u32;
+                let mut v_sum = 0u32;
+                for csy in csy0..csy1 {
+                    let row = src_chroma + csy * sw;
+                    for csx in csx0..csx1 {
+                        u_sum += src[row + csx * 2] as u32;
+                        v_sum += src[row + csx * 2 + 1] as u32;
+                    }
+                }
+                let count = ((csy1 - csy0) * (csx1 - csx0)) as u32;
+                let half = count / 2;
+                dst[dst_chroma + cdy * tw + cdx * 2] = ((u_sum + half) / count) as u8;
+                dst[dst_chroma + cdy * tw + cdx * 2 + 1] = ((v_sum + half) / count) as u8;
+            }
+        }
+    } else {
+        // --- luma bilinear
+        for dy in 0..th {
+            let (y0, y1, wy) = bilinear_coord(dy, sh, th);
+            let inv_wy = 256 - wy;
+            for dx in 0..tw {
+                let (x0, x1, wx) = bilinear_coord(dx, sw, tw);
+                let inv_wx = 256 - wx;
+                let val = src[y0 * sw + x0] as u32 * inv_wx * inv_wy
+                    + src[y0 * sw + x1] as u32 * wx * inv_wy
+                    + src[y1 * sw + x0] as u32 * inv_wx * wy
+                    + src[y1 * sw + x1] as u32 * wx * wy;
+                dst[dy * tw + dx] = ((val + 32_768) >> 16) as u8;
+            }
+        }
+
+        if src_cw == 0 || src_ch == 0 || dst_cw == 0 || dst_ch == 0 {
+            return;
+        }
+
+        // --- chroma bilinear
+        for cdy in 0..dst_ch {
+            let (cy0, cy1, wy) = bilinear_coord(cdy, src_ch, dst_ch);
+            let inv_wy = 256 - wy;
+            for cdx in 0..dst_cw {
+                let (cx0, cx1, wx) = bilinear_coord(cdx, src_cw, dst_cw);
+                let inv_wx = 256 - wx;
+                let w00 = inv_wx * inv_wy;
+                let w10 = wx * inv_wy;
+                let w01 = inv_wx * wy;
+                let w11 = wx * wy;
+
+                let r0 = src_chroma + cy0 * sw;
+                let r1 = src_chroma + cy1 * sw;
+                let u = src[r0 + cx0 * 2] as u32 * w00
+                    + src[r0 + cx1 * 2] as u32 * w10
+                    + src[r1 + cx0 * 2] as u32 * w01
+                    + src[r1 + cx1 * 2] as u32 * w11;
+                let v = src[r0 + cx0 * 2 + 1] as u32 * w00
+                    + src[r0 + cx1 * 2 + 1] as u32 * w10
+                    + src[r1 + cx0 * 2 + 1] as u32 * w01
+                    + src[r1 + cx1 * 2 + 1] as u32 * w11;
+
+                dst[dst_chroma + cdy * tw + cdx * 2] = ((u + 32_768) >> 16) as u8;
+                dst[dst_chroma + cdy * tw + cdx * 2 + 1] = ((v + 32_768) >> 16) as u8;
+            }
         }
     }
 }
@@ -267,9 +392,17 @@ mod tests {
     }
 
     #[test]
-    fn doubling_picks_the_nearest_source_pixel() {
+    fn doubling_bilinear_interpolates_smoothly() {
         let (w, h) = (4usize, 4usize);
-        let src = pattern(w, h);
+        let mut src = vec![0u8; w * h * 3 / 2];
+        // Horizontal ramp: [0, 80, 160, 240]
+        for y in 0..h {
+            for x in 0..w {
+                src[y * w + x] = (x * 80) as u8;
+            }
+        }
+        src[w * h..].fill(128);
+
         let mut dst = vec![0u8; (w * 2) * (h * 2) * 3 / 2];
         scale(
             &src,
@@ -280,16 +413,12 @@ mod tests {
             (h * 2) as u32,
         );
 
-        // Nearest-neighbour: destination (x,y) samples source (x/2, y/2).
-        for y in 0..h * 2 {
-            for x in 0..w * 2 {
-                assert_eq!(dst[y * w * 2 + x], src[(y / 2) * w + (x / 2)]);
-            }
-        }
+        // Center-aligned 2x bilinear ramp between 0 and 80 yields 0, 20, 60, 100, 140, 180, 220, 240
+        assert_eq!(&dst[..8], &[0, 20, 60, 100, 140, 180, 220, 240]);
     }
 
     #[test]
-    fn scale_halves_without_reading_out_of_bounds() {
+    fn scale_halves_box_downscales_accurately() {
         let (w, h) = (64usize, 32usize);
         let src = pattern(w, h);
         let mut dst = vec![0u8; (w / 2) * (h / 2) * 3 / 2];
@@ -301,23 +430,21 @@ mod tests {
             (w / 2) as u32,
             (h / 2) as u32,
         );
-        // Every sampled index must come from inside the source luma plane.
+        // Every destination luma pixel must equal the rounded 2x2 box average of source pixels.
         for y in 0..h / 2 {
             for x in 0..w / 2 {
-                assert_eq!(
-                    dst[y * (w / 2) + x],
-                    src[((y * h) / (h / 2)) * w + (x * w) / (w / 2)]
-                );
+                let sum = src[(y * 2) * w + (x * 2)] as u32
+                    + src[(y * 2) * w + (x * 2 + 1)] as u32
+                    + src[(y * 2 + 1) * w + (x * 2)] as u32
+                    + src[(y * 2 + 1) * w + (x * 2 + 1)] as u32;
+                let expected = ((sum + 2) / 4) as u8;
+                assert_eq!(dst[y * (w / 2) + x], expected);
             }
         }
     }
 
-    /// The chroma plane must keep U/V pairs coherent. A nearest-neighbour that
-    /// rounds to an odd byte would swap U and V across the whole picture, which
-    /// reads as a violent colour cast rather than as a scaling bug.
-    ///
-    /// Both dimensions are even here because NV12 has no valid layout for an odd
-    /// width — `dimensions_are_valid` rejects one before it can reach a frame.
+    /// The chroma plane must keep U/V pairs coherent. Both dimensions are even
+    /// because NV12 has no valid layout for an odd width.
     #[test]
     fn chroma_pairs_stay_in_the_same_order_after_scaling() {
         for (sw, tw) in [(16u32, 8u32), (8, 16), (32, 12), (12, 32), (10, 8), (8, 10)] {
@@ -331,8 +458,6 @@ mod tests {
             for i in (0..(tw as usize)).step_by(2) {
                 let u = dst[chroma + i];
                 let v = dst[chroma + i + 1];
-                // The source alternates 40, 210 starting at an even offset, so a
-                // coherent pair is always (40, 210) — never (210, 40).
                 assert_eq!((u, v), (40, 210), "swapped at {sw}->{tw} index {i}");
             }
         }
@@ -378,8 +503,8 @@ mod tests {
             (1920, 1080, 1280, 720),
             (1920, 1080, 1920, 1080),
             (720, 480, 1000, 600),
-            (13, 6, 21, 10),
-            (14, 8, 17, 10),
+            (14, 8, 22, 12),
+            (22, 12, 14, 8),
         ];
         for (sw, sh, tw, th) in cases {
             let src = pattern(sw as usize, sh as usize);
