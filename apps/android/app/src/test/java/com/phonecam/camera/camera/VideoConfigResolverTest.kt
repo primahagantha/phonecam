@@ -191,4 +191,40 @@ class VideoConfigResolverTest {
         // honest answer rather than inventing an unsupported one.
         assertEquals(24, VideoConfigResolver.nearestFps(10, listOf(24, 30)))
     }
+
+    @Test
+    fun `prefers 1080p60 when normal AE supports 60fps even if highSpeedSizes is 720p`() {
+        val resolved = VideoConfigResolver.resolve(
+            requestedResolution = "1920x1080",
+            requestedFps = 60,
+            requestedBitrate = null,
+            supportedSizes = midRangeSizes,
+            supportedFps = listOf(24, 30, 60),
+            highSpeedSizes = listOf(1280 to 720),
+            supportsNormalAe60 = true,
+        )
+
+        assertEquals(1920, resolved.width)
+        assertEquals(1080, resolved.height)
+        assertEquals(60, resolved.fps)
+        assertFalse(resolved.substituted)
+    }
+
+    @Test
+    fun `snaps 60fps to highSpeedSizes only when normal AE 60fps is unavailable`() {
+        val resolved = VideoConfigResolver.resolve(
+            requestedResolution = "1920x1080",
+            requestedFps = 60,
+            requestedBitrate = null,
+            supportedSizes = midRangeSizes,
+            supportedFps = listOf(24, 30, 60),
+            highSpeedSizes = listOf(1280 to 720),
+            supportsNormalAe60 = false,
+        )
+
+        assertEquals(1280, resolved.width)
+        assertEquals(720, resolved.height)
+        assertEquals(60, resolved.fps)
+        assertTrue(resolved.substituted)
+    }
 }

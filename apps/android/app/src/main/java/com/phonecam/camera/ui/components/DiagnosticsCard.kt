@@ -161,7 +161,7 @@ fun DiagnosticsCard(
                     )
                     runCatching { context.startActivity(intent) }
                 }) {
-                    Text("Report to GitHub")
+                    Text(stringResource(R.string.action_report_github))
                 }
             }
             if (reportCopied) {
@@ -228,5 +228,7 @@ private fun shareReport(context: Context, report: String) {
 
 private fun copyToClipboard(context: Context, lines: List<String>) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-    clipboard.setPrimaryClip(ClipData.newPlainText("PhoneCam log", lines.joinToString("\n")))
+    clipboard.setPrimaryClip(
+        ClipData.newPlainText(context.getString(R.string.clipboard_log), lines.joinToString("\n")),
+    )
 }

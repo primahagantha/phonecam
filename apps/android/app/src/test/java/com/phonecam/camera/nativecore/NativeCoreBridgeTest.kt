@@ -6,7 +6,6 @@ import com.phonecam.camera.protocol.ChannelRole
 import com.phonecam.camera.protocol.HandshakeStatus
 import com.phonecam.camera.protocol.Proto
 import com.phonecam.camera.protocol.VideoFlags
-import com.phonecam.camera.session.NativeAdaptiveQuality
 import com.phonecam.camera.transport.DiscoveryClient
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.intOrNull
@@ -304,7 +303,7 @@ class NativeCoreBridgeTest {
     }
 
     @Test
-    fun `jni hot-path throughput for 10k headers and latency for auth and adaptive quality`() {
+    fun `jni hot-path throughput for 10k headers and latency for auth`() {
         val scratch = ByteArray(Proto.VIDEO_FRAME_PREFIX_SIZE)
         // Warm up JIT/JNI lookup.
         repeat(200) { i ->
@@ -335,33 +334,11 @@ class NativeCoreBridgeTest {
         val authMs = (System.nanoTime() - authStartNs) / 1_000_000.0
         assertTrue(lastAuth.startsWith("android-perf:"))
 
-        var holdCount = 0
-        val aqMs = NativeAdaptiveQuality(enabled = true, initResolution = "1920x1080", initFps = 30).use { aq ->
-            val aqStartNs = System.nanoTime()
-            for (i in 0 until 1_000) {
-                val decision = aq.observe(
-                    nowMs = i * 100L,
-                    currentResolution = "1920x1080",
-                    currentFps = 30,
-                    maxResolution = "1920x1080",
-                    maxFps = 30,
-                    droppedPercent = 0.1,
-                    rttUs = 15_000L,
-                    thermal = "none",
-                )
-                if (decision.action == "hold") holdCount++
-            }
-            (System.nanoTime() - aqStartNs) / 1_000_000.0
-        }
-        assertEquals(1_000, holdCount)
-
         println(
             "JNI perf: 10k encodeVideoPacketHeaderInto=${"%.2f".format(hdrMs)}ms, " +
-                "1k deviceSecretAuth=${"%.2f".format(authMs)}ms, " +
-                "1k adaptiveQualityObserve=${"%.2f".format(aqMs)}ms",
+                "1k deviceSecretAuth=${"%.2f".format(authMs)}ms",
         )
         assertTrue("10k JNI header encodes took ${hdrMs}ms (expected < 500ms)", hdrMs < 500.0)
         assertTrue("1k JNI auth calls took ${authMs}ms (expected < 1000ms)", authMs < 1000.0)
-        assertTrue("1k JNI adaptiveQualityObserve took ${aqMs}ms (expected < 500ms)", aqMs < 500.0)
     }
 }

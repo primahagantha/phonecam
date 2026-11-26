@@ -39,17 +39,12 @@ enum class ScreenMode(val wire: String, val brightness: Float) {
     /**
      * Whether the screen is pinned on in this mode.
      *
-     * [DIM] and [BLACK] exist so the phone can lie face down and use less power.
-     * `FLAG_KEEP_SCREEN_ON` keeps the panel lit and awake, which is precisely
-     * the cost those modes are meant to avoid, so holding it in them is
-     * backwards. The window is still created with the flag set (see
-     * [ApplyScreenMode]); for these two modes it is cleared immediately, which
-     * keeps the system from putting the display to sleep between the window
-     * being created and the mode being applied — that is what would stop the
-     * preview.
+     * Kept `true` across all streaming screen modes (`KEEP_ON`, `DIM`, `BLACK`)
+     * so the platform never turns off or locks the display while streaming,
+     * which would interrupt capture or hide the OLED blackout ambient display.
      */
     val keepScreenOn: Boolean
-        get() = this == KEEP_ON
+        get() = true
 
     companion object {
         /** Unknown values fall back to [KEEP_ON], the pre-existing behaviour. */
@@ -79,12 +74,8 @@ fun ApplyScreenMode(mode: ScreenMode, active: Boolean) {
         if (window == null || !active) return@DisposableEffect onDispose { }
 
         val previousBrightness = window.attributes.screenBrightness
-        // Only KEEP_ON pins the display awake. DIM and BLACK are the modes a
-        // face-down phone uses to save power, so the flag is cleared in them: the
-        // brightness override is what dims the panel, and letting the display
-        // sleep on its own timeout afterwards is the power saving those modes
-        // exist for. Capture is unaffected — the camera device does not depend on
-        // the window being awake.
+        // Keep FLAG_KEEP_SCREEN_ON set across KEEP_ON, DIM, and BLACK while streaming
+        // so the display does not sleep/lock and kill capture or the ambient display.
         if (mode.keepScreenOn) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {

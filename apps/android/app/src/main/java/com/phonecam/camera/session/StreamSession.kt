@@ -2,6 +2,9 @@ package com.phonecam.camera.session
 
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.view.OrientationEventListener
 import com.phonecam.camera.BuildConfig
 import com.phonecam.camera.camera.CameraCapabilityProbe
 import com.phonecam.camera.audio.AudioStreamer
@@ -29,6 +32,7 @@ import com.phonecam.camera.transport.DiscoveredServer
 import com.phonecam.camera.transport.DiscoveryClient
 import com.phonecam.camera.transport.PeerConnection
 import com.phonecam.camera.transport.VideoChannel
+import com.phonecam.camera.ui.getDisplayRotationDegrees
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -397,9 +401,13 @@ class StreamSession(
     private val discovery = DiscoveryClient(
         context = context,
         scope = scope,
-        deviceId = identity.deviceId,
+        deviceIdProvider = { identity.deviceId },
         beaconProvider = ::phoneBeacon,
     )
+
+    @Volatile
+    private var deviceOrientation: Int = getDisplayRotationDegrees(context)
+    private var orientationListener: OrientationEventListener? = null
 
     private var control: PeerConnection? = null
     private var video: PeerConnection? = null
@@ -559,6 +567,7 @@ class StreamSession(
     // ---------------------------------------------------------------- lifecycle
 
     fun start() {
+        startOrientationListener()
         discovery.start()
         // The user has asked for a PC, so the phone advertises itself until one
         // answers. Once a connection is up the beacon has nobody left to inform
@@ -575,6 +584,7 @@ class StreamSession(
     }
 
     fun stop() {
+        stopOrientationListener()
         audioStreamer.stop()
         stopStreaming(notifyPeer = false)
         camera.release()
@@ -585,6 +595,39 @@ class StreamSession(
         searchJob = null
         discovery.stop()
         scope.cancel()
+    }
+
+    private fun startOrientationListener() {
+        deviceOrientation = getDisplayRotationDegrees(context)
+        runCatching {
+            Handler(Looper.getMainLooper()).post {
+                runCatching {
+                    val listener = object : OrientationEventListener(context) {
+                        override fun onOrientationChanged(orientation: Int) {
+                            val snapped = snapOrientationDegrees(orientation) ?: return
+                            if (snapped != deviceOrientation) {
+                                deviceOrientation = snapped
+                                val phase = _state.value.phase
+                                if (phase == SessionState.Phase.CONNECTED ||
+                                    phase == SessionState.Phase.STREAMING
+                                ) {
+                                    sendState()
+                                }
+                            }
+                        }
+                    }
+                    if (listener.canDetectOrientation()) {
+                        listener.enable()
+                        orientationListener = listener
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stopOrientationListener() {
+        runCatching { orientationListener?.disable() }
+        orientationListener = null
     }
 
     /** Connects to a discovered desktop, or the remembered one (§9 priority 2). */
@@ -1043,6 +1086,11 @@ class StreamSession(
 
     private fun sendState() {
         val current = _state.value
+        val reportedOrientation = if (orientationListener != null) {
+            deviceOrientation
+        } else {
+            getDisplayRotationDegrees(context).also { deviceOrientation = it }
+        }
         sendControlMessage(
             PhoneMessage.State(
                 streaming = current.isStreaming,
@@ -1060,6 +1108,7 @@ class StreamSession(
                 charging = current.charging,
                 thermal = current.thermal,
                 antiFlicker = current.antiFlicker,
+                orientation = reportedOrientation,
             ),
         )
     }
@@ -1150,8 +1199,10 @@ class StreamSession(
 
         val previousBattery = _state.value.batteryPercent
         val previousCharging = _state.value.charging
-        val batteryChanged = previousBattery != healthSnapshot.batteryPercent ||
-            previousCharging != healthSnapshot.charging
+        val previousThermal = _state.value.thermal
+        val healthChanged = previousBattery != healthSnapshot.batteryPercent ||
+            previousCharging != healthSnapshot.charging ||
+            previousThermal != healthSnapshot.thermal
 
         _state.value = _state.value.copy(
             streamFps = fps,
@@ -1161,8 +1212,8 @@ class StreamSession(
             thermal = healthSnapshot.thermal,
         )
 
-        handleThermalState(healthSnapshot.thermal)
-
+        // Thermal state is reported to desktop so desktop's AdaptiveQuality remains
+        // the single authority for resolution/fps/bitrate ladder decisions.
         sendControlMessage(
             PhoneMessage.Stats(
                 fps = fps,
@@ -1178,69 +1229,7 @@ class StreamSession(
             ),
         )
 
-        if (batteryChanged) {
-            sendState()
-        }
-    }
-
-    private var thermalThrottled = false
-    private var preThermalBitrate: Int? = null
-    private var preThermalFps: Int? = null
-
-    /**
-     * When thermal is moderate or above, prefer lowering bitrate/FPS on the fly
-     * via encoder.updateBitrate() and camera.setFrameRate() without tearing down the stream session.
-     */
-    internal fun handleThermalState(thermalState: String) {
-        if (!_state.value.isStreaming) return
-        val isHot = thermalState == "moderate" || thermalState == "severe" ||
-            thermalState == "critical" || thermalState == "emergency"
-
-        if (isHot && !thermalThrottled) {
-            val currentBitrate = _state.value.bitrate
-            val currentFps = _state.value.actualFps ?: 30
-            preThermalBitrate = currentBitrate
-            preThermalFps = currentFps
-            thermalThrottled = true
-
-            // Lower FPS to 30 if running at 60fps, and reduce bitrate to prevent thermal congestion
-            val targetFps = if (currentFps > 30) 30 else currentFps
-            val targetBitrate = if (currentBitrate > 2_500_000) {
-                (currentBitrate * 6 / 10).coerceAtLeast(1_500_000)
-            } else {
-                currentBitrate
-            }
-
-            Log.i("thermal is $thermalState: lowering bitrate on the fly ($currentBitrate -> $targetBitrate) and fps ($currentFps -> $targetFps)")
-            if (targetFps != currentFps) {
-                camera.setFrameRate(targetFps)
-            }
-            if (targetBitrate != currentBitrate) {
-                encoder?.updateBitrate(targetBitrate)
-            }
-            _state.value = _state.value.copy(
-                actualFps = targetFps,
-                bitrate = targetBitrate,
-            )
-            sendState()
-        } else if (!isHot && thermalThrottled) {
-            val restoredBitrate = preThermalBitrate ?: _state.value.bitrate
-            val restoredFps = preThermalFps ?: (_state.value.actualFps ?: 30)
-            thermalThrottled = false
-            preThermalBitrate = null
-            preThermalFps = null
-
-            Log.i("thermal returned to $thermalState: restoring bitrate ($restoredBitrate) and fps ($restoredFps)")
-            if (restoredFps != _state.value.actualFps) {
-                camera.setFrameRate(restoredFps)
-            }
-            if (restoredBitrate != _state.value.bitrate) {
-                encoder?.updateBitrate(restoredBitrate)
-            }
-            _state.value = _state.value.copy(
-                actualFps = restoredFps,
-                bitrate = restoredBitrate,
-            )
+        if (healthChanged) {
             sendState()
         }
     }
@@ -1377,7 +1366,7 @@ class StreamSession(
         stopStreaming(notifyPeer = false, keepVideoChannel = true)
         restartJob = scope.launch {
             delay(100L)
-            if (isActive) startStreaming(force = true)
+            if (isActive) startStreaming(force = false)
         }
     }
 
@@ -1400,6 +1389,7 @@ class StreamSession(
                 supportedSizes = camera.supportedSizes(cameraId),
                 supportedFps = camera.supportedFrameRates(cameraId),
                 highSpeedSizes = camera.highSpeedSizes(cameraId),
+                supportsNormalAe60 = camera.supportsNormalAe60(cameraId),
             )
         }.getOrNull() ?: return false
         return resolved.width == parsed.first &&
@@ -1458,6 +1448,7 @@ class StreamSession(
             supportedSizes = camera.supportedSizes(cameraId),
             supportedFps = camera.supportedFrameRates(cameraId),
             highSpeedSizes = camera.highSpeedSizes(cameraId),
+            supportsNormalAe60 = camera.supportsNormalAe60(cameraId),
         )
         val actualParsed = _state.value.actualResolution?.let {
             VideoPreset.parseResolution(it)
@@ -1478,9 +1469,6 @@ class StreamSession(
                 // A substitution, so it goes back to the default heading.
                 noticeKind = NoticeKind.Substitution,
             )
-            thermalThrottled = false
-            preThermalBitrate = null
-            preThermalFps = null
             sendState()
         } else {
             stopStreaming(notifyPeer = false, keepVideoChannel = true)
@@ -1570,9 +1558,9 @@ class StreamSession(
     private fun startStreaming(force: Boolean = false) {
         val currentChannel = videoChannel
         val currentConn = video
-        val isChannelHealthy = _state.value.isStreaming &&
-            currentChannel != null && currentChannel.isRunning &&
+        val isSocketHealthy = currentChannel != null && currentChannel.isRunning &&
             currentConn != null && currentConn.isOpen
+        val isChannelHealthy = _state.value.isStreaming && isSocketHealthy
 
         if (isChannelHealthy && !force) {
             Log.i("startStreaming: already streaming with healthy video channel; requesting keyframe")
@@ -1586,8 +1574,8 @@ class StreamSession(
         }
 
         if (_state.value.isStreaming || streamingJob?.isActive == true || !isChannelHealthy) {
-            Log.i("startStreaming: resetting previous stream state (force=$force, isChannelHealthy=$isChannelHealthy)")
-            stopStreaming(notifyPeer = false, keepVideoChannel = !force && isChannelHealthy)
+            Log.i("startStreaming: resetting previous stream state (force=$force, isSocketHealthy=$isSocketHealthy)")
+            stopStreaming(notifyPeer = false, keepVideoChannel = !force && isSocketHealthy)
         }
 
         restartJob?.cancel()
@@ -1724,6 +1712,7 @@ class StreamSession(
                         supportedSizes = sizes,
                         supportedFps = fps,
                         highSpeedSizes = camera.highSpeedSizes(cameraId),
+                        supportsNormalAe60 = camera.supportsNormalAe60(cameraId),
                     )
                 }.getOrElse { error ->
                     Log.e("camera configuration failed", error)
@@ -1845,9 +1834,6 @@ class StreamSession(
         // second, which is what the notification de-duplication below now also
         // guards against.
         stopStatsLoop()
-        thermalThrottled = false
-        preThermalBitrate = null
-        preThermalFps = null
         // Stop Camera2 capture session first so no requests are delivered
         // into a surface that is about to be released by MediaCodec.
         camera.stop()
@@ -1978,8 +1964,6 @@ class StreamSession(
     fun setExposure(compensation: Int) = camera.setExposure(compensation)
     fun setWhiteBalance(kelvin: Int?) = camera.setWhiteBalance(kelvin)
     fun setFocusDistance(diopters: Float?) = camera.setFocusDistance(diopters)
-    fun detectLenses() = camera.detectLenses()
-    fun switchLens(lens: com.phonecam.camera.camera.PhysicalLens) = camera.switchLens(lens)
 
     private fun kotlinx.serialization.json.JsonPrimitive.contentOrNullSafe(): String? =
         runCatching { content }.getOrNull()
@@ -2039,5 +2023,16 @@ class StreamSession(
 
         /** How long a finished outcome stays on screen before fading to Idle. */
         const val SEARCH_RESULT_MS = 4000L
+    }
+}
+
+internal fun snapOrientationDegrees(angle: Int): Int? {
+    if (angle < 0) return null
+    val normalized = ((angle % 360) + 360) % 360
+    return when {
+        normalized >= 315 || normalized < 45 -> 0
+        normalized in 45..134 -> 90
+        normalized in 135..224 -> 180
+        else -> 270
     }
 }

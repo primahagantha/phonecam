@@ -263,10 +263,12 @@ class ProtoTest {
             battery = 87,
             charging = true,
             thermal = "none",
+            orientation = 90,
         )
         val text = String(ControlCodec.encode(state), Charsets.UTF_8)
         assertTrue(text.contains("\"actualResolution\":\"1280x720\""))
         assertTrue(text.contains("\"streaming\":true"))
+        assertTrue(text.contains("\"orientation\":90"))
     }
 
     @Test

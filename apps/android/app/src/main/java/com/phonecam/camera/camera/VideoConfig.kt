@@ -91,12 +91,15 @@ object VideoConfigResolver {
         supportedSizes: List<Pair<Int, Int>>,
         supportedFps: List<Int>,
         /**
-         * Sizes the camera can do in a high speed session. A frame rate above the
-         * normal 30 is only reachable at one of these, so a 60 fps request is
-         * snapped to the nearest of them rather than passed through at a size the
-         * high speed session would reject.
+         * Sizes the camera can do in a high speed session. When normal AE does
+         * not support 60 fps, a 60 fps request is snapped to one of these sizes.
          */
         highSpeedSizes: List<Pair<Int, Int>> = emptyList(),
+        /**
+         * True when normal AE ranges support 60 fps (e.g. `[60, 60]` or `[30, 60]`),
+         * allowing 1080p60 without constraining to `highSpeedSizes`.
+         */
+        supportsNormalAe60: Boolean = false,
     ): ResolvedVideoConfig {
         if (supportedSizes.isEmpty()) {
             // No capability data yet: fall back to the most conservative preset
@@ -124,9 +127,8 @@ object VideoConfigResolver {
             else -> nearestFps(requested, supportedFps)
         }
 
-        // The high speed session fixes the size, so the size follows the rate
-        // rather than the other way round.
-        val finalSize = if (chosenFps >= 60 && highSpeedSizes.isNotEmpty()) {
+        // Only constrain to high-speed sizes when normal AE 60 fps is not available.
+        val finalSize = if (chosenFps >= 60 && !supportsNormalAe60 && highSpeedSizes.isNotEmpty()) {
             nearestSize(chosenSize.first, chosenSize.second, highSpeedSizes)
         } else {
             chosenSize

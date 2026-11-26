@@ -7,6 +7,7 @@ import android.hardware.camera2.params.StreamConfigurationMap
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.os.Build
 import android.util.Log
 import android.util.Size
 import com.phonecam.camera.protocol.CameraInfo
@@ -73,8 +74,15 @@ class CameraCapabilityProbe(private val context: Context) {
             else -> "unknown"
         }
 
-        val maxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+        val zoomRange = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+        } else {
+            null
+        }
+        val scalarMaxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
             ?.toFloat() ?: 1f
+        val minZoom = (zoomRange?.lower ?: 1f).coerceIn(0.1f, 1f)
+        val maxZoom = (zoomRange?.upper ?: scalarMaxZoom).coerceAtLeast(1f)
         val afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
         val focus = afModes?.any {
             it == CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_VIDEO ||
@@ -95,11 +103,11 @@ class CameraCapabilityProbe(private val context: Context) {
             fps = fps,
             torch = torch,
             focus = focus,
-            zoom = maxZoom > 1f,
+            zoom = maxZoom > 1f || minZoom < 1f,
             exposure = exposure,
             whiteBalance = whiteBalance,
-            minZoom = 1f,
-            maxZoom = maxZoom.coerceAtLeast(1f),
+            minZoom = minZoom,
+            maxZoom = maxZoom,
             orientationDegrees = sensorOrientation,
         )
     }
@@ -145,7 +153,7 @@ class CameraCapabilityProbe(private val context: Context) {
         return (normal + if (highSpeedSupports60 || maxFpsFromDuration >= 60 || candidates.any { it >= 60 }) listOf(60) else emptyList())
             .distinct()
             .sorted()
-            .ifEmpty { listOf(30, 60) }
+            .ifEmpty { listOf(30) }
     }
 
     /**

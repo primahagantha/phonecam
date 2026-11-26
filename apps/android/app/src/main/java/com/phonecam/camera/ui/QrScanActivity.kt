@@ -6,15 +6,23 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -71,11 +79,16 @@ class QrScanActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContent {
             PhoneCamTheme {
                 QrScannerScreen(
                     onPayload = { payload -> finishWith(payload) },
                     onRejected = { finishWith(null) },
+                    onClose = {
+                        setResult(Activity.RESULT_CANCELED)
+                        finish()
+                    },
                     onOpenSettings = { openAppSettings() },
                 )
             }
@@ -120,6 +133,7 @@ class QrScanActivity : ComponentActivity() {
 private fun QrScannerScreen(
     onPayload: (QrPayload) -> Unit,
     onRejected: () -> Unit,
+    onClose: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -138,9 +152,9 @@ private fun QrScannerScreen(
 
     // A scanner is only useful with a camera, so the prompt is raised on arrival
     // rather than behind a button: the user already expressed the intent by
-    // opening this screen.
+    // opening this screen. Only request CAMERA (never RECORD_AUDIO).
     LaunchedEffect(Unit) {
-        if (!granted) launcher.launch(context.permissionsToRequest())
+        if (!granted) launcher.launch(context.qrPermissionsToRequest())
     }
 
     // The camera permission can also change while the scanner is in the
@@ -182,9 +196,11 @@ private fun QrScannerScreen(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .fillMaxWidth()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
                     .padding(24.dp),
             ) {
-                CameraPermissionCard(onRequest = { launcher.launch(context.permissionsToRequest()) })
+                CameraPermissionCard(onRequest = { launcher.launch(context.qrPermissionsToRequest()) })
             }
         }
 
@@ -195,29 +211,54 @@ private fun QrScannerScreen(
             // behind the code turns `onBackground` white-on-white. The panel makes the
             // contrast a property of the theme again, whatever the camera is pointed
             // at.
-            Column(
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .padding(24.dp)
+                    .statusBarsPadding()
+                    .padding(16.dp)
                     .clip(PhoneCamShapes.Panel)
                     .background(MaterialTheme.colorScheme.surface)
                     .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PhoneCamShapes.Panel)
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    text = stringResource(R.string.qr_scan_prompt),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    text = stringResource(R.string.app_tagline),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.qr_scan_prompt),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = stringResource(R.string.app_tagline),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onClose) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = stringResource(R.string.action_close),
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        } else {
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(12.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.action_close),
+                    tint = MaterialTheme.colorScheme.onBackground,
                 )
             }
         }

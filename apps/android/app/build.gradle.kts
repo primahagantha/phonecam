@@ -61,6 +61,26 @@ android {
         }
     }
 
+    val releaseKeystorePath = System.getenv("PHONECAM_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+    val releaseKeystorePassword = System.getenv("PHONECAM_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+    val releaseKeyAlias = System.getenv("PHONECAM_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+    val releaseKeyPassword = System.getenv("PHONECAM_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+
+    signingConfigs {
+        if (releaseKeystorePath != null &&
+            releaseKeystorePassword != null &&
+            releaseKeyAlias != null &&
+            releaseKeyPassword != null
+        ) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -74,9 +94,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Debug signing so `assembleRelease` is usable for local device testing.
-            // A real release keystore is supplied through the environment later.
-            signingConfig = signingConfigs.getByName("debug")
+            // Use the CI/release keystore when supplied; fall back to debug only for local dev.
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -123,7 +142,6 @@ dependencies {
     implementation(libs.androidx.compose.material.icons)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.zxing.android.embedded)

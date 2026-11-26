@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <!-- Debug builds export CameraStreamService so automated ADB instrumentation/E2E tests
+             can drive loopbacks against com.phonecam.camera.debug. Non-loopback external hosts
+             are still rejected inside CameraStreamService. -->
+        <service
+            android:name=".service.CameraStreamService"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+</manifest>

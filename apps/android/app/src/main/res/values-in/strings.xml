@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PhoneCam</string>
+    <string name="app_tagline">Ponsel Anda, sebagai webcam untuk PC</string>
+
+    <!-- Foreground service notification -->
+    <string name="notification_channel_name">Sesi PhoneCam</string>
+    <string name="notification_channel_description">Menampilkan apakah PhoneCam siap atau sedang streaming.</string>
+    <string name="notification_title_ready">PhoneCam siap</string>
+    <string name="notification_title_connecting">PhoneCam sedang menghubungkan</string>
+    <string name="notification_title_streaming">PhoneCam sedang streaming</string>
+    <string name="notification_title_error">PhoneCam perlu perhatian</string>
+    <string name="notification_text_idle">Menunggu PhoneCam Desktop.</string>
+    <string name="notification_text_connecting">Mencari PC Anda...</string>
+    <string name="notification_text_connecting_to">Menghubungi %1$s</string>
+    <string name="notification_text_connected">Terhubung ke %1$s</string>
+    <string name="notification_text_streaming">Streaming ke %1$s</string>
+    <string name="notification_text_streaming_unknown">Streaming ke PC Anda</string>
+    <string name="notification_action_stop">Berhenti</string>
+    <string name="toast_stream_stopped">Stream dihentikan.</string>
+    <string name="toast_session_stopped">PhoneCam dihentikan.</string>
+
+    <!-- Permissions -->
+    <string name="permission_title">Akses kamera</string>
+    <string name="permission_rationale">PhoneCam mengirimkan kamera ponsel ini ke PC melalui jaringan Anda sendiri. Tidak ada yang direkam dan tidak ada yang diunggah.</string>
+    <string name="permission_action_grant">Izinkan akses kamera</string>
+    <string name="permission_denied_title">Akses kamera mati</string>
+    <string name="permission_denied_body">PhoneCam tidak dapat streaming tanpa akses kamera. Aktifkan di Pengaturan lalu jalankan PhoneCam kembali.</string>
+    <string name="permission_action_settings">Buka pengaturan</string>
+    <string name="notification_permission_warning">Notifikasi mati, sehingga status streaming tidak akan muncul di panel notifikasi. Streaming tetap berjalan.</string>
+    <string name="usb_hint_title">Debugging USB</string>
+    <string name="usb_hint_body">Koneksi kabel memerlukan debugging USB aktif di Opsi pengembang pada ponsel ini. Pengaturan → Tentang ponsel → ketuk versi OS 7 kali, lalu Pengaturan → Pengaturan tambahan → Opsi pengembang → Debugging USB.</string>
+    <string name="action_dismiss">Tutup</string>
+
+    <!-- Connection -->
+    <string name="section_connection">Koneksi</string>
+    <string name="section_connection_subtitle">Wi-Fi (Jaringan Sama) atau Kabel USB</string>
+    <string name="action_start_session">Mulai PhoneCam</string>
+    <string name="action_stop_session">Hentikan PhoneCam</string>
+    <string name="action_search_now">Cari lagi</string>
+    <string name="action_scan_qr">Pindai kode pairing</string>
+    <string name="action_connect">Hubungkan</string>
+    <string name="action_forget_pairing">Lupakan PC ini</string>
+    <string name="session_stopped">PhoneCam berhenti. Mulai untuk mencari PC Anda.</string>
+    <string name="session_running">PhoneCam tetap berjalan saat layar ini dibuka atau ditutup.</string>
+    <string name="stream_start_hint">PhoneCam Desktop memulai dan menghentikan stream. Ponsel ini dapat mengakhirinya dengan memutus koneksi.</string>
+    <string name="section_phone_preview">Ponsel ini</string>
+    <string name="preview_toggle_title">Tampilkan gambar di ponsel ini</string>
+    <string name="preview_toggle_body">Viewfinder adalah output kamera kedua. Mematikannya menghemat daya dan suhu — PC Anda tetap menerima gambar.</string>
+    <string name="preview_toggle_streaming_note">Perubahan langsung diterapkan. PC Anda tetap menerima gambar dalam kondisi apa pun.</string>
+    <string name="discovered_title">PC di jaringan ini</string>
+    <string name="discovered_empty">Belum ada PC ditemukan. Pastikan PhoneCam Desktop berjalan di jaringan yang sama, atau pindai kode pairing-nya.</string>
+    <string name="discovered_empty_not_found">Tidak ada yang menjawab pencarian tersebut. Periksa apakah PhoneCam Desktop berjalan di jaringan yang sama, atau pindai kode pairing-nya.</string>
+    <string name="search_status_searching">Mencari PC Anda...</string>
+    <string name="search_status_not_found">Tidak ada PC yang menjawab pencarian.</string>
+    <plurals name="search_status_found">
+        <item quantity="one">Ditemukan %1$d PC.</item>
+        <item quantity="other">Ditemukan %1$d PC.</item>
+    </plurals>
+    <string name="discovered_state_present">Terdeteksi</string>
+    <string name="discovered_state_pairing">Pairing terbuka</string>
+    <string name="discovered_state_known">Sudah dipasangkan</string>
+    <string name="discovered_state_busy">Sibuk dengan ponsel lain</string>
+    <string name="paired_title">PC Terpasang</string>
+    <string name="paired_none">Belum ada PC terpasang</string>
+    <string name="manual_title">Hubungkan lewat IP Wi-Fi / LAN</string>
+    <string name="action_manual_show">Hubungkan lewat alamat IP Wi-Fi</string>
+    <string name="action_manual_hide">Sembunyikan formulir IP Wi-Fi</string>
+    <string name="manual_host_label">Alamat PC</string>
+    <string name="manual_host_hint">192.168.1.24</string>
+    <string name="manual_port_label">Port</string>
+    <string name="manual_hint">Gunakan ini jika penemuan otomatis diblokir di jaringan Wi-Fi Anda. Port default adalah 48721. Untuk kabel USB, gunakan 127.0.0.1.</string>
+    <string name="error_invalid_host">Masukkan alamat PC Anda, misalnya 192.168.1.24.</string>
+    <string name="error_invalid_port">Masukkan port antara 1 dan 65535.</string>
+    <string name="error_invalid_qr">Kode tersebut bukan kode pairing PhoneCam.</string>
+    <string name="qr_scan_prompt">Arahkan kamera ke kode di PC Anda</string>
+    <string name="paired_message">Memasangkan dengan %1$s</string>
+    <string name="forgotten_message">PC ini telah dilupakan.</string>
+
+    <!-- Status -->
+    <string name="section_status">Status</string>
+    <string name="phase_idle">Siaga</string>
+    <string name="phase_discovering">Mencari</string>
+    <string name="phase_connecting">Menghubungkan</string>
+    <string name="phase_connected">Terhubung</string>
+    <string name="phase_streaming">Streaming</string>
+    <string name="phase_reconnecting">Menghubungkan ulang</string>
+    <string name="phase_error">Tidak terhubung</string>
+    <string name="phase_class_live">Aktif</string>
+    <string name="phase_class_ready">Siap</string>
+    <string name="phase_class_working">Memproses</string>
+    <string name="phase_class_problem">Perlu perhatian</string>
+    <string name="phase_class_idle">Tidak berjalan</string>
+    <string name="label_pc">PC</string>
+    <string name="label_transport">Koneksi</string>
+    <string name="transport_lan">Jaringan lokal</string>
+    <string name="transport_usb">USB</string>
+    <string name="transport_none">Tidak terhubung</string>
+    <string name="label_address">Alamat</string>
+    <string name="label_camera_in_use">Kamera</string>
+    <string name="label_requested_quality">Diminta</string>
+    <string name="label_actual_quality">Dikirim</string>
+    <string name="label_stream_fps">Laju bingkai stream</string>
+    <string name="label_dropped">Bingkai terlewat</string>
+    <string name="label_bitrate">Bitrate</string>
+    <string name="label_battery">Baterai</string>
+    <string name="label_thermal">Suhu ponsel</string>
+    <string name="value_unknown">Tidak diketahui</string>
+    <string name="value_not_streaming">Tidak streaming</string>
+    <string name="value_auto">Otomatis</string>
+    <string name="value_yes">Ya</string>
+    <string name="value_no">Tidak</string>
+    <string name="value_on">Aktif</string>
+    <string name="format_resolution">%1$d x %2$d</string>
+    <string name="format_fps">%1$d fps</string>
+    <string name="format_fps_decimal">%1$.1f fps</string>
+    <string name="format_bitrate">%1$.1f Mbps</string>
+    <string name="format_percent">%1$d%%</string>
+    <string name="format_dropped">%1$.1f%%</string>
+    <string name="battery_charging">Mengisi daya</string>
+    <string name="battery_on_battery">Menggunakan baterai</string>
+    <string name="thermal_none">Normal</string>
+    <string name="thermal_light">Agak hangat</string>
+    <string name="thermal_moderate">Hangat</string>
+    <string name="thermal_severe">Panas</string>
+    <string name="thermal_critical">Sangat panas</string>
+    <string name="thermal_emergency">Terlalu panas</string>
+    <string name="thermal_shutdown">Kelebihan panas</string>
+    <string name="advice_thermal_moderate">Ponsel Anda mulai hangat. Resolusi atau frame rate yang lebih rendah akan menjaga stream tetap stabil.</string>
+    <string name="advice_thermal_severe">Suhu ponsel semakin tinggi. Turunkan resolusi atau frame rate, atau hubungkan pengisi daya.</string>
+    <string name="advice_battery_low">Baterai ponsel lemah. Pertimbangkan untuk menghubungkan pengisi daya agar stream terus berjalan.</string>
+    <string name="advice_battery_very_low">Baterai ponsel sangat lemah. Hubungkan pengisi daya agar stream terus berjalan.</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_status">Status</string>
+    <string name="nav_camera">Kamera</string>
+    <string name="nav_output">Output</string>
+    <string name="nav_diagnostics">Diagnostik</string>
+
+    <!-- Camera and quality -->
+    <string name="section_camera">Kamera</string>
+    <string name="section_output">Output</string>
+    <string name="camera_owner_note">PC Anda memilih pengaturan gambar saat streaming. Anda dapat mengganti kamera di sini kapan saja.</string>
+    <string name="camera_none">Belum ada kamera yang dilaporkan.</string>
+    <string name="camera_loading">Mencari kamera ponsel ini...</string>
+    <string name="camera_capabilities_title">Kemampuan kamera ini</string>
+    <string name="camera_capabilities_note">Ini adalah daftar kemampuan, bukan sakelar. PC Anda memilih apakah akan menggunakannya saat streaming.</string>
+    <string name="quality_ladder_title">Tingkat kualitas</string>
+    <string name="quality_ladder_note">Tingkat yang terisi adalah yang sedang dikirim. Tingkat bergaris tepi didukung tetapi tidak digunakan.</string>
+    <string name="settings_title">Pengaturan gambar</string>
+    <string name="settings_note">Pengaturan ini mengikuti permintaan PC Anda. Ubah di PhoneCam Desktop.</string>
+    <string name="capability_available">Didukung</string>
+    <string name="capability_unavailable">Tidak didukung</string>
+    <string name="token_state_in_use">Digunakan</string>
+    <string name="token_state_available">Tersedia</string>
+    <string name="token_state_unavailable">Tidak tersedia</string>
+    <string name="token_state_none">Tanpa status</string>
+    <string name="camera_back">Kamera belakang</string>
+    <string name="camera_front">Kamera depan</string>
+    <string name="camera_external">Kamera eksternal</string>
+    <string name="camera_id">Kamera %1$s</string>
+    <string name="camera_switch_action">Ganti ke %1$s</string>
+    <string name="camera_switch_selected">%1$s, digunakan</string>
+    <string name="camera_tile_in_use">Digunakan</string>
+    <string name="camera_tile_switch">Ketuk untuk pilih</string>
+    <string name="camera_selected">Menggunakan %1$s (%2$s)</string>
+    <string name="camera_none_selected">Tidak ada kamera dipilih.</string>
+    <string name="control_resolution">Resolusi</string>
+    <string name="control_frame_rate">Frame rate</string>
+    <string name="control_bitrate">Bitrate</string>
+    <string name="control_quality_mode">Mode kualitas</string>
+    <string name="control_mirror">Cermin</string>
+    <string name="control_rotation">Rotasi</string>
+    <string name="control_torch">Lampu kilat</string>
+    <string name="control_zoom">Zoom</string>
+    <string name="control_screen_mode">Layar ponsel</string>
+    <string name="control_focus">Autofokus</string>
+    <string name="control_exposure">Eksposur</string>
+    <string name="control_white_balance">White balance</string>
+    <string name="quality_auto">Otomatis</string>
+    <string name="quality_manual">Manual</string>
+    <string name="screen_keep_on">Tetap menyala</string>
+    <string name="screen_dim">Redup</string>
+    <string name="screen_black">Layar hitam</string>
+    <string name="rotation_degrees">%1$d derajat</string>
+    <string name="zoom_factor">%1$.1fx</string>
+    <string name="reason_camera_no_resolutions">Kamera ini tidak melaporkan resolusi yang dapat digunakan.</string>
+    <string name="reason_no_flash">Kamera ini tidak memiliki lampu kilat.</string>
+    <string name="reason_no_zoom">Kamera ini tidak mendukung zoom.</string>
+    <string name="reason_no_focus">Kamera ini tidak mendukung autofokus.</string>
+    <string name="reason_no_exposure">Kamera ini tidak melaporkan kontrol eksposur.</string>
+    <string name="reason_no_white_balance">Kamera ini tidak melaporkan kontrol white balance.</string>
+    <string name="capability_resolutions">Resolusi</string>
+    <string name="capability_fps">Frame rate</string>
+    <string name="capability_zoom">Rentang zoom</string>
+    <string name="capability_orientation">Rotasi sensor</string>
+    <string name="capability_none">Tidak dilaporkan oleh ponsel ini.</string>
+
+    <!-- Notices and errors -->
+    <string name="banner_notice_title">Menggunakan pengaturan yang didukung</string>
+    <string name="banner_approval_title">Menunggu PC Anda</string>
+    <string name="banner_error_title">PhoneCam tidak dapat melanjutkan</string>
+    <string name="banner_local_title">Perhatian</string>
+    <string name="action_retry">Coba lagi</string>
+
+    <!-- Diagnostics -->
+    <string name="section_diagnostics">Diagnostik</string>
+    <string name="diagnostics_device_id">ID Perangkat</string>
+    <string name="diagnostics_device_name">Nama perangkat</string>
+    <string name="diagnostics_secret">Sidik jari pairing</string>
+    <string name="diagnostics_secret_none">Belum terpasang</string>
+    <string name="diagnostics_encoder">Encoder H.264</string>
+    <string name="diagnostics_encoder_hardware">Perangkat keras</string>
+    <string name="diagnostics_encoder_software">Perangkat lunak</string>
+    <string name="diagnostics_not_detected">Belum terdeteksi</string>
+    <string name="diagnostics_cameras">Kamera ditemukan</string>
+    <string name="diagnostics_app_version">Versi aplikasi</string>
+    <string name="action_refresh_capabilities">Baca ulang kemampuan kamera</string>
+    <string name="action_copy_log">Salin log</string>
+    <string name="action_clear_log">Bersihkan log</string>
+    <string name="action_show_log">Tampilkan log</string>
+    <string name="action_hide_log">Sembunyikan log</string>
+    <string name="diagnostics_log_empty">Belum ada yang dicatat.</string>
+    <string name="diagnostics_copied">Diagnostik disalin ke papan klip.</string>
+    <string name="action_copy_report">Salin laporan</string>
+    <string name="action_send_report">Kirim laporan</string>
+    <string name="diagnostics_report_copied">Laporan disalin. Tempelkan di mana pun Anda ingin memperbaikinya.</string>
+    <string name="report_subject">Laporan bug PhoneCam</string>
+
+    <!-- Toasts -->
+    <string name="toast_camera_switched">Beralih ke %1$s</string>
+    <string name="toast_qr_dispatched">Kode pairing diterima. Menghubungkan…</string>
+    <string name="toast_connected_usb">Terhubung ke %1$s melalui kabel</string>
+    <string name="toast_connected_wifi">Terhubung ke %1$s melalui Wi-Fi</string>
+    <string name="toast_streaming_started">Streaming dimulai</string>
+    <string name="toast_reconnecting">Koneksi terputus. Menghubungkan ulang\u2026</string>
+    <string name="toast_your_pc">PC Anda</string>
+
+    <!-- Streaming overlay -->
+    <string name="overlay_streaming_title">Streaming ke %1$s</string>
+    <string name="overlay_streaming_title_unknown">Streaming ke PC Anda</string>
+    <string name="overlay_hint">Ketuk untuk tampilkan kontrol</string>
+    <string name="action_stop_stream">Hentikan streaming</string>
+
+    <!-- Power saving, blackout & dialogs -->
+    <string name="action_blackout">Layar Hitam</string>
+    <string name="action_blackout_oled">Layar Hitam (OLED 0-nit)</string>
+    <string name="action_hide_preview">Matikan Preview</string>
+    <string name="action_show_preview">Nyalakan Preview</string>
+    <string name="power_saving_title">Preview Dimatikan (Hemat Baterai &amp; Suhu)</string>
+    <string name="power_saving_body">Kamera tetap streaming ke PC dengan performa penuh. Rendering layar dimatikan untuk menghemat baterai &amp; menjaga suhu HP tetap dingin.</string>
+    <string name="blackout_redim">Gelapkan</string>
+    <string name="blackout_exit">Keluar Layar Hitam</string>
+    <string name="blackout_live_badge">LIVE</string>
+    <string name="connecting_searching_lan">Mencari PC di jaringan lokal…</string>
+    <string name="crash_dialog_title">Crash Sesi Terdeteksi</string>
+    <string name="crash_dialog_body">PhoneCam berhenti tiba-tiba pada sesi sebelumnya. Anda dapat melaporkannya ke GitHub untuk membantu kami memperbaikinya dengan cepat.</string>
+    <string name="action_report_github">Laporkan ke GitHub</string>
+    <string name="action_copy_dismiss">Salin &amp; Tutup</string>
+    <string name="action_close">Tutup</string>
+    <string name="control_anti_flicker">Anti-Kedip</string>
+    <string name="anti_flicker_auto">Otomatis</string>
+    <string name="anti_flicker_50hz">50 Hz (Listrik)</string>
+    <string name="anti_flicker_60hz">60 Hz (Listrik)</string>
+    <string name="anti_flicker_off">Mati</string>
+    <string name="clipboard_crash_report">Laporan Crash</string>
+    <string name="clipboard_diagnostics_report">Laporan Diagnostik</string>
+    <string name="clipboard_log">Log PhoneCam</string>
+</resources>

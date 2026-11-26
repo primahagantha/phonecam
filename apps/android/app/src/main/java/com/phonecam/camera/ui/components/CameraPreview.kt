@@ -8,11 +8,13 @@ import android.view.TextureView
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.phonecam.camera.ui.theme.PhoneCamShapes
 
@@ -46,14 +48,19 @@ fun CameraPreview(
     displayRotationDegrees: Int = 0,
 ) {
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val clipModifier = if (isLandscape) Modifier else Modifier.clip(PhoneCamShapes.Panel)
-
-    Box(
-        modifier = modifier
+    val sizeModifier = if (isLandscape) {
+        modifier
+            .heightIn(max = 220.dp)
+            .aspectRatio(aspectRatio)
+            .clip(PhoneCamShapes.Panel)
+    } else {
+        modifier
             .fillMaxWidth()
             .aspectRatio(aspectRatio)
-            .then(clipModifier),
-    ) {
+            .clip(PhoneCamShapes.Panel)
+    }
+
+    Box(modifier = sizeModifier) {
         AndroidView(
             modifier = Modifier.matchParentSize(),
             factory = { viewContext ->

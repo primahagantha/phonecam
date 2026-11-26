@@ -8,6 +8,9 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import com.phonecam.camera.protocol.Proto
 import com.phonecam.camera.service.CameraStreamService
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
 
 /**
  * The intent vocabulary the UI and the foreground service share.
@@ -56,6 +59,7 @@ object SessionIntents {
     const val EXTRA_CAMERA = "camera"
     const val EXTRA_STOP_REASON = "stopReason"
     const val EXTRA_PREVIEW_ENABLED = "previewEnabled"
+    const val EXTRA_INTERNAL_TOKEN = "com.phonecam.camera.extra.INTERNAL_TOKEN"
 
     const val STOP_REASON_USER = "user"
     const val STOP_REASON_SYSTEM = "system"
@@ -63,8 +67,30 @@ object SessionIntents {
     /** The desktop core's TCP port; shared with the protocol rather than re-typed. */
     const val DEFAULT_PORT = Proto.SERVICE_PORT
 
+    /**
+     * Per-process secret attached to intents constructed inside this app process.
+     * External callers (e.g. ADB debug test harnesses) cannot forge this value and
+     * are restricted to loopback endpoints.
+     */
+    private val processToken: String by lazy {
+        val bytes = ByteArray(32)
+        SecureRandom().nextBytes(bytes)
+        Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+    }
+
+    internal fun isInternalIntent(intent: Intent?): Boolean {
+        val provided = intent?.getStringExtra(EXTRA_INTERNAL_TOKEN) ?: return false
+        return MessageDigest.isEqual(
+            provided.toByteArray(Charsets.UTF_8),
+            processToken.toByteArray(Charsets.UTF_8),
+        )
+    }
+
     private fun intent(context: Context, action: String, block: Intent.() -> Unit = {}): Intent =
-        Intent(context, CameraStreamService::class.java).setAction(action).apply(block)
+        Intent(context, CameraStreamService::class.java)
+            .setAction(action)
+            .putExtra(EXTRA_INTERNAL_TOKEN, processToken)
+            .apply(block)
 
     fun start(context: Context): Intent = intent(context, ACTION_START)
 

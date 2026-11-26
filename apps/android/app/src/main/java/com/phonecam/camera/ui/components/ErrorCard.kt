@@ -103,7 +103,7 @@ fun ErrorCard(
                         contentColor = MaterialTheme.colorScheme.error,
                     ),
                 ) {
-                    Text("Report to GitHub")
+                    Text(stringResource(R.string.action_report_github))
                 }
             }
         }

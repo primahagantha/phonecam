@@ -67,9 +67,9 @@ class DialResultMappingTest {
     }
 
     @Test
-    fun `a pairing-token dial reported as expired means pair again`() {
+    fun `a pairing-token dial reported as expired returns TokenExpired`() {
         assertEquals(
-            DialResult.CredentialsRejected,
+            DialResult.TokenExpired,
             map(HandshakeStatus.TOKEN_EXPIRED, AuthMode.PAIRING_TOKEN),
         )
     }

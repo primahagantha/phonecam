@@ -85,9 +85,9 @@ sealed class DialResult {
  * than a stale secret, `denied` there is a genuine refusal, so it stays
  * [DialResult.Denied].
  *
- * [HandshakeStatus.TOKEN_EXPIRED] is [DialResult.CredentialsRejected] on both
- * modes: the QR path reports an unknown or expired token this way, and there is
- * nothing to wait for.
+ * [HandshakeStatus.TOKEN_EXPIRED] maps to [DialResult.TokenExpired] on pairing-token
+ * dials so the expired-QR message is reachable, and [DialResult.CredentialsRejected]
+ * on device-secret dials so stale credentials trigger silent re-pairing.
  */
 fun dialResultFor(
     status: HandshakeStatus,
@@ -100,7 +100,8 @@ fun dialResultFor(
         if (authMode == AuthMode.DEVICE_SECRET) DialResult.CredentialsRejected else DialResult.Denied
     HandshakeStatus.VERSION_MISMATCH -> DialResult.VersionMismatch
     HandshakeStatus.BUSY -> DialResult.Busy
-    HandshakeStatus.TOKEN_EXPIRED -> DialResult.CredentialsRejected
+    HandshakeStatus.TOKEN_EXPIRED ->
+        if (authMode == AuthMode.PAIRING_TOKEN) DialResult.TokenExpired else DialResult.CredentialsRejected
     HandshakeStatus.BAD_REQUEST -> DialResult.BadRequest
     HandshakeStatus.UNAUTHORIZED_SOURCE -> DialResult.UnauthorizedSource
 }

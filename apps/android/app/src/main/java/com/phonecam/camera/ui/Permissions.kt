@@ -35,15 +35,27 @@ internal fun Context.hasNotificationPermission(): Boolean {
 }
 
 /**
- * What to ask for when the user wants the camera and microphone.
+ * Camera and notification permissions needed to start a foreground camera session.
+ * Microphone permission is kept separate and requested only when audio streaming is used.
  */
 internal fun Context.permissionsToRequest(): Array<String> = buildList {
     add(Manifest.permission.CAMERA)
-    add(Manifest.permission.RECORD_AUDIO)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         add(Manifest.permission.POST_NOTIFICATIONS)
     }
 }.toTypedArray()
+
+/**
+ * Camera-only permission set for the QR pairing scanner (never requests RECORD_AUDIO).
+ */
+internal fun Context.qrPermissionsToRequest(): Array<String> =
+    arrayOf(Manifest.permission.CAMERA)
+
+/**
+ * Microphone permission, requested separately from camera and notification permissions.
+ */
+internal fun Context.audioPermissionsToRequest(): Array<String> =
+    arrayOf(Manifest.permission.RECORD_AUDIO)
 
 /**
  * Whether the platform will still show a camera dialog.

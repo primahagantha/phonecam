@@ -10,8 +10,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.view.Surface
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -62,6 +64,8 @@ class CameraStreamService : Service() {
     private var session: StreamSession? = null
     private var stateJob: Job? = null
     private var foregroundStarted = false
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     /**
      * What the currently posted notification displays.
@@ -169,7 +173,7 @@ class CameraStreamService : Service() {
             SessionIntents.ACTION_ACKNOWLEDGE_NOTICE -> active.acknowledgeNotice()
 
             SessionIntents.ACTION_SET_PREVIEW -> {
-                if (intent == null || !intent.hasExtra(SessionIntents.EXTRA_PREVIEW_ENABLED)) {
+                if (!intent.hasExtra(SessionIntents.EXTRA_PREVIEW_ENABLED)) {
                     Log.w("preview change without a value")
                 } else {
                     active.setPreviewEnabled(
@@ -179,39 +183,46 @@ class CameraStreamService : Service() {
             }
 
             SessionIntents.ACTION_CONNECT_DISCOVERED -> {
-                val host = intent?.getStringExtra(SessionIntents.EXTRA_HOST)
-                val port = intent?.getIntExtra(SessionIntents.EXTRA_PORT, SessionIntents.DEFAULT_PORT)
-                    ?: SessionIntents.DEFAULT_PORT
-                val serverId = intent?.getStringExtra(SessionIntents.EXTRA_SERVER_ID)
+                val host = intent.getStringExtra(SessionIntents.EXTRA_HOST)
+                val port = intent.getIntExtra(SessionIntents.EXTRA_PORT, SessionIntents.DEFAULT_PORT)
+                val serverId = intent.getStringExtra(SessionIntents.EXTRA_SERVER_ID)
                 val discovered = active.state.value.discovered
                     .firstOrNull { it.serverId == serverId && it.host == host }
-                when {
-                    discovered != null -> active.connectTo(discovered)
-                    host != null -> active.connectManually(host, port)
-                    else -> Log.w("connect request without a host")
+                val targetHost = discovered?.host ?: host
+                if (!isAuthorizedConnectTarget(intent, targetHost) ||
+                    (host != null && !isAuthorizedConnectTarget(intent, host))
+                ) {
+                    Log.w("rejected external $action for non-loopback host")
+                } else {
+                    when {
+                        discovered != null -> active.connectTo(discovered)
+                        host != null -> active.connectManually(host, port)
+                        else -> Log.w("connect request without a host")
+                    }
                 }
             }
 
             SessionIntents.ACTION_CONNECT_MANUAL -> {
-                val host = intent?.getStringExtra(SessionIntents.EXTRA_HOST)
-                val port = intent?.getIntExtra(SessionIntents.EXTRA_PORT, SessionIntents.DEFAULT_PORT)
-                    ?: SessionIntents.DEFAULT_PORT
-                if (host.isNullOrBlank()) {
-                    Log.w("manual connect without a host")
-                } else {
-                    active.connectManually(host, port)
+                val host = intent.getStringExtra(SessionIntents.EXTRA_HOST)
+                val port = intent.getIntExtra(SessionIntents.EXTRA_PORT, SessionIntents.DEFAULT_PORT)
+                when {
+                    host.isNullOrBlank() -> Log.w("manual connect without a host")
+                    !isAuthorizedConnectTarget(intent, host) ->
+                        Log.w("rejected external $action for non-loopback host")
+                    else -> active.connectManually(host, port)
                 }
             }
 
             SessionIntents.ACTION_CONNECT_TOKEN -> {
-                val host = intent?.getStringExtra(SessionIntents.EXTRA_HOST)
-                val port = intent?.getIntExtra(SessionIntents.EXTRA_PORT, SessionIntents.DEFAULT_PORT)
-                    ?: SessionIntents.DEFAULT_PORT
-                val token = intent?.getStringExtra(SessionIntents.EXTRA_TOKEN)
-                if (host.isNullOrBlank() || token.isNullOrBlank()) {
-                    Log.w("pairing connect without a host or token")
-                } else {
-                    active.connectWithToken(host, port, token)
+                val host = intent.getStringExtra(SessionIntents.EXTRA_HOST)
+                val port = intent.getIntExtra(SessionIntents.EXTRA_PORT, SessionIntents.DEFAULT_PORT)
+                val token = intent.getStringExtra(SessionIntents.EXTRA_TOKEN)
+                when {
+                    host.isNullOrBlank() || token.isNullOrBlank() ->
+                        Log.w("pairing connect without a host or token")
+                    !isAuthorizedConnectTarget(intent, host) ->
+                        Log.w("rejected external $action for non-loopback host")
+                    else -> active.connectWithToken(host, port, token)
                 }
             }
 
@@ -230,6 +241,7 @@ class CameraStreamService : Service() {
         if (liveInstance === this) liveInstance = null
         stateJob?.cancel()
         stateJob = null
+        releaseStreamLocks()
         synchronized(lock) {
             session?.stop()
             session = null
@@ -252,6 +264,7 @@ class CameraStreamService : Service() {
             setRunning(true)
             stateJob = scope.launch {
                 created.state.collect { state ->
+                    updateStreamingLocks(state.isStreaming)
                     publish(state)
                     updateNotification(state)
                 }
@@ -264,6 +277,7 @@ class CameraStreamService : Service() {
     private fun endSession() {
         stateJob?.cancel()
         stateJob = null
+        releaseStreamLocks()
         synchronized(lock) {
             session?.stop()
             session = null
@@ -274,6 +288,63 @@ class CameraStreamService : Service() {
         setRunning(false)
         stopSelf()
         Log.i("session ended by the user")
+    }
+
+    private fun updateStreamingLocks(streaming: Boolean) {
+        if (streaming) {
+            acquireStreamLocks()
+        } else {
+            releaseStreamLocks()
+        }
+    }
+
+    private fun acquireStreamLocks() {
+        synchronized(lock) {
+            runCatching {
+                val wl = wakeLock ?: (getSystemService(Context.POWER_SERVICE) as? PowerManager)
+                    ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
+                    ?.apply { setReferenceCounted(false) }
+                    ?.also { wakeLock = it }
+                if (wl != null && !wl.isHeld) {
+                    wl.acquire()
+                }
+            }.onFailure {
+                Log.w("could not acquire wake lock: ${it.javaClass.simpleName}")
+            }
+
+            runCatching {
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                val wfl = wifiLock ?: (applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
+                    ?.createWifiLock(mode, WIFI_LOCK_TAG)
+                    ?.apply { setReferenceCounted(false) }
+                    ?.also { wifiLock = it }
+                if (wfl != null && !wfl.isHeld) {
+                    wfl.acquire()
+                }
+            }.onFailure {
+                Log.w("could not acquire wifi lock: ${it.javaClass.simpleName}")
+            }
+        }
+    }
+
+    private fun releaseStreamLocks() {
+        synchronized(lock) {
+            runCatching {
+                if (wakeLock?.isHeld == true) wakeLock?.release()
+            }.onFailure {
+                Log.w("could not release wake lock: ${it.javaClass.simpleName}")
+            }
+            runCatching {
+                if (wifiLock?.isHeld == true) wifiLock?.release()
+            }.onFailure {
+                Log.w("could not release wifi lock: ${it.javaClass.simpleName}")
+            }
+        }
     }
 
     // ------------------------------------------------------------ notification
@@ -487,6 +558,18 @@ class CameraStreamService : Service() {
         private const val NOTIFICATION_ID = 4201
         private const val REQUEST_OPEN = 10
         private const val REQUEST_STOP = 11
+        private const val WAKE_LOCK_TAG = "PhoneCam::StreamWakeLock"
+        private const val WIFI_LOCK_TAG = "PhoneCam::WifiLock"
+
+        internal fun isLoopbackHost(host: String?): Boolean {
+            val normalized = host?.trim()?.lowercase() ?: return false
+            return normalized == "127.0.0.1" || normalized == "localhost" || normalized == "::1"
+        }
+
+        internal fun isAuthorizedConnectTarget(intent: Intent?, host: String?): Boolean {
+            if (SessionIntents.isInternalIntent(intent)) return true
+            return isLoopbackHost(host)
+        }
 
         private val _sessionState = MutableStateFlow(SessionState())
 

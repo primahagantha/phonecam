@@ -26,10 +26,14 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -115,7 +119,6 @@ import com.phonecam.camera.ui.components.OutputCard
 import com.phonecam.camera.ui.components.PermissionDeniedCard
 import com.phonecam.camera.ui.components.PhasePill
 import com.phonecam.camera.ui.components.StatusCard
-import com.phonecam.camera.ui.components.StreamingOverlay
 import com.phonecam.camera.ui.theme.PhoneCamShapes
 import com.phonecam.camera.ui.theme.PhoneCamTheme
 
@@ -200,22 +203,37 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
     // Active only while streaming, so opening the app never pins the screen on.
     val screenMode = ScreenMode.fromWire(state.screenMode)
     var localBlackoutActive by rememberSaveable { mutableStateOf(false) }
+    var blackoutDismissed by rememberSaveable(state.screenMode) { mutableStateOf(false) }
 
     LaunchedEffect(state.phase) {
         if (state.phase != SessionState.Phase.STREAMING) {
             localBlackoutActive = false
+            blackoutDismissed = false
         }
     }
 
     val isStreaming = state.phase == SessionState.Phase.STREAMING
-    val isBlackoutMode = (screenMode == ScreenMode.BLACK || localBlackoutActive)
+    val isBlackoutMode = !blackoutDismissed && (screenMode == ScreenMode.BLACK || localBlackoutActive)
+    val effectiveScreenMode = when {
+        localBlackoutActive -> ScreenMode.BLACK
+        blackoutDismissed && screenMode == ScreenMode.BLACK -> ScreenMode.KEEP_ON
+        else -> screenMode
+    }
     ApplyScreenMode(
-        mode = if (localBlackoutActive) ScreenMode.BLACK else screenMode,
+        mode = effectiveScreenMode,
         active = isStreaming,
     )
 
-    // In `black` mode, a tap uncovers the UI until the mode changes again.
-    var blackoutPeeked by remember(screenMode, localBlackoutActive) { mutableStateOf(false) }
+    // In `black` mode, a tap uncovers the UI; after 5s of inactivity it auto-dims back.
+    var blackoutPeeked by remember(screenMode, localBlackoutActive, blackoutDismissed) { mutableStateOf(false) }
+    var blackoutInteractionTick by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(isStreaming, isBlackoutMode, blackoutPeeked, blackoutInteractionTick) {
+        if (isStreaming && isBlackoutMode && blackoutPeeked) {
+            delay(5_000L)
+            blackoutPeeked = false
+        }
+    }
 
     // The selected destination survives rotation. Held as an ordinal because the
     // saveable registry takes primitives, not enums.
@@ -344,16 +362,17 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
     var pendingCrashReport by remember { mutableStateOf(com.phonecam.camera.protocol.CrashReporter.readPendingCrashReport(context)) }
     if (pendingCrashReport != null) {
         val report = pendingCrashReport!!
+        val crashClipLabel = stringResource(R.string.clipboard_crash_report)
         AlertDialog(
             onDismissRequest = {
                 com.phonecam.camera.protocol.CrashReporter.clearPendingCrashReport(context)
                 pendingCrashReport = null
             },
-            title = { Text("Session Crash Detected") },
+            title = { Text(stringResource(R.string.crash_dialog_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "PhoneCam stopped unexpectedly in a previous session. You can report this to GitHub to help us fix it quickly.",
+                        stringResource(R.string.crash_dialog_body),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Text(
@@ -367,7 +386,7 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                 Button(
                     onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Crash Report", report))
+                        clipboard.setPrimaryClip(ClipData.newPlainText(crashClipLabel, report))
                         val intent = com.phonecam.camera.protocol.CrashReporter.buildGitHubIssueIntent(
                             context = context,
                             title = "[Crash] Android App Crash Report",
@@ -376,27 +395,40 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         runCatching { context.startActivity(intent) }
                         com.phonecam.camera.protocol.CrashReporter.clearPendingCrashReport(context)
                         pendingCrashReport = null
-                    }
+                    },
                 ) {
-                    Text("Report to GitHub")
+                    Text(stringResource(R.string.action_report_github))
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Crash Report", report))
+                        clipboard.setPrimaryClip(ClipData.newPlainText(crashClipLabel, report))
                         com.phonecam.camera.protocol.CrashReporter.clearPendingCrashReport(context)
                         pendingCrashReport = null
-                    }
+                    },
                 ) {
-                    Text("Copy & Dismiss")
+                    Text(stringResource(R.string.action_copy_dismiss))
                 }
-            }
+            },
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(isStreaming, isBlackoutMode, blackoutPeeked) {
+                if (isStreaming && isBlackoutMode && blackoutPeeked) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent(PointerEventPass.Initial)
+                            blackoutInteractionTick++
+                        }
+                    }
+                }
+            },
+    ) {
         Scaffold(
             snackbarHost = { SnackbarHost(snackbarHost) },
             containerColor = MaterialTheme.colorScheme.background,
@@ -460,6 +492,7 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         onPreviewEnabled = { enabled -> viewModel.setPreviewEnabled(enabled) },
                         onEnableBlackout = {
                             localBlackoutActive = true
+                            blackoutDismissed = false
                             blackoutPeeked = false
                         },
                     )
@@ -475,6 +508,7 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         onPreviewEnabled = { enabled -> viewModel.setPreviewEnabled(enabled) },
                         onEnableBlackout = {
                             localBlackoutActive = true
+                            blackoutDismissed = false
                             blackoutPeeked = false
                         },
                     )
@@ -495,25 +529,19 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
         }
 
         if (isStreaming && isBlackoutMode && blackoutPeeked) {
-            // When peeked, tapping outside the controls returns back to black ambient mode
-            Box(
+            // Floating non-blocking controls when peeking out of OLED blackout mode.
+            // Does not intercept taps elsewhere; auto-dims after 5s of inactivity.
+            BlackoutPeekBar(
+                onRedim = { blackoutPeeked = false },
+                onExitBlackout = {
+                    localBlackoutActive = false
+                    blackoutDismissed = true
+                    blackoutPeeked = false
+                },
                 modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { blackoutPeeked = false },
-                    ),
-            )
-        }
-
-        if (isStreaming) {
-            // What the user sees when the phone is face-down next to the
-            // keyboard: proof the stream is alive, and a way to end it.
-            StreamingOverlay(
-                state = state,
-                onStop = { viewModel.stopSession() },
-                modifier = Modifier.align(Alignment.BottomCenter),
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 12.dp, start = 16.dp, end = 16.dp),
             )
         }
 
@@ -521,6 +549,40 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
             // OLED Pure-Black Ambient Mode: true-black #000000 with minimal dim clock,
             // anti-burn-in offset, battery, and live badge. Tapping reveals controls.
             BlackoutSurface(state = state, onTap = { blackoutPeeked = true })
+        }
+    }
+}
+
+@Composable
+private fun BlackoutPeekBar(
+    onRedim: () -> Unit,
+    onExitBlackout: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.inverseSurface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shadowElevation = 4.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            TextButton(onClick = onRedim) {
+                Text(
+                    text = stringResource(R.string.blackout_redim),
+                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                )
+            }
+            TextButton(onClick = onExitBlackout) {
+                Text(
+                    text = stringResource(R.string.blackout_exit),
+                    color = MaterialTheme.colorScheme.inversePrimary,
+                )
+            }
         }
     }
 }
@@ -695,7 +757,12 @@ private fun StatusScreen(
                     onReportIssue = {
                         val reportText = buildReport()
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Diagnostics Report", reportText))
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText(
+                                context.getString(R.string.clipboard_diagnostics_report),
+                                reportText,
+                            ),
+                        )
                         val intent = com.phonecam.camera.protocol.CrashReporter.buildGitHubIssueIntent(
                             context = context,
                             title = "[Error] Stream error: ${state.error}",
@@ -734,98 +801,134 @@ private fun StatusScreen(
         // The picture itself, once there is one. Idle, it is absent rather than
         // blank: a black rectangle on a screen that is not streaming looks like a
         // failure.
-        if (cameraGranted && state.phase == SessionState.Phase.STREAMING) {
-            // The viewfinder is a second output of the capture session, not a
-            // second camera open. The switch that turns it off is on the Output
-            // screen with the other settings, because it is a setting rather than a
-            // stream fact; this block only draws the picture once the setting allows
-            // it. With the setting off there is no surface at all, so the capture
-            // session is built without the preview output.
-            if (previewEnabled) {
-                // The display correction combines sensor orientation and display rotation.
-                val sensorOrientation = state.activeCamera?.orientationDegrees ?: 0
-                val displayRotation = getDisplayRotationDegrees(context)
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    CameraPreview(
+        val showStreamPanel = cameraGranted && state.phase == SessionState.Phase.STREAMING
+        if (isLandscape && showStreamPanel) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    StreamPreviewOrSaving(
+                        state = state,
+                        previewEnabled = previewEnabled,
                         onSurfaceAvailable = onSurfaceAvailable,
-                        aspectRatio = aspectRatioOf(state.actualResolution, sensorOrientation, displayRotation),
-                        mirror = state.mirror,
-                        orientationDegrees = sensorOrientation,
-                        displayRotationDegrees = displayRotation,
+                        onPreviewEnabled = onPreviewEnabled,
+                        onEnableBlackout = onEnableBlackout,
                     )
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Surface(
-                            onClick = onEnableBlackout,
-                            shape = CircleShape,
-                            color = Color(0xBB000000),
-                            border = BorderStroke(1.dp, Color(0x44FFFFFF)),
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Text(text = "🌙", fontSize = 12.sp)
-                                Text(
-                                    text = "Layar Hitam",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                            }
-                        }
-
-                        Surface(
-                            onClick = { onPreviewEnabled(false) },
-                            shape = CircleShape,
-                            color = Color(0xBB000000),
-                            border = BorderStroke(1.dp, Color(0x44FFFFFF)),
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Text(text = "👁️", fontSize = 12.sp)
-                                Text(
-                                    text = "Matikan Preview",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                            }
-                        }
-                    }
                 }
-            } else {
-                PowerSavingCard(
-                    onEnablePreview = { onPreviewEnabled(true) },
+                Box(modifier = Modifier.weight(1f)) {
+                    ConnectionCard(
+                        state = state,
+                        isRunning = isRunning,
+                        pairedServerName = pairedServerName,
+                        pairedAddress = pairedAddress,
+                        onScanQr = onScanQr,
+                        onSearch = onSearch,
+                        onConnectDiscovered = onConnectDiscovered,
+                        onConnectManual = onConnectManual,
+                        onForget = onForget,
+                    )
+                }
+            }
+        } else {
+            if (showStreamPanel) {
+                StreamPreviewOrSaving(
+                    state = state,
+                    previewEnabled = previewEnabled,
+                    onSurfaceAvailable = onSurfaceAvailable,
+                    onPreviewEnabled = onPreviewEnabled,
                     onEnableBlackout = onEnableBlackout,
                     modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier,
                 )
             }
-        }
 
-        Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
-            ConnectionCard(
-                state = state,
-                isRunning = isRunning,
-                pairedServerName = pairedServerName,
-                pairedAddress = pairedAddress,
-                onScanQr = onScanQr,
-                onSearch = onSearch,
-                onConnectDiscovered = onConnectDiscovered,
-                onConnectManual = onConnectManual,
-                onForget = onForget,
-            )
+            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
+                ConnectionCard(
+                    state = state,
+                    isRunning = isRunning,
+                    pairedServerName = pairedServerName,
+                    pairedAddress = pairedAddress,
+                    onScanQr = onScanQr,
+                    onSearch = onSearch,
+                    onConnectDiscovered = onConnectDiscovered,
+                    onConnectManual = onConnectManual,
+                    onForget = onForget,
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun StreamPreviewOrSaving(
+    state: SessionState,
+    previewEnabled: Boolean,
+    onSurfaceAvailable: (Surface?) -> Unit,
+    onPreviewEnabled: (Boolean) -> Unit,
+    onEnableBlackout: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    if (previewEnabled) {
+        val sensorOrientation = state.activeCamera?.orientationDegrees ?: 0
+        val displayRotation = getDisplayRotationDegrees(context)
+        Box(
+            modifier = modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) {
+            CameraPreview(
+                onSurfaceAvailable = onSurfaceAvailable,
+                aspectRatio = aspectRatioOf(state.actualResolution, sensorOrientation, displayRotation),
+                mirror = state.mirror,
+                orientationDegrees = sensorOrientation,
+                displayRotationDegrees = displayRotation,
+            )
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    onClick = onEnableBlackout,
+                    shape = CircleShape,
+                    color = Color(0xBB000000),
+                    border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+                ) {
+                    Text(
+                        text = stringResource(R.string.action_blackout),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+
+                Surface(
+                    onClick = { onPreviewEnabled(false) },
+                    shape = CircleShape,
+                    color = Color(0xBB000000),
+                    border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+                ) {
+                    Text(
+                        text = stringResource(R.string.action_hide_preview),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+            }
+        }
+    } else {
+        PowerSavingCard(
+            onEnablePreview = { onPreviewEnabled(true) },
+            onEnableBlackout = onEnableBlackout,
+            modifier = modifier,
+        )
     }
 }
 
@@ -864,7 +967,7 @@ private fun PowerSavingCard(
                 )
             }
             Text(
-                text = "Preview Dimatikan (Hemat Baterai & Suhu)",
+                text = stringResource(R.string.power_saving_title),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -872,7 +975,7 @@ private fun PowerSavingCard(
         }
 
         Text(
-            text = "Kamera tetap streaming ke PC dengan performa penuh. Rendering layar dimatikan untuk menghemat baterai & menjaga suhu HP tetap dingin.",
+            text = stringResource(R.string.power_saving_body),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -886,13 +989,13 @@ private fun PowerSavingCard(
                 onClick = onEnablePreview,
                 modifier = Modifier.weight(1f),
             ) {
-                Text("Nyalakan Preview")
+                Text(stringResource(R.string.action_show_preview))
             }
             OutlinedButton(
                 onClick = onEnableBlackout,
                 modifier = Modifier.weight(1f),
             ) {
-                Text("Layar Hitam (OLED 0-nit)")
+                Text(stringResource(R.string.action_blackout_oled))
             }
         }
     }
@@ -992,7 +1095,7 @@ private fun PreviewSettingsCard(
                     .fillMaxWidth()
                     .padding(top = 6.dp),
             ) {
-                Text("🌙 Layar Hitam (OLED 0-nit)")
+                Text(stringResource(R.string.action_blackout_oled))
             }
         }
     }
@@ -1101,7 +1204,7 @@ private fun BlackoutSurface(state: SessionState, onTap: () -> Unit) {
                             .background(liveDotColor),
                     )
                     Text(
-                        text = "LIVE",
+                        text = stringResource(R.string.blackout_live_badge),
                         style = MaterialTheme.typography.labelSmall,
                         color = ambientColor,
                         letterSpacing = 1.2.sp,
@@ -1215,7 +1318,7 @@ private fun ConnectingCard(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.primary,
         )
         Text(
-            text = "Searching for PC on local network...",
+            text = stringResource(R.string.connecting_searching_lan),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
         )

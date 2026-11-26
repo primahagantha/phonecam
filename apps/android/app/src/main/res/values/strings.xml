@@ -263,4 +263,29 @@
     <string name="overlay_streaming_title_unknown">Streaming to your PC</string>
     <string name="overlay_hint">Tap to show controls</string>
     <string name="action_stop_stream">Stop streaming</string>
+
+    <!-- Power saving, blackout & dialogs -->
+    <string name="action_blackout">Blackout</string>
+    <string name="action_blackout_oled">Blackout (OLED 0-nit)</string>
+    <string name="action_hide_preview">Hide Preview</string>
+    <string name="action_show_preview">Show Preview</string>
+    <string name="power_saving_title">Preview Off (Power &amp; Thermal Saving)</string>
+    <string name="power_saving_body">Your camera keeps streaming to your PC at full performance. Screen preview rendering is turned off to save battery and keep your phone cool.</string>
+    <string name="blackout_redim">Re-dim</string>
+    <string name="blackout_exit">Exit Blackout</string>
+    <string name="blackout_live_badge">LIVE</string>
+    <string name="connecting_searching_lan">Searching for PC on local network…</string>
+    <string name="crash_dialog_title">Session Crash Detected</string>
+    <string name="crash_dialog_body">PhoneCam stopped unexpectedly in a previous session. You can report this to GitHub to help us fix it quickly.</string>
+    <string name="action_report_github">Report to GitHub</string>
+    <string name="action_copy_dismiss">Copy &amp; Dismiss</string>
+    <string name="action_close">Close</string>
+    <string name="control_anti_flicker">Anti-Flicker</string>
+    <string name="anti_flicker_auto">Auto</string>
+    <string name="anti_flicker_50hz">50 Hz (Mains)</string>
+    <string name="anti_flicker_60hz">60 Hz (Mains)</string>
+    <string name="anti_flicker_off">Off</string>
+    <string name="clipboard_crash_report">Crash Report</string>
+    <string name="clipboard_diagnostics_report">Diagnostics Report</string>
+    <string name="clipboard_log">PhoneCam log</string>
 </resources>

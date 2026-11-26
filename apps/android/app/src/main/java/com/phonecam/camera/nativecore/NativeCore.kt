@@ -122,29 +122,4 @@ object NativeCore {
     external fun validateQrPayload(raw: String): String?
 
     external fun parseDiscoveryBeacon(jsonBytes: ByteArray): String?
-
-    external fun adaptiveQualityCreate(
-        enabled: Boolean,
-        initRes: String,
-        initFps: Int,
-    ): Long
-
-    external fun adaptiveQualitySetEnabled(handle: Long, enabled: Boolean)
-
-    external fun adaptiveQualityConfirm(handle: Long, res: String, fps: Int)
-
-    external fun adaptiveQualityObserve(
-        handle: Long,
-        nowMs: Long,
-        curRes: String,
-        curFps: Int,
-        maxRes: String,
-        maxFps: Int,
-        droppedPct: Double,
-        rttUs: Long,
-        thermal: String,
-        decodeStruggling: Boolean,
-    ): String
-
-    external fun adaptiveQualityDestroy(handle: Long)
 }

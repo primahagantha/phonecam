@@ -50,7 +50,7 @@ data class DiscoveredServer(
 class DiscoveryClient(
     context: Context,
     private val scope: CoroutineScope,
-    private val deviceId: String,
+    private val deviceIdProvider: () -> String,
     private val beaconProvider: () -> JsonObject,
 ) {
 
@@ -237,7 +237,7 @@ class DiscoveryClient(
         val beacon = parseDesktopBeacon(
             jsonBytes = rawBytes,
             sourceHost = sourceHost,
-            deviceId = deviceId,
+            deviceId = deviceIdProvider(),
         )
         if (beacon != null) {
             known[beacon.serverId] = beacon
