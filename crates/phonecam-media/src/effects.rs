@@ -828,7 +828,16 @@ impl AutoFramingTracker {
         }
         let handled = CROP_SCRATCH.with(|cell| {
             if let Ok(mut scratch) = cell.try_borrow_mut() {
-                Self::crop_bgra_with_scratch(src, src_w, src_h, crop, dst, dst_w, dst_h, &mut scratch);
+                Self::crop_bgra_with_scratch(
+                    src,
+                    src_w,
+                    src_h,
+                    crop,
+                    dst,
+                    dst_w,
+                    dst_h,
+                    &mut scratch,
+                );
                 true
             } else {
                 false
@@ -871,10 +880,14 @@ pub fn bgra_to_nv12(bgra: &[u8], width: u32, height: u32, out_nv12: &mut [u8]) {
     // 10-bit fixed-point limited-range coefficients (Y in [16, 235], UV in [16, 240]).
     let (yr, yg, yb, ur, ug, ub, vr, vg, vb) = if width >= 1280 || height >= 720 {
         // ITU-R BT.709
-        (187i32, 629i32, 63i32, -103i32, -347i32, 450i32, 450i32, -409i32, -41i32)
+        (
+            187i32, 629i32, 63i32, -103i32, -347i32, 450i32, 450i32, -409i32, -41i32,
+        )
     } else {
         // ITU-R BT.601
-        (263i32, 516i32, 100i32, -152i32, -298i32, 450i32, 450i32, -377i32, -73i32)
+        (
+            263i32, 516i32, 100i32, -152i32, -298i32, 450i32, 450i32, -377i32, -73i32,
+        )
     };
 
     let (y_plane, uv_plane) = out_nv12[..nv12_len].split_at_mut(luma_len);
@@ -1246,16 +1259,7 @@ mod tests {
         };
         let mut dst = vec![0u8; 4 * 4 * 4];
         let mut scratch = EffectsScratch::new();
-        AutoFramingTracker::crop_bgra_with_scratch(
-            &src,
-            2,
-            2,
-            &crop,
-            &mut dst,
-            4,
-            4,
-            &mut scratch,
-        );
+        AutoFramingTracker::crop_bgra_with_scratch(&src, 2, 2, &crop, &mut dst, 4, 4, &mut scratch);
 
         // Inner columns (dx=1, dx=2) must be smoothly interpolated between 0 and 200 (50 and 150)
         assert_eq!(dst[0], 0);

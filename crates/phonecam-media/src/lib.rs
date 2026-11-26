@@ -1300,8 +1300,16 @@ mod tests {
 
                     let offset = (y * w + x) * 4;
                     assert_eq!(bgra[offset], b_ref, "HD B mismatch at ({x},{y}) {w}x{h}");
-                    assert_eq!(bgra[offset + 1], g_ref, "HD G mismatch at ({x},{y}) {w}x{h}");
-                    assert_eq!(bgra[offset + 2], r_ref, "HD R mismatch at ({x},{y}) {w}x{h}");
+                    assert_eq!(
+                        bgra[offset + 1],
+                        g_ref,
+                        "HD G mismatch at ({x},{y}) {w}x{h}"
+                    );
+                    assert_eq!(
+                        bgra[offset + 2],
+                        r_ref,
+                        "HD R mismatch at ({x},{y}) {w}x{h}"
+                    );
                     assert_eq!(bgra[offset + 3], 255);
                 }
             }

@@ -1024,6 +1024,9 @@ mod tests {
                 triggered = true;
             }
         }
-        assert!(triggered, "should trigger once debounce threshold is reached");
+        assert!(
+            triggered,
+            "should trigger once debounce threshold is reached"
+        );
     }
 }

@@ -810,8 +810,8 @@ mod imp {
             write_all_fd(self.fd, &self.staging)?;
             *frame_index += 1;
 
-            let mean = sample_luma_dims
-                .map(|(w, h)| FrameWriter::compute_mean_luma(&self.staging, w, h));
+            let mean =
+                sample_luma_dims.map(|(w, h)| FrameWriter::compute_mean_luma(&self.staging, w, h));
             Ok(mean)
         }
 

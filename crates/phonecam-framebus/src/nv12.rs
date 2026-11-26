@@ -190,10 +190,7 @@ fn scale_bilinear_lut(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], tw: usiz
             let p01 = row1[x0] as u32;
             let p11 = row1[x1] as u32;
 
-            let val = p00 * inv_wx * inv_wy
-                + p10 * wx * inv_wy
-                + p01 * inv_wx * wy
-                + p11 * wx * wy;
+            let val = p00 * inv_wx * inv_wy + p10 * wx * inv_wy + p01 * inv_wx * wy + p11 * wx * wy;
             dst_row[dx] = ((val + 32_768) >> 16) as u8;
         }
     }
