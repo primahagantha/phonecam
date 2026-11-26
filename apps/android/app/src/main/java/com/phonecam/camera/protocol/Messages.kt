@@ -91,6 +91,7 @@ sealed class PhoneMessage {
         val thermal: String,
         val antiFlicker: String = "auto",
         val orientation: Int? = null,
+        val audioSampleRate: Int? = null,
     ) : PhoneMessage()
 
     @Serializable

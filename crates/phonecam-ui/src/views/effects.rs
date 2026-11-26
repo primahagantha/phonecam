@@ -49,6 +49,7 @@ pub enum SideEffect {
     SetAutoConnectUsb(bool),
     SetMinimizeToTray(bool),
     SetAudioStream(bool),
+    SetAudioOutputDevice(Option<String>),
     SetAutoStartStream(bool),
     SetAutoRotate(bool),
     SetLogLevel(phonecam_protocol::LogLevel),
@@ -181,11 +182,13 @@ mod tests {
         drain_effects();
         push_effect(SideEffect::SetAutoStartStream(true));
         push_effect(SideEffect::SetAutoRotate(true));
+        push_effect(SideEffect::SetAudioOutputDevice(Some("default".into())));
         assert_eq!(
             drain_effects(),
             vec![
                 SideEffect::SetAutoStartStream(true),
                 SideEffect::SetAutoRotate(true),
+                SideEffect::SetAudioOutputDevice(Some("default".into())),
             ]
         );
     }

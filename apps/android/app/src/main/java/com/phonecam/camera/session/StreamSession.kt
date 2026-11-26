@@ -396,7 +396,12 @@ class StreamSession(
 
     private val camera = CameraController(context)
     private val health = DeviceHealth(context)
-    private val audioStreamer = AudioStreamer(identity, context)
+    private val audioStreamer = AudioStreamer(identity, context) { _ ->
+        val phase = _state.value.phase
+        if (phase == SessionState.Phase.CONNECTED || phase == SessionState.Phase.STREAMING) {
+            sendState()
+        }
+    }
 
     private val discovery = DiscoveryClient(
         context = context,
@@ -1109,6 +1114,7 @@ class StreamSession(
                 thermal = current.thermal,
                 antiFlicker = current.antiFlicker,
                 orientation = reportedOrientation,
+                audioSampleRate = audioStreamer.activeSampleRate,
             ),
         )
     }

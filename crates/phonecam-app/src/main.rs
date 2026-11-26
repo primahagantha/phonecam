@@ -107,6 +107,7 @@ fn main() -> anyhow::Result<()> {
         }
         runtime.refresh_usb();
         runtime.check_vcam();
+        runtime.refresh_audio_devices();
         runtime.broadcast_state();
 
         // Register GPUI keyboard shortcuts (Space, F11, Esc, Ctrl+1..4, Tab/Shift-Tab)
@@ -390,7 +391,10 @@ fn apply_effect(
         SideEffect::StopStream => runtime.stop_stream(),
         SideEffect::SetVcam(enabled) => runtime.set_vcam(enabled),
         SideEffect::RestartVcam => runtime.restart_vcam(),
-        SideEffect::RefreshState => runtime.broadcast_state(),
+        SideEffect::RefreshState => {
+            runtime.refresh_audio_devices();
+            runtime.broadcast_state();
+        }
         SideEffect::RefreshUsb => {
             let rt = runtime.clone();
             let _ = adb_tx.send(Box::new(move || rt.refresh_usb()));
@@ -516,7 +520,13 @@ fn apply_effect(
         SideEffect::SetHandGestures(enabled) => runtime.set_hand_gestures(enabled),
         SideEffect::SetAutoConnectUsb(enabled) => runtime.set_auto_connect_usb(enabled),
         SideEffect::SetMinimizeToTray(enabled) => runtime.set_minimize_to_tray(enabled),
-        SideEffect::SetAudioStream(enabled) => runtime.set_audio_stream(enabled),
+        SideEffect::SetAudioStream(enabled) => {
+            if enabled {
+                runtime.refresh_audio_devices();
+            }
+            runtime.set_audio_stream(enabled);
+        }
+        SideEffect::SetAudioOutputDevice(device) => runtime.set_audio_output_device(device),
         SideEffect::SetAutoStartStream(enabled) => runtime.set_auto_start_stream(enabled),
         SideEffect::SetAutoRotate(enabled) => runtime.set_auto_rotate(enabled),
         SideEffect::SetLogLevel(level) => {

@@ -291,6 +291,7 @@ pub struct Settings {
     pub auto_connect_usb: bool,
     pub minimize_to_tray: bool,
     pub stream_audio: bool,
+    pub audio_output_device: Option<String>,
     pub auto_start_stream: bool,
     pub auto_rotate: bool,
 }
@@ -331,6 +332,7 @@ impl Default for Settings {
             auto_connect_usb: true,
             minimize_to_tray: true,
             stream_audio: false,
+            audio_output_device: None,
             auto_start_stream: false,
             auto_rotate: false,
         }
@@ -386,6 +388,8 @@ pub struct AppState {
     pub local_ip: Option<String>,
     /// Live microphone volume level normalized between 0.0 and 1.0.
     pub audio_level: f32,
+    /// Enumerated Windows audio playback devices (virtual audio cables prioritized first).
+    pub available_audio_devices: Vec<String>,
     /// Currently detected hand gesture, if any.
     pub active_gesture: Option<phonecam_media::HandGesture>,
     /// Last triggered gesture action description for toast/chip feedback.

@@ -502,6 +502,8 @@ pub struct PhoneState {
     pub anti_flicker: AntiFlickerMode,
     #[serde(default)]
     pub orientation: Option<u32>,
+    #[serde(default, rename = "audioSampleRate")]
+    pub audio_sample_rate: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -944,6 +946,7 @@ mod tests {
                 assert_eq!(s.actual_resolution, "1280x720");
                 assert_eq!(s.thermal, ThermalState::Moderate);
                 assert_eq!(s.orientation, None);
+                assert_eq!(s.audio_sample_rate, None);
             }
             other => panic!("expected state, got {other:?}"),
         }
@@ -951,10 +954,13 @@ mod tests {
         let json_with_orientation = r#"{"t":"state","streaming":true,"camera":"back","resolution":"1920x1080",
             "fps":30,"actualResolution":"1920x1080","actualFps":30,"bitrate":8000000,
             "mirror":false,"rotation":0,"torch":false,"zoom":1.0,"battery":90,
-            "charging":false,"thermal":"none","orientation":90}"#;
+            "charging":false,"thermal":"none","orientation":90,"audioSampleRate":48000}"#;
         let m2: PhoneToDesktop = serde_json::from_str(json_with_orientation).unwrap();
         match m2 {
-            PhoneToDesktop::State(s) => assert_eq!(s.orientation, Some(90)),
+            PhoneToDesktop::State(s) => {
+                assert_eq!(s.orientation, Some(90));
+                assert_eq!(s.audio_sample_rate, Some(48000));
+            }
             other => panic!("expected state, got {other:?}"),
         }
     }

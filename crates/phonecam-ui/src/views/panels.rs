@@ -3072,30 +3072,135 @@ pub fn capture_panel_with_ui(
 
         let audio_stream_enabled = state.settings.stream_audio;
         let audio_level = state.audio_level.clamp(0.0, 1.0);
-        let mut audio_content = div().flex().flex_col().gap(px(Space::XS)).child(
-            Toggle::new(
-                "Audio Monitor (Preview Only - No Virtual Mic Yet)",
-                audio_stream_enabled,
-            )
-            .id("labs-audio-monitor")
-            .focus_with(focus.as_deref_mut(), "labs-audio-monitor")
-            .detail(Some(if audio_stream_enabled {
-                "Monitoring"
-            } else {
-                "Off"
-            }))
-            .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetAudioStream(enabled)))
-            .into_element(),
+        let selected_audio_out = state
+            .settings
+            .audio_output_device
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "monitor_only");
+        let audio_out_label: SharedString = match selected_audio_out {
+            None => "Monitor only".into(),
+            Some("default") => "Windows default".into(),
+            Some(dev) => dev.to_string().into(),
+        };
+
+        let mut audio_content = div().flex().flex_col().gap(px(Space::SM)).child(
+            Toggle::new("Audio Monitor & Output", audio_stream_enabled)
+                .id("labs-audio-monitor")
+                .focus_with(focus.as_deref_mut(), "labs-audio-monitor")
+                .detail(Some(if audio_stream_enabled {
+                    if selected_audio_out.is_some() {
+                        "Streaming & Playing"
+                    } else {
+                        "Monitoring (VU only)"
+                    }
+                } else {
+                    "Off"
+                }))
+                .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetAudioStream(enabled)))
+                .into_element(),
         );
         if audio_stream_enabled {
             audio_content = audio_content.child(audio_vu_row(audio_level, true, "Input level"));
         }
 
+        let mut device_rows = div().flex().flex_col().gap(px(Space::XS)).child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap(px(Space::XS))
+                .child(pill_button_compact(
+                    "audio-out-monitor-only",
+                    "Monitor only (VU meter)",
+                    selected_audio_out.is_none(),
+                    false,
+                    move |_window, _cx| push_effect(SideEffect::SetAudioOutputDevice(None)),
+                ))
+                .child(pill_button_compact(
+                    "audio-out-default",
+                    "Windows default",
+                    selected_audio_out == Some("default"),
+                    false,
+                    move |_window, _cx| {
+                        push_effect(SideEffect::SetAudioOutputDevice(Some("default".into())))
+                    },
+                )),
+        );
+
+        for (idx, dev_name) in state.available_audio_devices.iter().enumerate() {
+            let is_selected = selected_audio_out == Some(dev_name.as_str());
+            let lower = dev_name.to_ascii_lowercase();
+            let is_vbcable = lower.contains("cable input")
+                || lower.contains("vb-audio")
+                || lower.contains("virtual audio")
+                || lower.contains("voicemeeter");
+            let dev_clone = dev_name.clone();
+            let label = if is_vbcable {
+                format!("{dev_name} [Virtual Cable]")
+            } else {
+                dev_name.clone()
+            };
+            device_rows = device_rows.child(
+                div()
+                    .id(gpui::ElementId::Name(SharedString::from(format!(
+                        "audio-out-dev-{idx}"
+                    ))))
+                    .key_context("Control")
+                    .w_full()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(Space::SM))
+                    .rounded(px(Radius::MD))
+                    .border_1()
+                    .border_color(if is_selected {
+                        Accent::DEFAULT
+                    } else {
+                        SHELL.border
+                    })
+                    .bg(SHELL.control)
+                    .px(px(Space::MD))
+                    .py(px(Space::XS))
+                    .cursor_pointer()
+                    .hover(|s| s.border_color(Accent::HOVER).bg(SHELL.hover))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .font(Fonts::sans())
+                            .text_size(px(Type::XS))
+                            .font_weight(if is_selected {
+                                gpui::FontWeight::SEMIBOLD
+                            } else {
+                                gpui::FontWeight::MEDIUM
+                            })
+                            .text_color(if is_selected {
+                                Accent::DEFAULT
+                            } else {
+                                Text::PRIMARY
+                            })
+                            .child(label),
+                    )
+                    .on_click(move |_event, _window, _cx| {
+                        push_effect(SideEffect::SetAudioOutputDevice(Some(dev_clone.clone())))
+                    }),
+            );
+        }
+
+        audio_content = audio_content.child(device_rows);
+
         let audio_element = crate::views::widgets::field(
-            "Phone microphone monitor",
-            Some(if audio_stream_enabled { "Active" } else { "Off" }.into()),
+            "Audio Monitor & Output",
+            Some(if audio_stream_enabled {
+                audio_out_label
+            } else {
+                "Off".into()
+            }),
             audio_content.into_any_element(),
-            Some("Measures live phone microphone dBFS levels in this window. Virtual Microphone routing to other apps is not implemented yet.".into()),
+            Some("Routes phone audio to VB-Audio Virtual Cable or a Windows playback device, or stays Monitor only to prevent speaker feedback. Native kernel virtual mic driver is still Roadmap.".into()),
         );
 
         let hand_gestures_element = hand_gesture_guide_card_with_ui(
@@ -3106,7 +3211,7 @@ pub fn capture_panel_with_ui(
         );
 
         labs_children.push(prose(
-            "Preview-only experimental features: these run locally on the preview stage and do not modify the Virtual Camera feed in Zoom, OBS, or Discord.",
+            "Experimental features: visual effects run locally on the preview stage; Audio Monitor & Output can optionally play to a Windows playback device or VB-Audio Virtual Cable.",
         ));
         labs_children.push(auto_framing_element);
         labs_children.push(hand_gestures_element);
@@ -3115,7 +3220,7 @@ pub fn capture_panel_with_ui(
         labs_children.push(audio_element);
     } else {
         labs_children.push(prose(
-            "Auto-Framing, Hand Gestures, Portrait Bokeh, Color LUTs, and Audio Monitor (preview-only).",
+            "Auto-Framing, Hand Gestures, Portrait Bokeh, Color LUTs, and Audio Monitor & Output.",
         ));
     }
 
@@ -3753,23 +3858,46 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
     // Card: "Audio & Microphone Stream" (Technical details live here in Diagnostics)
     let diag_audio_level = state.audio_level.clamp(0.0, 1.0);
     let diag_audio_enabled = state.settings.stream_audio;
+    let diag_audio_out = state
+        .settings
+        .audio_output_device
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "monitor_only");
     let (audio_status_text, audio_tone) = if !state.status.connected {
         ("Offline", Tone::Neutral)
+    } else if diag_audio_enabled && diag_audio_out.is_some() {
+        ("Output Active", Tone::Ok)
     } else if diag_audio_enabled {
-        ("Monitor Active (Preview Only)", Tone::Accent)
+        ("Monitor Active (VU Only)", Tone::Accent)
     } else {
         ("Off", Tone::Neutral)
     };
+
+    let audio_route_text = match diag_audio_out {
+        None => "Monitor only (VU meter)".to_string(),
+        Some("default") => "Windows default playback".to_string(),
+        Some(dev) => dev.to_string(),
+    };
+    let sample_rate_khz = state
+        .core
+        .as_ref()
+        .and_then(|c| c.phone.as_ref())
+        .and_then(|p| p.audio_sample_rate)
+        .unwrap_or(48_000)
+        / 1000;
+    let audio_codec_text = format!("PCM 16-bit {sample_rate_khz} kHz Mono");
 
     let audio_level_widget = audio_vu_row(diag_audio_level, diag_audio_enabled, "Input dBFS");
 
     let audio_diag_rows = vec![
         ("Audio monitor".into(), chip(audio_status_text, audio_tone)),
-        ("Input level".into(), audio_level_widget),
         (
-            "Audio codec".into(),
-            card_text_val("PCM 16-bit 48 kHz Mono", true),
+            "Audio output".into(),
+            card_text_val(audio_route_text, false),
         ),
+        ("Input level".into(), audio_level_widget),
+        ("Audio codec".into(), card_text_val(audio_codec_text, true)),
         (
             "Transport channel".into(),
             card_text_val("TCP Role 3 (Low Latency)", true),
@@ -5232,6 +5360,11 @@ mod tests {
         state.settings.auto_framing = true;
         state.settings.hand_gestures = true;
         state.settings.stream_audio = true;
+        state.settings.audio_output_device = Some("CABLE Input (VB-Audio Virtual Cable)".into());
+        state.available_audio_devices = vec![
+            "CABLE Input (VB-Audio Virtual Cable)".into(),
+            "Speakers (Realtek(R) Audio)".into(),
+        ];
         state.audio_level = 0.50;
         state.tracking_locked = true;
         state.active_gesture = Some(phonecam_media::HandGesture::OpenPalm);

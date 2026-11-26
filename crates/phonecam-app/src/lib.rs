@@ -15,6 +15,7 @@
 )]
 
 pub mod adb;
+pub mod audio_out;
 pub mod logging;
 pub mod runtime;
 pub mod settings;

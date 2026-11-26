@@ -229,6 +229,10 @@ pub struct Runtime {
     pub video_generation: Arc<AtomicU64>,
     /// Generation counter for the active audio channel to prevent stale teardowns.
     pub audio_generation: Arc<AtomicU64>,
+    /// Reported phone audio sample rate in Hz (48000 primary, 16000 fallback).
+    audio_sample_rate: AtomicU32,
+    /// Generation counter bumped when audio output device or sample rate changes.
+    audio_out_generation: AtomicU64,
     /// Recycled BGRA buffers returned from the UI pump to prevent per-frame allocations.
     pub spare_buffers: Arc<Mutex<Vec<Vec<u8>>>>,
     /// Counter bumped on state mutations so the UI only clones AppState when changed.
@@ -345,6 +349,8 @@ impl Runtime {
             control_generation: Arc::new(AtomicU64::new(0)),
             video_generation: Arc::new(AtomicU64::new(0)),
             audio_generation: Arc::new(AtomicU64::new(0)),
+            audio_sample_rate: AtomicU32::new(48_000),
+            audio_out_generation: AtomicU64::new(0),
             spare_buffers: Arc::new(Mutex::new(Vec::new())),
             state_version: Arc::new(AtomicU64::new(1)),
             bytes_in: Arc::new(AtomicU64::new(0)),
@@ -1088,6 +1094,12 @@ impl Runtime {
                 PhoneToDesktop::State(phone_state) => {
                     let streaming = phone_state.streaming;
                     let phone_orientation = phone_state.orientation;
+                    if let Some(rate) = phone_state.audio_sample_rate.filter(|&r| r > 0) {
+                        let prev = self.audio_sample_rate.swap(rate, Ordering::Relaxed);
+                        if prev != rate {
+                            self.audio_out_generation.fetch_add(1, Ordering::Release);
+                        }
+                    }
                     // The phone naming the rung that was asked for is the
                     // confirmation that lets the ladder act again. Announcing at
                     // the request would name a rung the phone is not using.
@@ -1392,7 +1404,8 @@ impl Runtime {
         }
     }
 
-    /// The audio channel: reads incoming PCM 16-bit audio payloads and calculates live levels.
+    /// The audio channel: reads incoming PCM 16-bit audio payloads, calculates
+    /// live VU levels, and optionally plays audio to the configured Windows output device.
     fn run_audio(self: &Arc<Self>, conn: Connection) {
         let audio_gen = self.audio_generation.fetch_add(1, Ordering::SeqCst) + 1;
         conn.set_read_timeout(Some(std::time::Duration::from_millis(500)))
@@ -1400,15 +1413,53 @@ impl Runtime {
         tracing::info!("audio channel opened");
         self.log_info("audio channel connected");
         let mut buf = vec![0u8; 4096];
+        let mut aligned_pcm = Vec::with_capacity(4098);
         let mut leftover: Option<u8> = None;
         let mut last_report_ms = 0i64;
         let mut last_published_level: f32 = 0.0;
+        let mut player: Option<crate::audio_out::WaveOutPlayer> = None;
+        let mut active_out_gen: u64 = u64::MAX;
 
         while self.running.load(Ordering::Relaxed) {
             if self.audio_generation.load(Ordering::SeqCst) != audio_gen {
                 tracing::info!("newer audio channel active; gracefully stopping stale audio loop");
                 return;
             }
+
+            let current_out_gen = self.audio_out_generation.load(Ordering::Acquire);
+            if current_out_gen != active_out_gen {
+                player = None;
+                active_out_gen = current_out_gen;
+                let target_device = {
+                    let state = self.state.lock();
+                    crate::audio_out::normalize_output_device(
+                        state.settings.audio_output_device.as_deref(),
+                    )
+                };
+                if let Some(dev) = target_device {
+                    let sample_rate = self.audio_sample_rate.load(Ordering::Relaxed);
+                    match crate::audio_out::WaveOutPlayer::open(&dev, sample_rate) {
+                        Ok(p) => {
+                            tracing::info!(
+                                "audio output opened: {} ({} Hz)",
+                                p.device_name(),
+                                p.sample_rate()
+                            );
+                            self.log_info(&format!(
+                                "audio output opened: {} ({} Hz)",
+                                p.device_name(),
+                                p.sample_rate()
+                            ));
+                            player = Some(p);
+                        }
+                        Err(err) => {
+                            tracing::warn!("could not open audio output '{dev}': {err}");
+                            self.log_error("audio_out_open_failed", &err);
+                        }
+                    }
+                }
+            }
+
             match conn.read_some(&mut buf) {
                 ReadResult::Ok(n) => {
                     self.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
@@ -1421,6 +1472,11 @@ impl Runtime {
                     let mut sample_count = 0usize;
                     let mut peak: f32 = 0.0;
 
+                    let fast_aligned = leftover.is_none() && (slice.len() & 1) == 0;
+                    if !fast_aligned {
+                        aligned_pcm.clear();
+                    }
+
                     let mut i = 0;
                     if let Some(prev) = leftover.take() {
                         let sample = i16::from_le_bytes([prev, slice[0]]);
@@ -1430,6 +1486,10 @@ impl Runtime {
                         }
                         sum_sq += (sample as f64) * (sample as f64);
                         sample_count += 1;
+                        if !fast_aligned {
+                            aligned_pcm.push(prev);
+                            aligned_pcm.push(slice[0]);
+                        }
                         i = 1;
                     }
 
@@ -1444,8 +1504,32 @@ impl Runtime {
                         i += 2;
                     }
 
+                    if !fast_aligned {
+                        let start = usize::from(aligned_pcm.len() >= 2 && i > 1);
+                        // Copy any aligned body bytes after an optional leading stitched sample.
+                        let body_start = if start > 0 { 1 } else { 0 };
+                        if i > body_start {
+                            aligned_pcm.extend_from_slice(&slice[body_start..i]);
+                        }
+                    }
+
                     if i < slice.len() {
                         leftover = Some(slice[i]);
+                    }
+
+                    if let Some(ref mut p) = player {
+                        let pcm_bytes = if fast_aligned {
+                            slice
+                        } else {
+                            aligned_pcm.as_slice()
+                        };
+                        if !pcm_bytes.is_empty() {
+                            if let Err(err) = p.write_pcm(pcm_bytes) {
+                                tracing::warn!("audio output write failed: {err}");
+                                self.log_error("audio_out_write_failed", &err);
+                                player = None;
+                            }
+                        }
                     }
 
                     if sample_count > 0 {
@@ -2321,6 +2405,29 @@ impl Runtime {
             let _ = crate::settings::save(&state.settings);
         }
         self.send_to_phone(DesktopToPhone::SetAudioStream { enabled });
+        self.broadcast_state();
+    }
+
+    /// Sets the target Windows audio playback device (`None` = monitor-only VU meter,
+    /// `Some("default")` = Windows default device, or exact device name).
+    pub fn set_audio_output_device(&self, device: Option<String>) {
+        let normalized = crate::audio_out::normalize_output_device(device.as_deref());
+        {
+            let mut state = self.state.lock();
+            state.settings.audio_output_device = normalized;
+            let _ = crate::settings::save(&state.settings);
+        }
+        self.audio_out_generation.fetch_add(1, Ordering::Release);
+        self.broadcast_state();
+    }
+
+    /// Refreshes the list of available Windows audio playback devices.
+    pub fn refresh_audio_devices(&self) {
+        let devices = crate::audio_out::list_output_devices();
+        {
+            let mut state = self.state.lock();
+            state.available_audio_devices = devices;
+        }
         self.broadcast_state();
     }
 
@@ -4961,6 +5068,7 @@ mod tests {
             thermal: phonecam_protocol::ThermalState::None,
             anti_flicker: phonecam_protocol::AntiFlickerMode::Auto,
             orientation: None,
+            audio_sample_rate: None,
         };
         runtime.reconcile_resolution_downgrade(&downgraded);
         assert!(runtime
@@ -5169,5 +5277,26 @@ mod tests {
             16 * 16 * 4,
             "visual FX path must still execute for vcam when window is hidden"
         );
+    }
+
+    #[test]
+    fn set_audio_output_device_normalizes_and_bumps_generation() {
+        let runtime = Runtime::new(&phonecam_ui::views::state::Settings::default());
+        let gen0 = runtime.audio_out_generation.load(Ordering::Acquire);
+
+        runtime.set_audio_output_device(Some("default".into()));
+        assert_eq!(
+            runtime.state.lock().settings.audio_output_device.as_deref(),
+            Some("default")
+        );
+        let gen1 = runtime.audio_out_generation.load(Ordering::Acquire);
+        assert!(gen1 > gen0);
+
+        runtime.set_audio_output_device(Some("monitor_only".into()));
+        assert_eq!(runtime.state.lock().settings.audio_output_device, None);
+        let gen2 = runtime.audio_out_generation.load(Ordering::Acquire);
+        assert!(gen2 > gen1);
+
+        runtime.refresh_audio_devices();
     }
 }

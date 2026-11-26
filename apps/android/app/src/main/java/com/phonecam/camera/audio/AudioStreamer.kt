@@ -22,11 +22,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AudioStreamer(
     private val identity: IdentityStore,
     private val context: android.content.Context? = null,
+    private val onSampleRateChanged: ((Int?) -> Unit)? = null,
 ) {
     private val running = AtomicBoolean(false)
     private var workerThread: Thread? = null
     private var activeConnection: PeerConnection? = null
     private var activeRecord: AudioRecord? = null
+
+    @Volatile
+    var activeSampleRate: Int? = null
+        private set
 
     val isStreaming: Boolean
         get() = running.get()
@@ -66,6 +71,10 @@ class AudioStreamer(
         }
         activeConnection = null
         activeRecord = null
+        if (activeSampleRate != null) {
+            activeSampleRate = null
+            runCatching { onSampleRateChanged?.invoke(null) }
+        }
         workerThread?.interrupt()
         workerThread = null
     }
@@ -138,6 +147,8 @@ class AudioStreamer(
             record.startRecording()
             audioRecord = record
             activeRecord = record
+            activeSampleRate = sampleRate
+            runCatching { onSampleRateChanged?.invoke(sampleRate) }
             Log.i(TAG, "AudioRecord started at ${sampleRate}Hz mono 16-bit PCM")
 
             // Buffer pool: reuse pooled ByteArray to prevent per-chunk allocations on hot audio path
@@ -170,6 +181,10 @@ class AudioStreamer(
             }
             activeRecord = null
             activeConnection = null
+            if (activeSampleRate != null) {
+                activeSampleRate = null
+                runCatching { onSampleRateChanged?.invoke(null) }
+            }
             running.set(false)
             Log.i(TAG, "Audio channel closed and resources released")
         }

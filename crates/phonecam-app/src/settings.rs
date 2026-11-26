@@ -90,6 +90,8 @@ struct SettingsFile {
     #[serde(default)]
     stream_audio: Option<bool>,
     #[serde(default)]
+    audio_output_device: Option<String>,
+    #[serde(default)]
     auto_start_stream: Option<bool>,
     #[serde(default)]
     auto_rotate: Option<bool>,
@@ -210,6 +212,9 @@ fn coerce(file: SettingsFile) -> Settings {
         auto_connect_usb: file.auto_connect_usb.unwrap_or(defaults.auto_connect_usb),
         minimize_to_tray: file.minimize_to_tray.unwrap_or(defaults.minimize_to_tray),
         stream_audio: file.stream_audio.unwrap_or(defaults.stream_audio),
+        audio_output_device: crate::audio_out::normalize_output_device(
+            file.audio_output_device.as_deref(),
+        ),
         auto_start_stream: file.auto_start_stream.unwrap_or(defaults.auto_start_stream),
         auto_rotate: file.auto_rotate.unwrap_or(defaults.auto_rotate),
     }
@@ -318,6 +323,7 @@ fn save_at(
         auto_connect_usb: Some(settings.auto_connect_usb),
         minimize_to_tray: Some(settings.minimize_to_tray),
         stream_audio: Some(settings.stream_audio),
+        audio_output_device: settings.audio_output_device.clone(),
         auto_start_stream: Some(settings.auto_start_stream),
         auto_rotate: Some(settings.auto_rotate),
         server_id: preserved_server_id,
@@ -481,6 +487,28 @@ mod tests {
         let enabled = parse(r#"{"auto_start_stream": true, "auto_rotate": true}"#);
         assert!(enabled.auto_start_stream);
         assert!(enabled.auto_rotate);
+    }
+
+    #[test]
+    fn audio_output_device_defaults_none_and_normalizes_monitor_only() {
+        assert_eq!(parse("{}").audio_output_device, None);
+        assert_eq!(
+            parse(r#"{"audio_output_device": "monitor_only"}"#).audio_output_device,
+            None
+        );
+        assert_eq!(
+            parse(r#"{"audio_output_device": ""}"#).audio_output_device,
+            None
+        );
+        assert_eq!(
+            parse(r#"{"audio_output_device": "default"}"#).audio_output_device,
+            Some("default".into())
+        );
+        assert_eq!(
+            parse(r#"{"audio_output_device": "CABLE Input (VB-Audio Virtual Cable)"}"#)
+                .audio_output_device,
+            Some("CABLE Input (VB-Audio Virtual Cable)".into())
+        );
     }
 
     #[test]

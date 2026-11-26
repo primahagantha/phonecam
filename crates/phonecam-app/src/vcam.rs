@@ -88,6 +88,22 @@ impl Registrar {
                             .join("unpacked")
                             .join("phonecam-vcam-register.exe"),
                     );
+                    candidates.push(
+                        grandparent
+                            .join("target")
+                            .join("vcam-build")
+                            .join("bin")
+                            .join("Release")
+                            .join("phonecam-vcam-register.exe"),
+                    );
+                    candidates.push(
+                        grandparent
+                            .join("native")
+                            .join("build")
+                            .join("bin")
+                            .join("Release")
+                            .join("phonecam-vcam-register.exe"),
+                    );
                 }
             }
         }
@@ -95,6 +111,20 @@ impl Registrar {
             candidates.push(
                 cwd.join("dist")
                     .join("unpacked")
+                    .join("phonecam-vcam-register.exe"),
+            );
+            candidates.push(
+                cwd.join("target")
+                    .join("vcam-build")
+                    .join("bin")
+                    .join("Release")
+                    .join("phonecam-vcam-register.exe"),
+            );
+            candidates.push(
+                cwd.join("native")
+                    .join("build")
+                    .join("bin")
+                    .join("Release")
                     .join("phonecam-vcam-register.exe"),
             );
         }
@@ -419,6 +449,61 @@ mod tests {
         assert_eq!(
             beside_exe.path().canonicalize().unwrap(),
             exe_reg.canonicalize().unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn locate_falls_back_to_vcam_build_and_native_build_release_dirs() {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(100);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "phonecam_vcam_fallback_test_{}_{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let target_release = root.join("target").join("release");
+        std::fs::create_dir_all(&target_release).unwrap();
+
+        let native_reg = root
+            .join("native")
+            .join("build")
+            .join("bin")
+            .join("Release")
+            .join("phonecam-vcam-register.exe");
+        std::fs::create_dir_all(native_reg.parent().unwrap()).unwrap();
+        std::fs::write(&native_reg, b"").unwrap();
+
+        let from_cwd_native = Registrar::locate_with_roots(None, Some(&root), &[])
+            .expect("locate from cwd/native/build/bin/Release");
+        assert_eq!(
+            from_cwd_native.path().canonicalize().unwrap(),
+            native_reg.canonicalize().unwrap()
+        );
+
+        let vcam_build_reg = root
+            .join("target")
+            .join("vcam-build")
+            .join("bin")
+            .join("Release")
+            .join("phonecam-vcam-register.exe");
+        std::fs::create_dir_all(vcam_build_reg.parent().unwrap()).unwrap();
+        std::fs::write(&vcam_build_reg, b"").unwrap();
+
+        let from_exe_vcam_build = Registrar::locate_with_roots(Some(&target_release), None, &[])
+            .expect("locate from ../../target/vcam-build/bin/Release");
+        assert_eq!(
+            from_exe_vcam_build.path().canonicalize().unwrap(),
+            vcam_build_reg.canonicalize().unwrap()
+        );
+
+        let from_cwd_vcam_build = Registrar::locate_with_roots(None, Some(&root), &[])
+            .expect("locate from cwd/target/vcam-build/bin/Release");
+        assert_eq!(
+            from_cwd_vcam_build.path().canonicalize().unwrap(),
+            vcam_build_reg.canonicalize().unwrap()
         );
 
         let _ = std::fs::remove_dir_all(&root);
