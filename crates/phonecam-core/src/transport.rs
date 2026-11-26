@@ -22,6 +22,11 @@ use socket2::{SockRef, TcpKeepalive};
 /// the peer dead and closing the socket.
 const WRITE_RETRY_DEADLINE: Duration = Duration::from_secs(5);
 
+/// Bounded `SO_RCVBUF` size (256 KiB) for low-latency video sockets:
+/// generous enough for a single IDR keyframe while preventing multi-megabyte
+/// OS TCP buffering of stale frames.
+pub const LOW_LATENCY_VIDEO_RCVBUF_BYTES: usize = 262_144;
+
 /// The outcome of a read attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadResult {
@@ -58,6 +63,8 @@ pub struct Connection {
 
 impl Connection {
     pub fn new(stream: TcpStream) -> std::io::Result<Self> {
+        // Disable Nagle on every client and server socket to avoid 40-200 ms
+        // Nagle/delayed-ACK stalls on framed control and video traffic.
         stream.set_nodelay(true)?;
         let keepalive = TcpKeepalive::new()
             .with_time(Duration::from_secs(5))
@@ -67,6 +74,18 @@ impl Connection {
             stream,
             closed: AtomicBool::new(false),
         })
+    }
+
+    /// Tunes the socket for low-latency live video reception.
+    ///
+    /// Enforces `TCP_NODELAY = true` and bounds `SO_RCVBUF` to 256 KiB
+    /// ([`LOW_LATENCY_VIDEO_RCVBUF_BYTES`]) so a single IDR keyframe fits
+    /// comfortably while preventing multi-megabyte OS TCP buffering of stale
+    /// frames.
+    pub fn tune_for_low_latency_video(&self) {
+        let sock = SockRef::from(&self.stream);
+        let _ = sock.set_tcp_nodelay(true);
+        let _ = sock.set_recv_buffer_size(LOW_LATENCY_VIDEO_RCVBUF_BYTES);
     }
 
     pub fn peer_addr(&self) -> Option<SocketAddr> {
@@ -522,5 +541,56 @@ mod tests {
         assert!(a.send_to(b"beacon", b_addr));
         let (data, _from) = b.recv().expect("datagram should arrive");
         assert_eq!(data, b"beacon");
+    }
+
+    #[test]
+    fn connection_new_enables_tcp_nodelay_for_client_and_server() {
+        let listener = Listener::bind(0).unwrap();
+        let port = listener.port();
+        let client_stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let server_conn = listener.accept().expect("server should accept");
+        let client_conn = Connection::new(client_stream).unwrap();
+
+        assert!(
+            client_conn.stream.nodelay().unwrap(),
+            "client Connection::new must enable TCP_NODELAY"
+        );
+        assert!(
+            server_conn.stream.nodelay().unwrap(),
+            "server Connection::new must enable TCP_NODELAY"
+        );
+    }
+
+    #[test]
+    fn tune_for_low_latency_video_enforces_nodelay_and_bounded_rcvbuf() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+        let conn = Connection::new(server_stream).unwrap();
+
+        // Explicitly disable TCP_NODELAY first so we prove tune_for_low_latency_video re-enables it.
+        conn.stream.set_nodelay(false).unwrap();
+        assert!(!conn.stream.nodelay().unwrap());
+
+        conn.tune_for_low_latency_video();
+
+        let sock = SockRef::from(&conn.stream);
+        assert!(
+            sock.tcp_nodelay().unwrap(),
+            "tune_for_low_latency_video must enforce TCP_NODELAY"
+        );
+        let rcvbuf = sock.recv_buffer_size().unwrap();
+        #[cfg(windows)]
+        assert_eq!(
+            rcvbuf, LOW_LATENCY_VIDEO_RCVBUF_BYTES,
+            "Windows SO_RCVBUF should match 256 KiB"
+        );
+        #[cfg(not(windows))]
+        assert!(
+            rcvbuf >= LOW_LATENCY_VIDEO_RCVBUF_BYTES
+                && rcvbuf <= LOW_LATENCY_VIDEO_RCVBUF_BYTES * 2,
+            "SO_RCVBUF should be bounded around 256 KiB, got {rcvbuf}"
+        );
     }
 }

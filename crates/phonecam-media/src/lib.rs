@@ -36,8 +36,9 @@ pub use face_detect::{detect_face, FaceDetector, FaceRect};
 pub use gesture::{detect_gesture, GestureDetector, GestureEvent, HandGesture};
 pub use sps::{parse_avc_dimensions, Dimensions};
 
-use openh264::decoder::Decoder;
+use openh264::decoder::{DecodeOptions, Decoder, DecoderConfig, Flush};
 use openh264::formats::YUVSource;
+use openh264::OpenH264API;
 use phonecam_protocol::{NAL_IDR, NAL_SPS};
 
 #[derive(Debug, thiserror::Error)]
@@ -209,6 +210,34 @@ fn planes_have_valid_bounds(planes: &YuvPlanes<'_>) -> bool {
     true
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn interleave_uv_row_avx2(u: &[u8], v: &[u8], dst_uv: &mut [u8]) {
+    use std::arch::x86_64::*;
+
+    let n = u.len().min(v.len()).min(dst_uv.len() / 2);
+    let mut i = 0usize;
+    let u_ptr = u.as_ptr();
+    let v_ptr = v.as_ptr();
+    let d_ptr = dst_uv.as_mut_ptr();
+
+    while i + 32 <= n {
+        let uu = _mm256_loadu_si256(u_ptr.add(i) as *const __m256i);
+        let vv = _mm256_loadu_si256(v_ptr.add(i) as *const __m256i);
+        let lo = _mm256_unpacklo_epi8(uu, vv);
+        let hi = _mm256_unpackhi_epi8(uu, vv);
+        let out0 = _mm256_permute2x128_si256::<0x20>(lo, hi);
+        let out1 = _mm256_permute2x128_si256::<0x31>(lo, hi);
+        _mm256_storeu_si256(d_ptr.add(i * 2) as *mut __m256i, out0);
+        _mm256_storeu_si256(d_ptr.add(i * 2 + 32) as *mut __m256i, out1);
+        i += 32;
+    }
+
+    if i < n {
+        interleave_uv_row(&u[i..n], &v[i..n], &mut dst_uv[i * 2..n * 2]);
+    }
+}
+
 #[inline]
 fn interleave_uv_row(u: &[u8], v: &[u8], dst_uv: &mut [u8]) {
     let n = u.len().min(v.len()).min(dst_uv.len() / 2);
@@ -279,11 +308,35 @@ pub fn write_planes_nv12(planes: &YuvPlanes<'_>, dst: &mut [u8]) -> bool {
         return true;
     }
 
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = std::arch::is_x86_feature_detected!("avx2");
+
     if planes.u_stride == chroma_width && planes.v_stride == chroma_width {
         let half = chroma_width * chroma_rows;
+        #[cfg(target_arch = "x86_64")]
+        if use_avx2 {
+            // SAFETY: AVX2 support verified at runtime and slices are bounds-checked above.
+            unsafe {
+                interleave_uv_row_avx2(&planes.u[..half], &planes.v[..half], dst_chroma);
+            }
+            return true;
+        }
         interleave_uv_row(&planes.u[..half], &planes.v[..half], dst_chroma);
     } else {
         let row_uv_bytes = chroma_width * 2;
+        #[cfg(target_arch = "x86_64")]
+        if use_avx2 {
+            for r in 0..chroma_rows {
+                let u_row = &planes.u[r * planes.u_stride..r * planes.u_stride + chroma_width];
+                let v_row = &planes.v[r * planes.v_stride..r * planes.v_stride + chroma_width];
+                let d_row = &mut dst_chroma[r * row_uv_bytes..(r + 1) * row_uv_bytes];
+                // SAFETY: AVX2 support verified at runtime and row slices are bounds-checked above.
+                unsafe {
+                    interleave_uv_row_avx2(u_row, v_row, d_row);
+                }
+            }
+            return true;
+        }
         for r in 0..chroma_rows {
             let u_row = &planes.u[r * planes.u_stride..r * planes.u_stride + chroma_width];
             let v_row = &planes.v[r * planes.v_stride..r * planes.v_stride + chroma_width];
@@ -625,8 +678,25 @@ impl std::fmt::Debug for H264Decoder {
 }
 
 impl H264Decoder {
+    /// Builds an OpenH264 0.9 decoder pinned for minimal-latency live video.
+    ///
+    /// - `openh264::decoder::Decoder::decode` invokes `DecodeFrameNoDelay` directly.
+    /// - `Flush::Flush` ensures any buffered picture is emitted immediately rather
+    ///   than held until a later access unit arrives.
+    /// - `num_threads` is deliberately left at `0` (default): multi-threaded
+    ///   frame decoding both adds frame-buffering latency and is flagged unsafe
+    ///   upstream in `openh264` 0.9 (`openh264-rust#10`).
+    /// - `debug(false)` keeps OpenH264 trace logging disabled (`WELS_LOG_QUIET`).
+    fn build_low_latency_decoder() -> Result<Decoder, DecodeError> {
+        let config = DecoderConfig::new()
+            .flush_after_decode(Flush::Flush)
+            .debug(false);
+        Decoder::with_api_config(OpenH264API::from_source(), config)
+            .map_err(|e| DecodeError::Init(format!("{e}")))
+    }
+
     pub fn new() -> Result<Self, DecodeError> {
-        let inner = Decoder::new().map_err(|e| DecodeError::Init(format!("{e}")))?;
+        let inner = Self::build_low_latency_decoder()?;
         Ok(Self {
             inner,
             parameter_sets: Vec::new(),
@@ -655,7 +725,12 @@ impl H264Decoder {
                 self.parameter_sets.extend_from_slice(data);
                 self.dimensions = Some(dims);
                 self.needs_parameter_sets = true;
-                let _ = self.inner.decode(data);
+                // Priming SPS/PPS produces no picture; skip the redundant
+                // post-decode buffer-count FFI query with `Flush::NoFlush`.
+                let _ = self.inner.decode_with_options(
+                    data,
+                    DecodeOptions::new().flush_after_decode(Flush::NoFlush),
+                );
                 true
             }
             None => false,
@@ -683,7 +758,14 @@ impl H264Decoder {
         // Re-read the size from keyframes carrying SPS: the adaptive ladder restarts
         // the phone's encoder at a new size, and a decoder sized to the first one
         // rejects every frame after the change.
-        if has_sps {
+        //
+        // Fast path: when steady-state keyframes repeat the exact SPS/PPS bytes
+        // we already parsed, skip allocating and bit-parsing the identical SPS.
+        if has_sps
+            && !(self.dimensions.is_some()
+                && !self.parameter_sets.is_empty()
+                && access_unit.starts_with(&self.parameter_sets))
+        {
             if let Some(dims) = parse_avc_dimensions(access_unit) {
                 if self.dimensions != Some(dims) {
                     tracing::info!("stream resized to {}x{}", dims.width, dims.height);
@@ -759,27 +841,29 @@ impl H264Decoder {
             out.width = planes.width;
             out.height = planes.height;
             out.pts_us = pts;
-            out.yuv.clear();
-            if out.yuv.capacity() < needed {
-                out.yuv.reserve(needed - out.yuv.len());
+            if out.yuv.len() != needed {
+                out.yuv.resize(needed, 0);
             }
 
+            let (dst_y, dst_uv) = out.yuv.split_at_mut(luma_len);
+            let (dst_u, dst_v) = dst_uv.split_at_mut(chroma_half);
+
             if planes.y_stride == w && planes.u_stride == chroma_w && planes.v_stride == chroma_w {
-                out.yuv.extend_from_slice(&planes.y[..luma_len]);
-                out.yuv.extend_from_slice(&planes.u[..chroma_half]);
-                out.yuv.extend_from_slice(&planes.v[..chroma_half]);
+                dst_y.copy_from_slice(&planes.y[..luma_len]);
+                dst_u.copy_from_slice(&planes.u[..chroma_half]);
+                dst_v.copy_from_slice(&planes.v[..chroma_half]);
             } else {
                 for r in 0..h {
-                    out.yuv
-                        .extend_from_slice(&planes.y[r * planes.y_stride..r * planes.y_stride + w]);
+                    dst_y[r * w..(r + 1) * w]
+                        .copy_from_slice(&planes.y[r * planes.y_stride..r * planes.y_stride + w]);
                 }
                 for r in 0..chroma_h {
-                    out.yuv.extend_from_slice(
+                    dst_u[r * chroma_w..(r + 1) * chroma_w].copy_from_slice(
                         &planes.u[r * planes.u_stride..r * planes.u_stride + chroma_w],
                     );
                 }
                 for r in 0..chroma_h {
-                    out.yuv.extend_from_slice(
+                    dst_v[r * chroma_w..(r + 1) * chroma_w].copy_from_slice(
                         &planes.v[r * planes.v_stride..r * planes.v_stride + chroma_w],
                     );
                 }
@@ -814,9 +898,12 @@ impl H264Decoder {
     /// Drops the current picture state so the next keyframe re-syncs.
     pub fn reset(&mut self) {
         self.needs_parameter_sets = true;
-        if let Ok(mut fresh) = Decoder::new() {
+        if let Ok(mut fresh) = Self::build_low_latency_decoder() {
             if !self.parameter_sets.is_empty() {
-                let _ = fresh.decode(&self.parameter_sets);
+                let _ = fresh.decode_with_options(
+                    &self.parameter_sets,
+                    DecodeOptions::new().flush_after_decode(Flush::NoFlush),
+                );
             }
             self.inner = fresh;
         }
@@ -1108,6 +1195,20 @@ mod tests {
         assert!(
             decoder.combined_buf.is_empty(),
             "P-frames must not copy SPS/PPS + payload into combined_buf"
+        );
+
+        // Steady-state inline SPS matching cached parameter_sets keeps dimensions;
+        // a different inline SPS (e.g. adaptive ladder resize to 1920x1080) updates dimensions.
+        let sps_1080 = sps::tests::make_sps(120, 68, 4); // 1920x1080 (crop_bottom=4 -> 8px)
+        let mut resized_idr = sps_1080;
+        resized_idr.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x88]);
+        let _ = decoder.decode(&resized_idr);
+        assert_eq!(
+            decoder.dimensions(),
+            Some(Dimensions {
+                width: 1920,
+                height: 1080
+            })
         );
     }
 

@@ -2,6 +2,7 @@
 
 #include "phonecam/nv12.hpp"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <chrono>
@@ -85,6 +86,15 @@ PhoneCamMediaStream::PhoneCamMediaStream(PhoneCamMediaSource* source, IMFStreamD
 
   MFCreateEventQueue(&eventQueue_);
 
+  // High-resolution waitable timer avoids Windows' default 15.6 ms sleep_for
+  // quantum inside svchost.exe without modifying global system timer period.
+  paceTimer_ = CreateWaitableTimerExW(
+      nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  if (!paceTimer_) {
+    paceTimer_ = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+  }
+  stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
   // Check offline test pattern environment flag
   wchar_t envBuf[16] = {0};
   if (GetEnvironmentVariableW(L"PHONECAM_VCAM_TEST_PATTERN", envBuf, 16) > 0) {
@@ -97,6 +107,14 @@ PhoneCamMediaStream::PhoneCamMediaStream(PhoneCamMediaSource* source, IMFStreamD
 
 PhoneCamMediaStream::~PhoneCamMediaStream() {
   Shutdown();
+  if (paceTimer_) {
+    CloseHandle(paceTimer_);
+    paceTimer_ = nullptr;
+  }
+  if (stopEvent_) {
+    CloseHandle(stopEvent_);
+    stopEvent_ = nullptr;
+  }
   if (streamDescriptor_) {
     streamDescriptor_->Release();
     streamDescriptor_ = nullptr;
@@ -184,26 +202,98 @@ STDMETHODIMP PhoneCamMediaStream::GetStreamDescriptor(IMFStreamDescriptor** ppSt
   return S_OK;
 }
 
-STDMETHODIMP PhoneCamMediaStream::RequestSample(IUnknown* pToken) {
-  // Pace the stream at the negotiated rate. Sleep outside the lock: a state
-  // change or a shutdown must never wait on a stream that is only waiting for
-  // its next frame slot.
-  LONGLONG wait100ns = 0;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!eventQueue_) return MF_E_SHUTDOWN;
-    if (streamState_ != MF_STREAM_STATE_RUNNING) return MF_E_INVALIDREQUEST;
-    wait100ns = nextSampleDue100ns_ - MFGetSystemTime();
+bool PhoneCamMediaStream::WaitPacing100ns(LONGLONG wait100ns) {
+  if (wait100ns <= 0) return true;
+  if (paceTimer_) {
+    LARGE_INTEGER dueTime{};
+    dueTime.QuadPart = -wait100ns;
+    if (SetWaitableTimer(paceTimer_, &dueTime, 0, nullptr, nullptr, FALSE)) {
+      if (stopEvent_) {
+        HANDLE handles[2] = {stopEvent_, paceTimer_};
+        const DWORD res = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+        return res == (WAIT_OBJECT_0 + 1);
+      }
+      WaitForSingleObject(paceTimer_, INFINITE);
+      return true;
+    }
   }
-  if (wait100ns > 0) {
-    std::this_thread::sleep_for(std::chrono::microseconds(wait100ns / 10));
+  std::this_thread::sleep_for(std::chrono::microseconds(wait100ns / 10));
+  return true;
+}
+
+STDMETHODIMP PhoneCamMediaStream::RequestSample(IUnknown* pToken) {
+  // Serialize pacing across concurrent RequestSample callers without blocking
+  // Stop/Pause/Shutdown (which only acquire mutex_ and signal stopEvent_).
+  std::lock_guard<std::mutex> paceLock(paceMutex_);
+
+  // Pace at the negotiated rate using a high-resolution waitable timer (~0.5ms
+  // precision vs 15.6ms default sleep_for) and wake early as soon as a fresh
+  // live frame lands in shared memory so new frames never sit waiting for an
+  // arbitrary phase-misaligned slot.
+  constexpr LONGLONG kLivePollSlice100ns = 10000;  // 1 ms
+  constexpr LONGLONG kIdlePollSlice100ns = 40000;  // 4 ms
+  for (;;) {
+    LONGLONG sleep100ns = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!eventQueue_) return MF_E_SHUTDOWN;
+      if (streamState_ != MF_STREAM_STATE_RUNNING) return MF_E_INVALIDREQUEST;
+
+      const LONGLONG now = MFGetSystemTime();
+      const LONGLONG remaining = nextSampleDue100ns_ - now;
+      if (remaining <= 0) {
+        break;
+      }
+
+      if (!forceTestPattern_ && shmOpened_ &&
+          frameReader_.HasNewFrame(lastDeliveredFrameIndex_)) {
+        // Wake immediately when transitioning from placeholder to live; in
+        // steady-state live mode guard at 7/8 of a frame interval so a faster
+        // phone (e.g. 60 fps) never floods a slower negotiated consumer (30 fps)
+        // while same-rate streams with normal jitter deliver within <= 1 ms.
+        const LONGLONG minDue =
+            lastDeliveredLive_
+                ? (lastDeliverStart100ns_ +
+                   static_cast<LONGLONG>((sampleDuration100ns_ * 7ull) / 8ull))
+                : 0;
+        if (now >= minDue) {
+          break;
+        }
+        const LONGLONG untilMin = minDue - now;
+        sleep100ns = (untilMin < remaining) ? untilMin : remaining;
+      } else {
+        const LONGLONG slice = shmOpened_ ? kLivePollSlice100ns : kIdlePollSlice100ns;
+        sleep100ns = (remaining < slice) ? remaining : slice;
+      }
+    }
+
+    if (!WaitPacing100ns(sleep100ns)) {
+      // Woken early by Stop/Pause/Shutdown.
+      break;
+    }
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (!eventQueue_) return MF_E_SHUTDOWN;
   if (streamState_ != MF_STREAM_STATE_RUNNING) return MF_E_INVALIDREQUEST;
+
+  const LONGLONG deliverStart100ns = MFGetSystemTime();
+  const bool wasNewFrame =
+      !forceTestPattern_ && shmOpened_ && frameReader_.HasNewFrame(lastDeliveredFrameIndex_);
   const HRESULT hr = DeliverFrame(pToken);
-  if (SUCCEEDED(hr)) nextSampleDue100ns_ = MFGetSystemTime() + sampleDuration100ns_;
+  if (SUCCEEDED(hr)) {
+    lastDeliverStart100ns_ = deliverStart100ns;
+    const LONGLONG dur = static_cast<LONGLONG>(sampleDuration100ns_);
+    if (wasNewFrame || nextSampleDue100ns_ == 0 ||
+        deliverStart100ns > nextSampleDue100ns_ + dur) {
+      // Phase-lock to fresh live frame arrival (or re-anchor after a stall)
+      // using pre-delivery wall time so DeliverFrame work never drifts cadence.
+      nextSampleDue100ns_ = deliverStart100ns + dur;
+    } else {
+      // Zero-drift fixed-cadence step for repeated/placeholder samples.
+      nextSampleDue100ns_ += dur;
+    }
+  }
   return hr;
 }
 
@@ -214,14 +304,19 @@ STDMETHODIMP PhoneCamMediaStream::SetStreamState(MF_STREAM_STATE value) {
   switch (value) {
     case MF_STREAM_STATE_RUNNING:
       streamState_ = MF_STREAM_STATE_RUNNING;
+      nextSampleDue100ns_ = 0;
+      lastDeliverStart100ns_ = 0;
+      if (stopEvent_) ResetEvent(stopEvent_);
       if (eventQueue_) eventQueue_->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
       break;
     case MF_STREAM_STATE_PAUSED:
       streamState_ = MF_STREAM_STATE_PAUSED;
+      if (stopEvent_) SetEvent(stopEvent_);
       if (eventQueue_) eventQueue_->QueueEventParamVar(MEStreamPaused, GUID_NULL, S_OK, nullptr);
       break;
     case MF_STREAM_STATE_STOPPED:
       streamState_ = MF_STREAM_STATE_STOPPED;
+      if (stopEvent_) SetEvent(stopEvent_);
       if (eventQueue_) eventQueue_->QueueEventParamVar(MEStreamStopped, GUID_NULL, S_OK, nullptr);
       break;
     default:
@@ -240,6 +335,7 @@ STDMETHODIMP PhoneCamMediaStream::GetStreamState(MF_STREAM_STATE* value) {
 HRESULT PhoneCamMediaStream::Shutdown() {
   std::lock_guard<std::mutex> lock(mutex_);
   streamState_ = MF_STREAM_STATE_STOPPED;
+  if (stopEvent_) SetEvent(stopEvent_);
   if (frameReader_.IsOpen()) {
     frameReader_.Close();
     shmOpened_ = false;
@@ -255,6 +351,7 @@ void PhoneCamMediaStream::SetActiveFormat(uint32_t width, uint32_t height, uint3
   fps_ = (fps > 0 ? fps : 30);
   sampleDuration100ns_ = 10000000ull / fps_;
   nextSampleDue100ns_ = 0;
+  lastDeliverStart100ns_ = 0;
 }
 
 HRESULT PhoneCamMediaStream::Start() {
@@ -262,6 +359,11 @@ HRESULT PhoneCamMediaStream::Start() {
   if (!eventQueue_) return MF_E_SHUTDOWN;
   streamState_ = MF_STREAM_STATE_RUNNING;
   nextSampleDue100ns_ = 0;
+  lastDeliverStart100ns_ = 0;
+  lastDeliveredFrameIndex_ = 0;
+  lastDeliveredLive_ = false;
+  ptsAnchored_ = false;
+  if (stopEvent_) ResetEvent(stopEvent_);
   return eventQueue_->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
 }
 
@@ -269,6 +371,7 @@ HRESULT PhoneCamMediaStream::Stop() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!eventQueue_) return MF_E_SHUTDOWN;
   streamState_ = MF_STREAM_STATE_STOPPED;
+  if (stopEvent_) SetEvent(stopEvent_);
   return eventQueue_->QueueEventParamVar(MEStreamStopped, GUID_NULL, S_OK, nullptr);
 }
 
@@ -276,13 +379,13 @@ HRESULT PhoneCamMediaStream::Pause() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!eventQueue_) return MF_E_SHUTDOWN;
   streamState_ = MF_STREAM_STATE_PAUSED;
+  if (stopEvent_) SetEvent(stopEvent_);
   return eventQueue_->QueueEventParamVar(MEStreamPaused, GUID_NULL, S_OK, nullptr);
 }
 
 HRESULT PhoneCamMediaStream::DeliverFrame(IUnknown* pToken) {
   const size_t expectedBytes = (static_cast<size_t>(width_) * height_ * 3) / 2;
   const uint8_t* nv12Ptr = nullptr;
-  std::vector<uint8_t> shmBuffer;
 
   if (!forceTestPattern_) {
     if (!shmOpened_) {
@@ -311,7 +414,7 @@ HRESULT PhoneCamMediaStream::DeliverFrame(IUnknown* pToken) {
 
     if (shmOpened_) {
       phonecam::shm::FrameReader::Snapshot snap;
-      const bool readOk = frameReader_.Read(&shmBuffer, &snap);
+      const bool readOk = frameReader_.Read(&shmBuffer_, &snap);
       lastReadOk_ = readOk;
       lastSnapshot_ = snap;
       if (readOk && snap.state == phonecam::shm::FrameState::kLive &&
@@ -319,13 +422,14 @@ HRESULT PhoneCamMediaStream::DeliverFrame(IUnknown* pToken) {
         // The frame's own presentation time, so the sample can be stamped with
         // it rather than with the moment the consumer happened to ask.
         deliveredPtsUs_ = snap.ptsUs;
-        if (snap.width == width_ && snap.height == height_ && shmBuffer.size() == expectedBytes) {
-          nv12Ptr = shmBuffer.data();
+        lastDeliveredFrameIndex_ = snap.frameIndex;
+        if (snap.width == width_ && snap.height == height_ && shmBuffer_.size() == expectedBytes) {
+          nv12Ptr = shmBuffer_.data();
         } else {
           const size_t sourceBytes = (static_cast<size_t>(snap.width) * snap.height * 3) / 2;
-          if (shmBuffer.size() >= sourceBytes) {
+          if (shmBuffer_.size() >= sourceBytes) {
             scaledNv12_.resize(expectedBytes);
-            phonecam::nv12::Scale(shmBuffer.data(), snap.width, snap.height, scaledNv12_.data(),
+            phonecam::nv12::Scale(shmBuffer_.data(), snap.width, snap.height, scaledNv12_.data(),
                                   width_, height_);
             nv12Ptr = scaledNv12_.data();
           }
@@ -340,6 +444,7 @@ HRESULT PhoneCamMediaStream::DeliverFrame(IUnknown* pToken) {
     }
   }
 
+  lastDeliveredLive_ = (nv12Ptr != nullptr);
   if (nv12Ptr == nullptr) {
     // A placeholder has no frame time of its own; stamping it from the wall clock
     // keeps a consumer's timeline moving while the picture is explicitly absent.
@@ -428,22 +533,26 @@ HRESULT PhoneCamMediaStream::DeliverFrame(IUnknown* pToken) {
   //
   // Anchoring once and then stepping by the stream's own deltas keeps the
   // ordering and pacing of the stream on a timeline the consumer accepts.
-  LONGLONG now = MFGetSystemTime();
+  const LONGLONG wallNow = MFGetSystemTime();
+  const LONGLONG sampleDur = static_cast<LONGLONG>(sampleDuration100ns_);
+  LONGLONG now = wallNow;
   if (deliveredPtsUs_ != 0) {
     const LONGLONG frameDelta100ns =
-        static_cast<LONGLONG>(deliveredPtsUs_ - lastDeliveredPtsUs_) * 10;
+        (deliveredPtsUs_ > lastDeliveredPtsUs_)
+            ? static_cast<LONGLONG>(
+                  std::min<uint64_t>(deliveredPtsUs_ - lastDeliveredPtsUs_, 10000000ull) * 10ull)
+            : 0;
     if (ptsAnchored_) {
       const LONGLONG candidate = lastSampleTime100ns_ + frameDelta100ns;
       // A repeated frame (delta 0) or a backwards jump steps one full duration;
       // overlapping timestamps are what stall the Frame Server's pacer.
       now = frameDelta100ns > 0
                 ? candidate
-                : lastSampleTime100ns_ + sampleDuration100ns_;
-      // A huge forward jump (the encoder restarted at a larger base) would run
-      // ahead of the wall clock; clamp to now rather than letting the timeline
-      // diverge from real time by minutes.
-      if (now > MFGetSystemTime() + sampleDuration100ns_) {
-        now = MFGetSystemTime();
+                : lastSampleTime100ns_ + sampleDur;
+      // Clamp forward jumps (encoder restarted at a larger base) and re-anchor
+      // if the PTS timeline drifted behind real time after a stall.
+      if (now > wallNow + sampleDur || now < wallNow - sampleDur * 2) {
+        now = wallNow;
       }
     } else {
       // First live frame: anchor the stream's timeline to now.
@@ -456,7 +565,7 @@ HRESULT PhoneCamMediaStream::DeliverFrame(IUnknown* pToken) {
   }
   lastDeliveredPtsUs_ = deliveredPtsUs_;
   if (now <= lastSampleTime100ns_) {
-    now = lastSampleTime100ns_ + sampleDuration100ns_;
+    now = lastSampleTime100ns_ + sampleDur;
   }
   lastSampleTime100ns_ = now;
 

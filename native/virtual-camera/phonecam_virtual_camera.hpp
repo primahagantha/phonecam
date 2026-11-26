@@ -81,9 +81,13 @@ class PhoneCamMediaStream : public IMFMediaStream2 {
 
  private:
   HRESULT DeliverFrame(IUnknown* pToken);
+  bool WaitPacing100ns(LONGLONG wait100ns);
 
   std::atomic<ULONG> refCount_{1};
   std::mutex mutex_;
+  std::mutex paceMutex_;
+  HANDLE paceTimer_{nullptr};
+  HANDLE stopEvent_{nullptr};
   PhoneCamMediaSource* source_{nullptr};
   IMFStreamDescriptor* streamDescriptor_{nullptr};
   IMFMediaEventQueue* eventQueue_{nullptr};
@@ -107,6 +111,15 @@ class PhoneCamMediaStream : public IMFMediaStream2 {
    * shows smoothly.
    */
   LONGLONG nextSampleDue100ns_{0};
+
+  /** Wall-clock start time (100 ns) of the previous successful DeliverFrame(). */
+  LONGLONG lastDeliverStart100ns_{0};
+
+  /** Shared-memory frameIndex of the last live frame delivered, for early wake. */
+  uint64_t lastDeliveredFrameIndex_{0};
+
+  /** True if the previous delivered sample was a live frame rather than a placeholder. */
+  bool lastDeliveredLive_{false};
 
   /**
    * Presentation time of the frame about to be delivered, in microseconds.
@@ -137,6 +150,9 @@ class PhoneCamMediaStream : public IMFMediaStream2 {
   bool lastReadOk_{false};
   phonecam::shm::FrameReader::Snapshot lastSnapshot_{};
   std::vector<uint8_t> cachedNv12_;
+
+  /** Reusable scratch buffer for shared-memory NV12 reads (zero per-frame heap alloc). */
+  std::vector<uint8_t> shmBuffer_;
 
   /** Scratch buffer for output mirror/rotation transforms. */
   std::vector<uint8_t> transformedNv12_;
