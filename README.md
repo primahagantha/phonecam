@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/primahagantha/phonecam/actions/workflows/ci.yml"><img src="https://github.com/primahagantha/phonecam/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/primahagantha/phonecam/releases"><img src="https://img.shields.io/badge/release-v1.3.0%20%7C%201.4.0--nightly.1-blue.svg" alt="Release v1.3.0 | 1.4.0-nightly.1" /></a>
+  <a href="https://github.com/primahagantha/phonecam/releases"><img src="https://img.shields.io/badge/release-v1.4.0-blue.svg" alt="Release v1.4.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%2011%20x64%20%7C%20Android%208%2B-lightgrey.svg" alt="Platform: Windows 11 x64 | Android 8+" />
   <img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust 1.85+" />

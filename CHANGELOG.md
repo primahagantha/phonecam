@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.4.0] - 2026-11-26
+
 ### Added
 - **Open-Source C++ Virtual Camera & Build Automation** (`ba724b4`):
   - Open-sourced the full C++17 Windows Media Foundation virtual camera and shared memory source under `native/virtual-camera/` and `native/shared/` (matching `phonecam-framebus` 68-byte seqlock layout).
