@@ -580,11 +580,11 @@ private fun StudioNavigationRail(
     NavigationRail(
         modifier = Modifier
             .fillMaxHeight()
-            .width(68.dp)
             .background(MaterialTheme.colorScheme.surface)
             .windowInsetsPadding(
                 WindowInsets.safeDrawing.only(WindowInsetsSides.Start + WindowInsetsSides.Vertical),
-            ),
+            )
+            .width(82.dp),
         containerColor = MaterialTheme.colorScheme.surface,
         contentColor = MaterialTheme.colorScheme.onSurface,
         windowInsets = WindowInsets(0, 0, 0, 0),

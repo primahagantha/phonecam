@@ -152,7 +152,6 @@ fun LabeledValue(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
         )
         Text(
             text = value,
@@ -161,7 +160,7 @@ fun LabeledValue(
             ),
             color = valueColor,
             textAlign = TextAlign.End,
-            modifier = Modifier.weight(1.45f),
+            modifier = Modifier.weight(1f),
         )
     }
 }
