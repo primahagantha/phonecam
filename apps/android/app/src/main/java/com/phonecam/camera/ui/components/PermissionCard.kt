@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import com.phonecam.camera.R
+import com.phonecam.camera.ui.theme.PhoneCamShapes
 
 /**
  * What the camera permission costs the user, in one sentence, before asking.
@@ -28,7 +29,11 @@ fun CameraPermissionCard(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Button(onClick = onRequest, modifier = Modifier.fillMaxWidth()) {
+        Button(
+            onClick = onRequest,
+            shape = PhoneCamShapes.Field,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
             Text(stringResource(R.string.permission_action_grant))
         }
     }

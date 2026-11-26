@@ -1,100 +1,104 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    The palette. One source of truth: the Compose theme, the XML window theme and
-    the launcher icon all read these, so nothing can drift.
+    The PhoneCam Studio palette. One source of truth: Compose theme and XML window
+    themes read these tokens so the splash frame and Compose UI never drift.
 
-    Two rules hold this file together.
-
-    1. ONE accent hue. `phonecam_primary` is the only accent in the app, and
-       everything that means "this is live / this is in use" uses it. The light
-       theme carries the same hue at a darker lightness (`_on_light`) because the
-       brand green is unreadable as text on a white surface; that is a lightness
-       change, never a second hue.
-
-    2. Status colours are state, not decoration. Info, warning and error each get
-       a container + on-container pair and are used only for the condition they
-       name. Nothing else in the UI is allowed to borrow them.
-
-    Every foreground/background pair used by the UI was checked against WCAG AA:
-    4.5:1 for body text, 3:1 for borders, icons and indicator dots. The pairs are
-    listed next to each role so a future edit can be re-checked without guessing.
+    Palette rules:
+    1. Obsidian Dark Studio base (#090C10 canvas, #06080C stage, #10151C card,
+       #18212C elevated control) aligned with PhoneCam Desktop GPUI Studio UI.
+    2. Studio Blue (#2563EB) is the primary action accent.
+    3. Status colours are semantic only: Live Green (#22C55E) for live/ready
+       state, Amber (#F59E0B) for transitional/thermal warnings, Danger Red
+       (#EF4444 / #2A1418 subtle danger surface) for errors and destructive stop.
 -->
 <resources>
-    <!-- Dark: the default. Obsidian studio palette aligned with PhoneCam Desktop
-         so the phone sits beside the PC without visual drift or harsh glare. -->
-    <color name="phonecam_background">#0B0F14</color>
-    <color name="phonecam_on_background">#E8EDF4</color>
+    <!-- Dark: Obsidian Studio palette (default) -->
+    <color name="phonecam_background">#090C10</color>
+    <color name="phonecam_on_background">#F1F5F9</color>
 
-    <!-- Card surface, lifted one crisp obsidian step off the canvas plus a 1dp hairline. -->
-    <color name="phonecam_surface">#111720</color>
-    <color name="phonecam_on_surface">#E8EDF4</color>
+    <!-- Pure obsidian camera stage behind preview -->
+    <color name="phonecam_stage">#06080C</color>
 
-    <!-- Inset wells (log box, changelog, pills): recessed slate tone. -->
-    <color name="phonecam_surface_variant">#1A2330</color>
-    <color name="phonecam_on_surface_variant">#9EAEC0</color>
+    <!-- Card surface, lifted cleanly off canvas with 1dp subtle border -->
+    <color name="phonecam_surface">#10151C</color>
+    <color name="phonecam_on_surface">#F1F5F9</color>
 
-    <!-- Strong stroke: pill outlines and focused borders. >= 3.5:1 on surface. -->
-    <color name="phonecam_outline">#64768E</color>
-    <!-- Muted 1dp hairline separator for obsidian cards and wells. -->
-    <color name="phonecam_outline_variant">#253140</color>
+    <!-- Elevated controls, inset wells, secondary surfaces -->
+    <color name="phonecam_surface_variant">#18212C</color>
+    <color name="phonecam_on_surface_variant">#94A3B8</color>
 
-    <!-- The accent. -->
-    <color name="phonecam_primary">#6FD08C</color>
-    <color name="phonecam_on_primary">#06240F</color>
-    <color name="phonecam_primary_container">#1E4630</color>
-    <color name="phonecam_on_primary_container">#A8F0C0</color>
+    <!-- Interactive border (#2D3A4C) and subtle hairline (#1D2633) -->
+    <color name="phonecam_outline">#2D3A4C</color>
+    <color name="phonecam_outline_variant">#1D2633</color>
 
-    <!-- Info: a substitution notice. Blue, deliberately not the warning amber. -->
-    <color name="phonecam_info_container">#16374F</color>
-    <color name="phonecam_on_info_container">#C2DDF7</color>
+    <!-- Studio Blue primary accent -->
+    <color name="phonecam_primary">#2563EB</color>
+    <color name="phonecam_on_primary">#F8FAFC</color>
+    <color name="phonecam_primary_container">#172B4D</color>
+    <color name="phonecam_on_primary_container">#93C5FD</color>
 
-    <!-- Warning: thermal and battery advice. -->
-    <color name="phonecam_warning">#FFD48A</color>
-    <color name="phonecam_warning_container">#3A2E12</color>
-    <color name="phonecam_on_warning_container">#FFE6B8</color>
+    <!-- Live Green (semantic live / connected state only) -->
+    <color name="phonecam_live">#22C55E</color>
+    <color name="phonecam_live_container">#0E291B</color>
+    <color name="phonecam_on_live_container">#86EFAC</color>
 
-    <color name="phonecam_error">#FFB4AB</color>
-    <color name="phonecam_on_error">#690005</color>
-    <color name="phonecam_error_container">#5C1A18</color>
-    <color name="phonecam_on_error_container">#FFDAD6</color>
+    <!-- Info: substitution or pairing approval notice -->
+    <color name="phonecam_info_container">#13263E</color>
+    <color name="phonecam_on_info_container">#BAE6FD</color>
 
-    <!-- Snackbars and the streaming strip: a surface that inverts the page so it
-         reads as "above" the content without a shadow. -->
-    <color name="phonecam_inverse_surface">#232D3A</color>
-    <color name="phonecam_inverse_on_surface">#E6EAF0</color>
-    <color name="phonecam_inverse_primary">#6FD08C</color>
+    <!-- Warning: connecting, thermal, and battery advice -->
+    <color name="phonecam_warning">#F59E0B</color>
+    <color name="phonecam_warning_container">#2E220E</color>
+    <color name="phonecam_on_warning_container">#FDE68A</color>
 
-    <!-- Light: for a phone read in daylight. Same roles, same accent hue. -->
-    <color name="phonecam_light_background">#F2F5F8</color>
-    <color name="phonecam_light_on_background">#10161D</color>
+    <!-- Danger / Error: destructive stop button & error banners -->
+    <color name="phonecam_error">#EF4444</color>
+    <color name="phonecam_on_error">#FFFFFF</color>
+    <color name="phonecam_error_container">#2A1418</color>
+    <color name="phonecam_on_error_container">#FCA5A5</color>
+    <color name="phonecam_danger_border">#7F1D1D</color>
+
+    <!-- Floating surfaces (snackbars, blackout peek bar) -->
+    <color name="phonecam_inverse_surface">#18212C</color>
+    <color name="phonecam_inverse_on_surface">#F1F5F9</color>
+    <color name="phonecam_inverse_primary">#60A5FA</color>
+
+    <!-- Light: daylight-readable counterpart with same Studio Blue identity -->
+    <color name="phonecam_light_background">#F4F6F9</color>
+    <color name="phonecam_light_on_background">#0F172A</color>
     <color name="phonecam_light_surface">#FFFFFF</color>
-    <color name="phonecam_light_on_surface">#10161D</color>
-    <color name="phonecam_light_surface_variant">#E8EDF3</color>
-    <color name="phonecam_light_on_surface_variant">#4C5666</color>
-    <color name="phonecam_light_outline">#6B7688</color>
-    <color name="phonecam_light_outline_variant">#C3CCD8</color>
+    <color name="phonecam_light_on_surface">#0F172A</color>
+    <color name="phonecam_light_surface_variant">#E9EEF4</color>
+    <color name="phonecam_light_on_surface_variant">#475569</color>
+    <color name="phonecam_light_outline">#CBD5E1</color>
+    <color name="phonecam_light_outline_variant">#DCE3EC</color>
 
-    <color name="phonecam_light_primary">#12603A</color>
+    <color name="phonecam_light_primary">#1D4ED8</color>
     <color name="phonecam_light_on_primary">#FFFFFF</color>
-    <color name="phonecam_light_primary_container">#C6EFD6</color>
-    <color name="phonecam_light_on_primary_container">#07331D</color>
+    <color name="phonecam_light_primary_container">#DBEAFE</color>
+    <color name="phonecam_light_on_primary_container">#1E3A8A</color>
 
-    <color name="phonecam_light_info_container">#C6DEF4</color>
-    <color name="phonecam_light_on_info_container">#0A2136</color>
+    <color name="phonecam_light_live">#16A34A</color>
+    <color name="phonecam_light_live_container">#DCFCE7</color>
+    <color name="phonecam_light_on_live_container">#166534</color>
 
-    <color name="phonecam_light_warning">#8A5A00</color>
-    <color name="phonecam_light_warning_container">#FBEFC9</color>
-    <color name="phonecam_light_on_warning_container">#3A2E08</color>
+    <color name="phonecam_light_info_container">#E0F2FE</color>
+    <color name="phonecam_light_on_info_container">#0C4A6E</color>
 
-    <color name="phonecam_light_error">#B3261E</color>
+    <color name="phonecam_light_warning">#B45309</color>
+    <color name="phonecam_light_warning_container">#FEF3C7</color>
+    <color name="phonecam_light_on_warning_container">#78350F</color>
+
+    <color name="phonecam_light_error">#DC2626</color>
     <color name="phonecam_light_on_error">#FFFFFF</color>
-    <color name="phonecam_light_error_container">#F9DEDC</color>
-    <color name="phonecam_light_on_error_container">#410E0B</color>
+    <color name="phonecam_light_error_container">#FEE2E2</color>
+    <color name="phonecam_light_on_error_container">#991B1B</color>
+    <color name="phonecam_light_danger_border">#FCA5A5</color>
 
-    <color name="phonecam_light_inverse_surface">#2E3440</color>
-    <color name="phonecam_light_inverse_on_surface">#EFF1F5</color>
-    <color name="phonecam_light_inverse_primary">#6FD08C</color>
+    <color name="phonecam_light_inverse_surface">#1E293B</color>
+    <color name="phonecam_light_inverse_on_surface">#F8FAFC</color>
+    <color name="phonecam_light_inverse_primary">#60A5FA</color>
 
     <!-- Launcher icon. Its own artwork, not part of the screen palette. -->
-    <color name="ic_launcher_background">#10131A</color>
+    <color name="ic_launcher_background">#090C10</color>
 </resources>

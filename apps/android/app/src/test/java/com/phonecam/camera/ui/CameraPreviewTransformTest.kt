@@ -1,6 +1,8 @@
 package com.phonecam.camera.ui
 
+import com.phonecam.camera.ui.components.PreviewScaleMode
 import com.phonecam.camera.ui.components.calculatePreviewTransform
+import com.phonecam.camera.ui.components.parseStreamDimensions
 import com.phonecam.camera.ui.components.previewTransform
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -365,5 +367,111 @@ class CameraPreviewTransformTest {
         // zero or negative values
         assertEquals(9f / 16f, aspectRatioOf("0x0", sensorRear, 0), delta)
         assertEquals(16f / 9f, aspectRatioOf("-1920x1080", sensorRear, 90), delta)
+    }
+
+    // =========================================================================
+    // 6. Zero Aspect Distortion for Mismatched View vs Buffer (e.g. 440x180 vs 1280x720)
+    // =========================================================================
+
+    @Test
+    fun `mismatched 440x180 view with 1280x720 buffer has zero distortion across all rotations`() {
+        val viewWidth = 440
+        val viewHeight = 180
+        val bufferWidth = 1280
+        val bufferHeight = 720
+        val rotations = listOf(0, 90, 180, 270)
+        val sensors = listOf(
+            Triple(90, false, "rear"),
+            Triple(270, true, "front"),
+            Triple(0, false, "tablet"),
+        )
+
+        for ((sensorOrientation, mirror, _) in sensors) {
+            for (displayRotation in rotations) {
+                for (mode in PreviewScaleMode.entries) {
+                    val calc = calculatePreviewTransform(
+                        sensorOrientation = sensorOrientation,
+                        displayRotationDegrees = displayRotation,
+                        mirror = mirror,
+                        viewWidth = viewWidth,
+                        viewHeight = viewHeight,
+                        bufferWidth = bufferWidth,
+                        bufferHeight = bufferHeight,
+                        scaleMode = mode,
+                    )
+
+                    // A 1x1 sensor pixel spans (scaleX * viewWidth / bufferWidth) along buffer-X
+                    // and (scaleY * viewHeight / bufferHeight) along buffer-Y.
+                    // For a circle in front of the camera to stay a 100% true circle on screen,
+                    // these two screen-pixel scales MUST be identical.
+                    val screenPixelsPerBufferX = calc.scaleX * viewWidth / bufferWidth
+                    val screenPixelsPerBufferY = calc.scaleY * viewHeight / bufferHeight
+                    assertEquals(
+                        "Distortion detected for sensor=$sensorOrientation rot=$displayRotation mode=$mode",
+                        screenPixelsPerBufferX,
+                        screenPixelsPerBufferY,
+                        delta,
+                    )
+                    assertTrue(screenPixelsPerBufferX > 0f)
+
+                    // Verify rendered bounding box against scale mode contract.
+                    val rotated = calc.netRotation == 90 || calc.netRotation == 270
+                    val renderedWidth = if (rotated) calc.scaleY * viewHeight else calc.scaleX * viewWidth
+                    val renderedHeight = if (rotated) calc.scaleX * viewWidth else calc.scaleY * viewHeight
+
+                    if (mode == PreviewScaleMode.CenterCrop) {
+                        assertTrue("CenterCrop width must cover view", renderedWidth >= viewWidth - 0.01f)
+                        assertTrue("CenterCrop height must cover view", renderedHeight >= viewHeight - 0.01f)
+                    } else {
+                        assertTrue("FitCenter width must fit in view", renderedWidth <= viewWidth + 0.01f)
+                        assertTrue("FitCenter height must fit in view", renderedHeight <= viewHeight + 0.01f)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `16_9 view with 1280x720 landscape buffer produces exact 1_0 scale with zero crop or bars`() {
+        val calcFit = calculatePreviewTransform(
+            sensorOrientation = 90,
+            displayRotationDegrees = 90,
+            mirror = false,
+            viewWidth = 640,
+            viewHeight = 360,
+            bufferWidth = 1280,
+            bufferHeight = 720,
+            scaleMode = PreviewScaleMode.FitCenter,
+        )
+        assertEquals(0, calcFit.netRotation)
+        assertEquals(1.0f, calcFit.scaleX, delta)
+        assertEquals(1.0f, calcFit.scaleY, delta)
+
+        val calcCrop = calculatePreviewTransform(
+            sensorOrientation = 90,
+            displayRotationDegrees = 90,
+            mirror = false,
+            viewWidth = 640,
+            viewHeight = 360,
+            bufferWidth = 1280,
+            bufferHeight = 720,
+            scaleMode = PreviewScaleMode.CenterCrop,
+        )
+        assertEquals(0, calcCrop.netRotation)
+        assertEquals(1.0f, calcCrop.scaleX, delta)
+        assertEquals(1.0f, calcCrop.scaleY, delta)
+    }
+
+    @Test
+    fun `parseStreamDimensions parses valid resolutions and defaults gracefully`() {
+        assertEquals(1280 to 720, parseStreamDimensions("1280x720"))
+        assertEquals(1920 to 1080, parseStreamDimensions("1920x1080"))
+        assertEquals(1920 to 1080, parseStreamDimensions("1080x1920"))
+        assertEquals(3840 to 2160, parseStreamDimensions("3840x2160"))
+        assertEquals(1280 to 720, parseStreamDimensions(null))
+        assertEquals(1280 to 720, parseStreamDimensions(""))
+        assertEquals(1280 to 720, parseStreamDimensions("auto"))
+        assertEquals(1280 to 720, parseStreamDimensions("0x0"))
+        assertEquals(1280 to 720, parseStreamDimensions("-1280x720"))
     }
 }

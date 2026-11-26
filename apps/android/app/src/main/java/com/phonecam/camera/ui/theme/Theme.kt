@@ -9,6 +9,9 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.text.font.FontWeight
@@ -17,98 +20,116 @@ import androidx.compose.ui.unit.sp
 import com.phonecam.camera.R
 
 /**
- * The PhoneCam theme.
+ * Semantic studio colour tokens that sit alongside Material3's [ColorScheme].
  *
- * Fixed colours rather than Material You dynamic colour: this is a utility that
- * is usually glanced at while the user is looking at their PC, so the palette has
- * to read the same on every phone, and the dark scheme has to be dark because the
- * phone is often the only light source in the room.
- *
- * Every colour is declared in `res/values/colors.xml`, so the XML window theme
- * (which paints the first frame before Compose runs) and this theme cannot drift
- * apart. The contrast of every pair the UI actually renders was checked against
- * WCAG AA (4.5:1 text, 3:1 borders, icons and indicator dots) when the palette
- * was set; see the notes in `colors.xml` for which pair covers which role.
+ * Separating live status green and subtle danger surfaces from the Studio Blue
+ * primary accent ensures destructive actions (Stop PhoneCam, Forget PC) never
+ * borrow green or primary button styling, and live status indicators carry a
+ * single unambiguous visual meaning.
  */
-@Composable
-fun PhoneCamTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) phoneCamDarkColors() else phoneCamLightColors(),
-        typography = PhoneCamTypography,
-        shapes = MaterialShapes,
-        content = content,
-    )
+@Immutable
+data class StudioColors(
+    val stageBackground: Color,
+    val live: Color,
+    val liveContainer: Color,
+    val onLiveContainer: Color,
+    val dangerSurface: Color,
+    val dangerBorder: Color,
+    val dangerText: Color,
+)
+
+private val DefaultDarkStudioColors = StudioColors(
+    stageBackground = Color(0xFF06080C),
+    live = Color(0xFF22C55E),
+    liveContainer = Color(0xFF0E291B),
+    onLiveContainer = Color(0xFF86EFAC),
+    dangerSurface = Color(0xFF2A1418),
+    dangerBorder = Color(0xFF7F1D1D),
+    dangerText = Color(0xFFFCA5A5),
+)
+
+private val LocalStudioColors = staticCompositionLocalOf { DefaultDarkStudioColors }
+
+/**
+ * Accessor for PhoneCam semantic studio tokens inside any [PhoneCamTheme] scope.
+ */
+object PhoneCamStudioTheme {
+    val colors: StudioColors
+        @Composable
+        get() = LocalStudioColors.current
 }
 
 /**
- * The corner-radius scale.
+ * The PhoneCam Studio theme.
  *
- * Three values and a rule for each, so no component invents a fourth:
+ * Fixed Obsidian Dark Studio colours aligned with PhoneCam Desktop GPUI, with a
+ * clean daylight counterpart when the system uses light mode. Every colour lives
+ * in `res/values/colors.xml` so the launch window and Compose UI cannot drift.
+ */
+@Composable
+fun PhoneCamTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit,
+) {
+    val colorScheme = if (darkTheme) phoneCamDarkColors() else phoneCamLightColors()
+    val studioColors = if (darkTheme) phoneCamDarkStudioColors() else phoneCamLightStudioColors()
+
+    CompositionLocalProvider(LocalStudioColors provides studioColors) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = PhoneCamTypography,
+            shapes = MaterialShapes,
+            content = content,
+        )
+    }
+}
+
+/**
+ * The corner-radius scale — deliberate hierarchy, never uniform pills everywhere:
  *
- *  - [Panel]: every container. Cards, banners, the log well. 12dp, not
- *    Material's 16dp default: at this density a 16dp card reads as a bubble, and
- *    a screen of them turns into a stack of rounded tiles. The panel is a
- *    surface with an edge, not a toy.
- *  - [Field]: every input. Text fields.
- *  - [Control]: every tappable. Buttons, chips, icon buttons, status pills.
- *
- * Anything that does not fit one of those three is a bug in the component, not a
- * reason for a new radius.
+ *  - [Stage]: the live camera monitor container (14dp).
+ *  - [Panel]: cards, banners, and top-level containers (12dp).
+ *  - [Field]: inputs, recessed wells, and standard studio action buttons (10dp).
+ *  - [Chip]: compact controls, tokens, and viewfinder quick actions (8dp).
+ *  - [Control]: status pills only, reserving capsule geometry for live readouts.
  */
 object PhoneCamShapes {
+    val Stage = RoundedCornerShape(14.dp)
     val Panel = RoundedCornerShape(12.dp)
     val Field = RoundedCornerShape(10.dp)
+    val Chip = RoundedCornerShape(8.dp)
     val Control = RoundedCornerShape(percent = 50)
 }
 
-/**
- * Material's shape slots, pointed at the scale above.
- *
- * Text fields read `extraSmall`, cards read `medium`, snackbars read
- * `extraSmall`; mapping them here is what keeps a stock Material component on the
- * same radius as the hand-built ones.
- */
 private val MaterialShapes = Shapes(
-    extraSmall = PhoneCamShapes.Field,
+    extraSmall = PhoneCamShapes.Chip,
     small = PhoneCamShapes.Field,
     medium = PhoneCamShapes.Panel,
     large = PhoneCamShapes.Panel,
-    extraLarge = PhoneCamShapes.Panel,
+    extraLarge = PhoneCamShapes.Stage,
 )
 
-/**
- * The type scale, restricted to the roles this screen uses.
- *
- * Only the sizes, weights and tracking are changed from Material's defaults: the
- * system font is the right one for a utility that has to be legible at arm's
- * length in a dark room, and shipping a display face for a settings panel would
- * be decoration. What the defaults get wrong for this app is scale: the previous
- * scale hovered between 12sp and 16sp, so a section title and a row value were
- * almost the same size and every screen read as one flat field of text. Body text
- * steps up to 15sp, section titles to 17sp, and the tracking tightens so short
- * technical strings such as "1080p30" stay compact.
- */
 private val PhoneCamTypography = Typography().let { base ->
     base.copy(
         titleMedium = base.titleMedium.copy(
-            fontSize = 17.sp,
-            lineHeight = 23.sp,
+            fontSize = 16.sp,
+            lineHeight = 22.sp,
             fontWeight = FontWeight.SemiBold,
-            letterSpacing = (-0.1).sp,
+            letterSpacing = (-0.15).sp,
         ),
         titleSmall = base.titleSmall.copy(
-            fontSize = 15.sp,
-            lineHeight = 21.sp,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 0.sp,
         ),
         bodyMedium = base.bodyMedium.copy(
-            fontSize = 15.sp,
-            lineHeight = 22.sp,
-        ),
-        labelLarge = base.labelLarge.copy(
             fontSize = 14.sp,
             lineHeight = 20.sp,
+        ),
+        labelLarge = base.labelLarge.copy(
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 0.1.sp,
         ),
@@ -116,31 +137,51 @@ private val PhoneCamTypography = Typography().let { base ->
             fontSize = 12.sp,
             lineHeight = 16.sp,
             fontWeight = FontWeight.Medium,
+            letterSpacing = 0.15.sp,
+        ),
+        labelSmall = base.labelSmall.copy(
+            fontSize = 11.sp,
+            lineHeight = 14.sp,
+            fontWeight = FontWeight.Medium,
             letterSpacing = 0.2.sp,
         ),
         bodySmall = base.bodySmall.copy(
-            fontSize = 13.sp,
-            lineHeight = 19.sp,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
         ),
     )
 }
 
-/**
- * The warning role, on Material's `tertiary` slot.
- *
- * Material 3 has no warning or info role, and its documentation points at
- * tertiary for "contrasting accent" and secondary for "less prominent accent",
- * which is exactly what these two are. Naming them here means the call site reads
- * as intent ("warning container") instead of as a slot number, and the palette
- * file still carries the words `warning` and `info` next to the hex values.
- */
+/** The warning role, mapped onto Material's `tertiary` slot. */
 val ColorScheme.warning: Color get() = tertiary
 val ColorScheme.warningContainer: Color get() = tertiaryContainer
 val ColorScheme.onWarningContainer: Color get() = onTertiaryContainer
 
-/** The info role, on Material's `secondary` slot. */
+/** The info role, mapped onto Material's `secondary` slot. */
 val ColorScheme.infoContainer: Color get() = secondaryContainer
 val ColorScheme.onInfoContainer: Color get() = onSecondaryContainer
+
+@Composable
+private fun phoneCamDarkStudioColors() = StudioColors(
+    stageBackground = colorResource(R.color.phonecam_stage),
+    live = colorResource(R.color.phonecam_live),
+    liveContainer = colorResource(R.color.phonecam_live_container),
+    onLiveContainer = colorResource(R.color.phonecam_on_live_container),
+    dangerSurface = colorResource(R.color.phonecam_error_container),
+    dangerBorder = colorResource(R.color.phonecam_danger_border),
+    dangerText = colorResource(R.color.phonecam_on_error_container),
+)
+
+@Composable
+private fun phoneCamLightStudioColors() = StudioColors(
+    stageBackground = colorResource(R.color.phonecam_stage),
+    live = colorResource(R.color.phonecam_light_live),
+    liveContainer = colorResource(R.color.phonecam_light_live_container),
+    onLiveContainer = colorResource(R.color.phonecam_light_on_live_container),
+    dangerSurface = colorResource(R.color.phonecam_light_error_container),
+    dangerBorder = colorResource(R.color.phonecam_light_danger_border),
+    dangerText = colorResource(R.color.phonecam_light_on_error_container),
+)
 
 @Composable
 private fun phoneCamDarkColors() = darkColorScheme(
@@ -156,8 +197,6 @@ private fun phoneCamDarkColors() = darkColorScheme(
     surfaceVariant = colorResource(R.color.phonecam_surface_variant),
     onSurfaceVariant = colorResource(R.color.phonecam_on_surface_variant),
 
-    // Flat panels: every card is the same tone, separated by a hairline rather
-    // than by a shadow, so the container roles collapse onto the two surfaces.
     surfaceContainerLowest = colorResource(R.color.phonecam_background),
     surfaceContainerLow = colorResource(R.color.phonecam_surface),
     surfaceContainer = colorResource(R.color.phonecam_surface),
@@ -166,9 +205,6 @@ private fun phoneCamDarkColors() = darkColorScheme(
 
     outline = colorResource(R.color.phonecam_outline),
     outlineVariant = colorResource(R.color.phonecam_outline_variant),
-
-    // Disable tonal surface tinting so obsidian surfaces stay neutral and crisp
-    // without Material3 blending accent colour into dialogs or navigation chrome.
     surfaceTint = Color.Transparent,
 
     secondary = colorResource(R.color.phonecam_info_container),
@@ -191,11 +227,6 @@ private fun phoneCamDarkColors() = darkColorScheme(
     inversePrimary = colorResource(R.color.phonecam_inverse_primary),
 )
 
-/**
- * The light scheme exists so a phone in daylight is still readable. It keeps the
- * same roles and the same accent hue, taken down in lightness because the brand
- * green is unreadable as text on white.
- */
 @Composable
 private fun phoneCamLightColors() = lightColorScheme(
     primary = colorResource(R.color.phonecam_light_primary),
@@ -218,7 +249,6 @@ private fun phoneCamLightColors() = lightColorScheme(
 
     outline = colorResource(R.color.phonecam_light_outline),
     outlineVariant = colorResource(R.color.phonecam_light_outline_variant),
-
     surfaceTint = Color.Transparent,
 
     secondary = colorResource(R.color.phonecam_light_info_container),

@@ -2,8 +2,10 @@ package com.phonecam.camera.ui.components
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -32,6 +34,8 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.phonecam.camera.R
+import com.phonecam.camera.ui.theme.PhoneCamShapes
+import com.phonecam.camera.ui.theme.PhoneCamStudioTheme
 import com.phonecam.camera.update.GitHubUpdateChecker
 import com.phonecam.camera.update.UpdateCheckState
 import com.phonecam.camera.update.UpdateErrorReason
@@ -40,8 +44,7 @@ import com.phonecam.camera.update.UpdateErrorReason
  * Software Updates card for the Diagnostics screen.
  *
  * Strictly user-initiated: PhoneCam never polls GitHub or any external server
- * in the background. Tapping "Check for Updates" performs a single HTTPS GET
- * to GitHub Releases and renders the latest version and changelog inline.
+ * in the background.
  */
 @Composable
 fun UpdateCard(
@@ -51,6 +54,7 @@ fun UpdateCard(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val studio = PhoneCamStudioTheme.colors
     val currentDisplayVersion = GitHubUpdateChecker.formatDisplayVersion(appVersion)
     val isChecking = updateState is UpdateCheckState.Checking
 
@@ -99,7 +103,7 @@ fun UpdateCard(
                     Icon(
                         imageVector = Icons.Filled.CheckCircle,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = studio.live,
                         modifier = Modifier.size(18.dp),
                     )
                     Text(
@@ -108,7 +112,7 @@ fun UpdateCard(
                             GitHubUpdateChecker.formatDisplayVersion(updateState.latestTag),
                         ),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = studio.live,
                     )
                 }
             }
@@ -187,6 +191,8 @@ fun UpdateCard(
                             }
                             runCatching { context.startActivity(intent) }
                         },
+                        shape = PhoneCamShapes.Field,
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(
@@ -225,6 +231,9 @@ fun UpdateCard(
         OutlinedButton(
             onClick = onCheckForUpdates,
             enabled = !isChecking,
+            shape = PhoneCamShapes.Field,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
             modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(

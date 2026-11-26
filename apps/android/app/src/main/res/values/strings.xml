@@ -44,6 +44,10 @@
     <string name="section_connection_subtitle">Wi-Fi (Same Network) or USB Cable</string>
     <string name="action_start_session">Start PhoneCam</string>
     <string name="action_stop_session">Stop PhoneCam</string>
+    <string name="action_start_short">Start</string>
+    <string name="action_stop_short">Stop</string>
+    <string name="action_oled_short">OLED</string>
+    <string name="action_hide_short">Hide</string>
     <string name="action_search_now">Search again</string>
     <string name="action_scan_qr">Scan pairing code</string>
     <string name="action_connect">Connect</string>

@@ -38,8 +38,11 @@ import com.phonecam.camera.ui.theme.warningContainer
 fun StatusCard(state: SessionState, modifier: Modifier = Modifier) {
     val context = LocalContext.current
 
-    SectionCard(title = stringResource(R.string.section_status), modifier = modifier) {
-        PhasePill(state)
+    SectionCard(
+        title = stringResource(R.string.section_status),
+        action = { PhasePill(state = state, compact = true) },
+        modifier = modifier,
+    ) {
 
         state.serverName?.let { name ->
             LabeledValue(label = stringResource(R.string.label_pc), value = name)

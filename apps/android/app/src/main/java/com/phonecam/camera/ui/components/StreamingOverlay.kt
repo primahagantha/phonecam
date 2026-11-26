@@ -20,6 +20,7 @@ import com.phonecam.camera.R
 import com.phonecam.camera.session.SessionState
 import com.phonecam.camera.session.overlayHintVisible
 import com.phonecam.camera.ui.theme.PhoneCamShapes
+import com.phonecam.camera.ui.theme.PhoneCamStudioTheme
 
 /**
  * The strip pinned to the bottom while streaming.
@@ -78,7 +79,7 @@ fun StreamingOverlay(
         TextButton(onClick = onStop) {
             Text(
                 text = stringResource(R.string.action_stop_stream),
-                color = MaterialTheme.colorScheme.inversePrimary,
+                color = PhoneCamStudioTheme.colors.dangerText,
             )
         }
     }

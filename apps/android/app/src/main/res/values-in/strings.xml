@@ -37,6 +37,10 @@
     <string name="section_connection_subtitle">Wi-Fi (Jaringan Sama) atau Kabel USB</string>
     <string name="action_start_session">Mulai PhoneCam</string>
     <string name="action_stop_session">Hentikan PhoneCam</string>
+    <string name="action_start_short">Mulai</string>
+    <string name="action_stop_short">Hentikan</string>
+    <string name="action_oled_short">OLED</string>
+    <string name="action_hide_short">Sembunyi</string>
     <string name="action_search_now">Cari lagi</string>
     <string name="action_scan_qr">Pindai kode pairing</string>
     <string name="action_connect">Hubungkan</string>

@@ -24,16 +24,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -41,25 +47,24 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Output
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Troubleshoot
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
-import kotlinx.coroutines.delay
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -83,14 +88,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -104,59 +113,44 @@ import com.phonecam.camera.session.NoticeKind
 import com.phonecam.camera.session.SessionState
 import com.phonecam.camera.session.connectedTransport
 import com.phonecam.camera.transport.DiscoveredServer
+import com.phonecam.camera.ui.components.CameraCapabilitySection
 import com.phonecam.camera.ui.components.CameraControlCard
 import com.phonecam.camera.ui.components.CameraPermissionCard
 import com.phonecam.camera.ui.components.CameraPreview
-import com.phonecam.camera.ui.components.CameraCapabilitySection
 import com.phonecam.camera.ui.components.ConnectionCard
 import com.phonecam.camera.ui.components.DiagnosticsCard
 import com.phonecam.camera.ui.components.ErrorCard
 import com.phonecam.camera.ui.components.Hairline
 import com.phonecam.camera.ui.components.HealthCard
 import com.phonecam.camera.ui.components.Hint
-import com.phonecam.camera.ui.components.SectionCard
 import com.phonecam.camera.ui.components.InfoBanner
 import com.phonecam.camera.ui.components.InsetWell
 import com.phonecam.camera.ui.components.NotificationPermissionNote
 import com.phonecam.camera.ui.components.OutputCard
 import com.phonecam.camera.ui.components.PermissionDeniedCard
-import com.phonecam.camera.ui.components.PhasePill
+import com.phonecam.camera.ui.components.PreviewScaleMode
+import com.phonecam.camera.ui.components.SectionCard
 import com.phonecam.camera.ui.components.StatusCard
+import com.phonecam.camera.ui.components.StudioTopBar
 import com.phonecam.camera.ui.components.UpdateCard
+import com.phonecam.camera.ui.components.VerticalHairline
+import com.phonecam.camera.ui.components.parseStreamDimensions
 import com.phonecam.camera.ui.theme.PhoneCamShapes
+import com.phonecam.camera.ui.theme.PhoneCamStudioTheme
 import com.phonecam.camera.ui.theme.PhoneCamTheme
 import com.phonecam.camera.update.UpdateCheckState
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.delay
 
 /**
- * PhoneCam's control panel, as four screens behind a bottom bar.
+ * PhoneCam Android Studio Control Panel.
  *
- * It is a control panel, not a viewfinder: the phone is usually pointed at
- * something other than the user, so the screen shows the state of the session and
- * the things that need a decision. The frames go to the encoder and to the PC, so
- * the only preview is the deliberate one on the Status screen (PRD §46).
- *
- * The four screens are the four questions a user has, in the order they ask them:
- *
- *  - **Status** — is the phone connected, and is a picture flowing? Everything
- *    that blocks the stream (permissions, errors, a substitution) lives here
- *    too, because a blocked stream is the loudest possible answer to "is it
- *    working".
- *  - **Camera** — what this phone captures: which camera, and what that camera
- *    can do.
- *  - **Output** — what the desktop receives: the stream's shape ([StatusCard])
- *    and the output settings it runs with.
- *  - **Diagnostics** — numbers and the log.
- *
- * The phase and the one start/stop action sit in a strip above the bar, so the
- * answer to "is it working" and the way to end a stream are reachable from every
- * screen. [StreamingOverlay] and the blackout surface stay outside this shell:
- * they are full-window states, not destinations.
- *
- * The activity owns no session state. [PhoneCamViewModel] forwards to the
- * foreground service, and everything drawn comes from the service's
- * [SessionState], which is what makes rotation, backgrounding, and "the user
- * pressed Home" all harmless. The selected destination is the only thing held
- * here, in [rememberSaveable], so a rotation lands on the same screen.
+ * Adapts cleanly between Portrait (compact Studio Top Bar + crisp 16:9 preview +
+ * bottom NavigationBar) and Landscape (68dp left NavigationRail + 44dp compact
+ * Studio Top Bar + full-height two-column live monitor & scrollable controls).
  */
 class MainActivity : ComponentActivity() {
 
@@ -172,13 +166,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * The four destinations.
- *
- * The icons come from `material-icons-extended`, which is the dependency this
- * module actually declares; the core artifact that ships with Material3 does not
- * carry all four.
- */
 private enum class ScreenDestination(
     val labelRes: Int,
     val icon: ImageVector,
@@ -192,6 +179,8 @@ private enum class ScreenDestination(
 @Composable
 private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
     val context = LocalContext.current
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
     val state by viewModel.state.collectAsState()
     val isRunning by viewModel.sessionRunning.collectAsState()
     val notice by viewModel.notice.collectAsState()
@@ -205,8 +194,6 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
     val previewEnabled by viewModel.previewEnabled.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
 
-    // The desktop's `set_screen` choice or local phone blackout, applied to this window.
-    // Active only while streaming, so opening the app never pins the screen on.
     val screenMode = ScreenMode.fromWire(state.screenMode)
     var localBlackoutActive by rememberSaveable { mutableStateOf(false) }
     var blackoutDismissed by rememberSaveable(state.screenMode) { mutableStateOf(false) }
@@ -230,7 +217,6 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
         active = isStreaming,
     )
 
-    // In `black` mode, a tap uncovers the UI; after 5s of inactivity it auto-dims back.
     var blackoutPeeked by remember(screenMode, localBlackoutActive, blackoutDismissed) { mutableStateOf(false) }
     var blackoutInteractionTick by remember { mutableIntStateOf(0) }
 
@@ -241,8 +227,6 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
         }
     }
 
-    // The selected destination survives rotation. Held as an ordinal because the
-    // saveable registry takes primitives, not enums.
     var destinationOrdinal by rememberSaveable { mutableIntStateOf(0) }
     val destination = ScreenDestination.entries[destinationOrdinal]
 
@@ -259,8 +243,6 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
         notificationGranted = context.hasNotificationPermission()
         permissionRequested = true
         if (cameraGranted) {
-            // The user asked for a stream and the permission was the only thing
-            // in the way, so start it now instead of making them ask twice.
             viewModel.startSession()
         }
     }
@@ -268,9 +250,6 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
     val scanLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
-        // A code that did not parse. This is the case the "isn't a PhoneCam
-        // pairing code" message is actually true for; a plain cancel (the user
-        // backed out) stays silent.
         if (result.resultCode == QrScanActivity.RESULT_REJECTED) {
             viewModel.reportInvalidQr()
             return@rememberLauncherForActivityResult
@@ -284,17 +263,10 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
             viewModel.reportInvalidQr()
         } else {
             viewModel.connectWithToken(host, port, token)
-            // The code parsed and the dial is starting. The name in the code is
-            // optional and the *outcome* is what establishes the PC's real name,
-            // so the pairing is announced from the connected state (see
-            // [PhoneCamViewModel.announceChange]); this only tells the user the
-            // scan was accepted, so scanning a code is never a silent no-op.
             viewModel.reportQrDispatched()
         }
     }
 
-    // The camera permission can also change while the app is in the background
-    // (the user flipping the switch in Settings), so re-read it on every resume.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -323,21 +295,20 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
     val startOrRequestCamera: () -> Unit = {
         if (cameraGranted) viewModel.startSession() else requestCamera()
     }
+    val enableBlackout: () -> Unit = {
+        localBlackoutActive = true
+        blackoutDismissed = false
+        blackoutPeeked = false
+    }
 
     val encoderLabel = stringResource(
         when (hasHardwareEncoder) {
             true -> R.string.diagnostics_encoder_hardware
             false -> R.string.diagnostics_encoder_software
-            // The probe has not answered yet; saying "Software" would assert an
-            // encoder that may not exist.
             null -> R.string.diagnostics_not_detected
         },
     )
 
-    // The report is built on demand from the live state, so it describes the
-    // session as it is at the moment the button is pressed rather than at
-    // composition. It is assembled here because the card renders only the values
-    // it is handed.
     val buildReport: () -> String = {
         BugReport.build(
             appVersion = viewModel.appVersion,
@@ -346,11 +317,6 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
             device = ReportDevice.current(),
             session = ReportSession(
                 phase = state.phase.name,
-                // The honest transport: `state.transport` is the link a dial is
-                // *using* and defaults to "lan", so the report would claim a LAN
-                // link on a phone that has never connected. `connectedTransport()`
-                // is null outside CONNECTED/STREAMING, and the builder prints
-                // "Not connected" for that.
                 transport = state.connectedTransport(),
                 camera = state.activeCamera?.id ?: "",
                 requestedResolution = state.requestedResolution,
@@ -365,7 +331,9 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
         )
     }
 
-    var pendingCrashReport by remember { mutableStateOf(com.phonecam.camera.protocol.CrashReporter.readPendingCrashReport(context)) }
+    var pendingCrashReport by remember {
+        mutableStateOf(com.phonecam.camera.protocol.CrashReporter.readPendingCrashReport(context))
+    }
     if (pendingCrashReport != null) {
         val report = pendingCrashReport!!
         val crashClipLabel = stringResource(R.string.clipboard_crash_report)
@@ -405,6 +373,7 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         com.phonecam.camera.protocol.CrashReporter.clearPendingCrashReport(context)
                         pendingCrashReport = null
                     },
+                    shape = PhoneCamShapes.Chip,
                 ) {
                     Text(stringResource(R.string.action_report_github))
                 }
@@ -417,11 +386,73 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                         com.phonecam.camera.protocol.CrashReporter.clearPendingCrashReport(context)
                         pendingCrashReport = null
                     },
+                    shape = PhoneCamShapes.Chip,
                 ) {
                     Text(stringResource(R.string.action_copy_dismiss))
                 }
             },
         )
+    }
+
+    val renderDestination: @Composable () -> Unit = {
+        when (destination) {
+            ScreenDestination.Status -> StatusScreen(
+                state = state,
+                isRunning = isRunning,
+                isLandscape = isLandscape,
+                cameraGranted = cameraGranted,
+                notificationGranted = notificationGranted,
+                notificationNoteDismissed = notificationNoteDismissed,
+                permissionRequested = permissionRequested,
+                notice = notice,
+                noticeKind = noticeKind,
+                pairedServerName = identity.pairedServerName,
+                pairedAddress = identity.pairedAddress,
+                buildReport = buildReport,
+                onRequestCamera = requestCamera,
+                onDismissNotificationNote = { viewModel.dismissNotificationNote() },
+                onRetry = { viewModel.retry() },
+                onScanQr = scanQr,
+                onSearch = { viewModel.searchNow() },
+                onConnectDiscovered = { server -> viewModel.connectTo(server) },
+                onConnectManual = { host, port -> viewModel.connectManually(host, port) },
+                onForget = { viewModel.forgetPairing() },
+                onSurfaceAvailable = { surface -> viewModel.setPreviewSurface(surface) },
+                onAcknowledgeNotice = { viewModel.acknowledgeNotice() },
+                previewEnabled = previewEnabled,
+                onPreviewEnabled = { enabled -> viewModel.setPreviewEnabled(enabled) },
+                onEnableBlackout = enableBlackout,
+            )
+
+            ScreenDestination.Camera -> CameraScreen(
+                state = state,
+                isLandscape = isLandscape,
+                onSelectCamera = { cameraId -> viewModel.selectCamera(cameraId) },
+            )
+
+            ScreenDestination.Output -> OutputScreen(
+                state = state,
+                isLandscape = isLandscape,
+                previewEnabled = previewEnabled,
+                onPreviewEnabled = { enabled -> viewModel.setPreviewEnabled(enabled) },
+                onEnableBlackout = enableBlackout,
+            )
+
+            ScreenDestination.Diagnostics -> DiagnosticsScreen(
+                state = state,
+                isLandscape = isLandscape,
+                identity = identity,
+                encoderLabel = encoderLabel,
+                camerasProbed = camerasProbed,
+                appVersion = viewModel.appVersion,
+                updateState = updateState,
+                onCheckForUpdates = { viewModel.checkForUpdates() },
+                logLines = logLines,
+                buildReport = buildReport,
+                onRefreshCapabilities = { viewModel.refreshCapabilities() },
+                onClearLog = { viewModel.clearLog() },
+            )
+        }
     }
 
     Box(
@@ -438,127 +469,89 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
                 }
             },
     ) {
-        Scaffold(
-            snackbarHost = { SnackbarHost(snackbarHost) },
-            containerColor = MaterialTheme.colorScheme.background,
-            bottomBar = {
-                Column {
-                    // The one thing that must be reachable from everywhere: is it
-                    // working, and how do I stop it.
-                    StatusStrip(
-                        state = state,
-                        isRunning = isRunning,
-                        onStart = startOrRequestCamera,
-                        onStop = { viewModel.stopSession() },
+        if (isLandscape) {
+            // Adaptive Landscape Studio Shell:
+            // Sleek 68dp left NavigationRail + 44dp top StudioTopBar = +100dp more
+            // vertical room than stacked bottom chrome, so nothing is ever clipped.
+            Scaffold(
+                snackbarHost = { SnackbarHost(snackbarHost) },
+                containerColor = MaterialTheme.colorScheme.background,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            ) { insets ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(insets),
+                ) {
+                    StudioNavigationRail(
+                        selected = destination,
+                        onSelect = { destinationOrdinal = it.ordinal },
                     )
-                    Hairline()
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 0.dp,
+                    VerticalHairline()
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     ) {
-                        ScreenDestination.entries.forEachIndexed { index, item ->
-                            NavigationBarItem(
-                                selected = item == destination,
-                                onClick = { destinationOrdinal = index },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        StudioTopBar(
+                            state = state,
+                            isRunning = isRunning,
+                            isLandscape = true,
+                            onStart = startOrRequestCamera,
+                            onStop = { viewModel.stopSession() },
+                            modifier = Modifier.windowInsetsPadding(
+                                WindowInsets.safeDrawing.only(WindowInsetsSides.End),
+                            ),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .windowInsetsPadding(
+                                    WindowInsets.safeDrawing.only(
+                                        WindowInsetsSides.End + WindowInsetsSides.Bottom,
+                                    ),
                                 ),
-                                icon = {
-                                    Icon(
-                                        imageVector = item.icon,
-                                        contentDescription = null,
-                                    )
-                                },
-                                label = {
-                                    Text(
-                                        text = stringResource(item.labelRes),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                },
-                            )
+                        ) {
+                            renderDestination()
                         }
                     }
                 }
-            },
-        ) { insets ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(insets),
-            ) {
-                when (destination) {
-                    ScreenDestination.Status -> StatusScreen(
+            }
+        } else {
+            // Clean Portrait Studio Shell:
+            // Compact StudioTopBar at top, generous scrolling body, clean NavigationBar at bottom.
+            Scaffold(
+                snackbarHost = { SnackbarHost(snackbarHost) },
+                containerColor = MaterialTheme.colorScheme.background,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                topBar = {
+                    StudioTopBar(
                         state = state,
                         isRunning = isRunning,
-                        cameraGranted = cameraGranted,
-                        notificationGranted = notificationGranted,
-                        notificationNoteDismissed = notificationNoteDismissed,
-                        permissionRequested = permissionRequested,
-                        notice = notice,
-                        noticeKind = noticeKind,
-                        pairedServerName = identity.pairedServerName,
-                        pairedAddress = identity.pairedAddress,
-                        buildReport = buildReport,
-                        onRequestCamera = requestCamera,
-                        onDismissNotificationNote = { viewModel.dismissNotificationNote() },
-                        onRetry = { viewModel.retry() },
-                        onScanQr = scanQr,
-                        onSearch = { viewModel.searchNow() },
-                        onConnectDiscovered = { server -> viewModel.connectTo(server) },
-                        onConnectManual = { host, port -> viewModel.connectManually(host, port) },
-                        onForget = { viewModel.forgetPairing() },
-                        onSurfaceAvailable = { surface -> viewModel.setPreviewSurface(surface) },
-                        onAcknowledgeNotice = { viewModel.acknowledgeNotice() },
-                        previewEnabled = previewEnabled,
-                        onPreviewEnabled = { enabled -> viewModel.setPreviewEnabled(enabled) },
-                        onEnableBlackout = {
-                            localBlackoutActive = true
-                            blackoutDismissed = false
-                            blackoutPeeked = false
-                        },
+                        isLandscape = false,
+                        onStart = startOrRequestCamera,
+                        onStop = { viewModel.stopSession() },
                     )
-
-                    ScreenDestination.Camera -> CameraScreen(
-                        state = state,
-                        onSelectCamera = { cameraId -> viewModel.selectCamera(cameraId) },
+                },
+                bottomBar = {
+                    StudioBottomBar(
+                        selected = destination,
+                        onSelect = { destinationOrdinal = it.ordinal },
                     )
-
-                    ScreenDestination.Output -> OutputScreen(
-                        state = state,
-                        previewEnabled = previewEnabled,
-                        onPreviewEnabled = { enabled -> viewModel.setPreviewEnabled(enabled) },
-                        onEnableBlackout = {
-                            localBlackoutActive = true
-                            blackoutDismissed = false
-                            blackoutPeeked = false
-                        },
-                    )
-
-                    ScreenDestination.Diagnostics -> DiagnosticsScreen(
-                        state = state,
-                        identity = identity,
-                        encoderLabel = encoderLabel,
-                        camerasProbed = camerasProbed,
-                        appVersion = viewModel.appVersion,
-                        updateState = updateState,
-                        onCheckForUpdates = { viewModel.checkForUpdates() },
-                        logLines = logLines,
-                        buildReport = buildReport,
-                        onRefreshCapabilities = { viewModel.refreshCapabilities() },
-                        onClearLog = { viewModel.clearLog() },
-                    )
+                },
+            ) { insets ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(insets),
+                ) {
+                    renderDestination()
                 }
             }
         }
 
         if (isStreaming && isBlackoutMode && blackoutPeeked) {
-            // Floating non-blocking controls when peeking out of OLED blackout mode.
-            // Does not intercept taps elsewhere; auto-dims after 5s of inactivity.
             BlackoutPeekBar(
                 onRedim = { blackoutPeeked = false },
                 onExitBlackout = {
@@ -574,9 +567,100 @@ private fun PhoneCamScreen(viewModel: PhoneCamViewModel) {
         }
 
         if (isStreaming && isBlackoutMode && !blackoutPeeked) {
-            // OLED Pure-Black Ambient Mode: true-black #000000 with minimal dim clock,
-            // anti-burn-in offset, battery, and live badge. Tapping reveals controls.
             BlackoutSurface(state = state, onTap = { blackoutPeeked = true })
+        }
+    }
+}
+
+@Composable
+private fun StudioNavigationRail(
+    selected: ScreenDestination,
+    onSelect: (ScreenDestination) -> Unit,
+) {
+    NavigationRail(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(68.dp)
+            .background(MaterialTheme.colorScheme.surface)
+            .windowInsetsPadding(
+                WindowInsets.safeDrawing.only(WindowInsetsSides.Start + WindowInsetsSides.Vertical),
+            ),
+        containerColor = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        windowInsets = WindowInsets(0, 0, 0, 0),
+    ) {
+        Spacer(Modifier.weight(1f))
+        ScreenDestination.entries.forEach { item ->
+            NavigationRailItem(
+                selected = item == selected,
+                onClick = { onSelect(item) },
+                colors = NavigationRailItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+                icon = {
+                    Icon(
+                        imageVector = item.icon,
+                        contentDescription = stringResource(item.labelRes),
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
+                label = {
+                    Text(
+                        text = stringResource(item.labelRes),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+            )
+        }
+        Spacer(Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun StudioBottomBar(
+    selected: ScreenDestination,
+    onSelect: (ScreenDestination) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Hairline()
+        NavigationBar(
+            containerColor = MaterialTheme.colorScheme.surface,
+            tonalElevation = 0.dp,
+            windowInsets = NavigationBarDefaults.windowInsets,
+        ) {
+            ScreenDestination.entries.forEach { item ->
+                NavigationBarItem(
+                    selected = item == selected,
+                    onClick = { onSelect(item) },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                    icon = {
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = null,
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = stringResource(item.labelRes),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                )
+            }
         }
     }
 }
@@ -589,9 +673,9 @@ private fun BlackoutPeekBar(
 ) {
     Surface(
         modifier = modifier,
-        shape = CircleShape,
+        shape = PhoneCamShapes.Control,
         color = MaterialTheme.colorScheme.inverseSurface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         shadowElevation = 4.dp,
     ) {
         Row(
@@ -615,88 +699,13 @@ private fun BlackoutPeekBar(
     }
 }
 
-/**
- * The compact status strip above the navigation bar.
- *
- * It is the answer to "is it working" and the way to end a stream, and it is the
- * one part of the shell that never scrolls away or changes with the destination.
- * It folds in what [LiveStatusHeader] and the start/stop button in
- * [ConnectionCard] used to say — the phase and the single action — without the
- * long sentence, because the details belong on the Status screen it points at.
- */
-@Composable
-private fun StatusStrip(
-    state: SessionState,
-    isRunning: Boolean,
-    onStart: () -> Unit,
-    onStop: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    // A short line beside the pill, or nothing: the pill already names the phase,
-    // so this only adds the one fact the pill cannot carry — where the stream is
-    // going.
-    val detail: String? = when (state.phase) {
-        SessionState.Phase.STREAMING ->
-            state.serverName
-                ?.let { stringResource(R.string.overlay_streaming_title, it) }
-                ?: stringResource(R.string.overlay_streaming_title_unknown)
-
-        SessionState.Phase.CONNECTED ->
-            state.serverName?.let { stringResource(R.string.notification_text_connected, it) }
-
-        SessionState.Phase.DISCOVERING,
-        SessionState.Phase.CONNECTING,
-        -> stringResource(R.string.notification_text_connecting)
-
-        else -> null
-    }
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainer),
-    ) {
-        Hairline()
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            PhasePill(state = state)
-            Text(
-                text = detail.orEmpty(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Button(
-                onClick = if (isRunning) onStop else onStart,
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
-            ) {
-                Text(
-                    text = stringResource(
-                        if (isRunning) R.string.action_stop_session else R.string.action_start_session,
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
-}
-
-/** The scrolling body every screen shares, so the gaps and margins cannot drift. */
 @Composable
 private fun ScreenScroll(
     modifier: Modifier = Modifier,
     horizontalPadding: androidx.compose.ui.unit.Dp = 16.dp,
+    maxWidth: androidx.compose.ui.unit.Dp = 720.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.TopCenter,
@@ -704,35 +713,86 @@ private fun ScreenScroll(
         Column(
             modifier = modifier
                 .fillMaxSize()
-                .then(if (isLandscape && horizontalPadding == 0.dp) Modifier.fillMaxWidth() else Modifier.widthIn(max = 720.dp))
+                .widthIn(max = maxWidth)
                 .verticalScroll(rememberScrollState())
-                .padding(
-                    PaddingValues(
-                        horizontal = horizontalPadding,
-                        vertical = if (isLandscape) 8.dp else 16.dp,
-                    ),
-                ),
-            // The gaps carry the grouping. A card, a banner and a section are three
-            // different weights of thing, so they get three different gaps instead of
-            // one uniform stack of boxes.
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(horizontal = horizontalPadding, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             content = content,
         )
     }
 }
 
-/**
- * Is the phone connected and is a picture flowing.
- *
- * The blockers come first, in the order they block: no permission, no session, a
- * failure, a substitution. The connection controls and the connection facts
- * follow, and the preview sits among them because it is the most direct answer to
- * the screen's question.
- */
+@Composable
+private fun StatusBanners(
+    state: SessionState,
+    cameraGranted: Boolean,
+    notificationGranted: Boolean,
+    notificationNoteDismissed: Boolean,
+    permissionRequested: Boolean,
+    notice: String?,
+    noticeKind: NoticeKind,
+    buildReport: () -> String,
+    onRequestCamera: () -> Unit,
+    onDismissNotificationNote: () -> Unit,
+    onRetry: () -> Unit,
+    onScanQr: () -> Unit,
+    onAcknowledgeNotice: () -> Unit,
+) {
+    val context = LocalContext.current
+
+    if (!cameraGranted) {
+        if (permissionRequested && !context.shouldShowCameraRationale()) {
+            PermissionDeniedCard(onOpenSettings = { context.openAppSettings() })
+        } else {
+            CameraPermissionCard(onRequest = onRequestCamera)
+        }
+    } else if (!notificationGranted && !notificationNoteDismissed) {
+        NotificationPermissionNote(onDismiss = onDismissNotificationNote)
+    }
+
+    if (state.phase == SessionState.Phase.ERROR && state.error != null) {
+        ErrorCard(
+            message = state.error,
+            onRetry = onRetry,
+            secondaryLabel = stringResource(R.string.action_scan_qr),
+            onSecondary = onScanQr,
+            onReportIssue = {
+                val reportText = buildReport()
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(
+                    ClipData.newPlainText(
+                        context.getString(R.string.clipboard_diagnostics_report),
+                        reportText,
+                    ),
+                )
+                val intent = com.phonecam.camera.protocol.CrashReporter.buildGitHubIssueIntent(
+                    context = context,
+                    title = "[Error] Stream error: ${state.error}",
+                    bodyMarkdown = "### Error Message\n${state.error}\n\n### System Diagnostics\n```\n$reportText\n```",
+                )
+                runCatching { context.startActivity(intent) }
+            },
+        )
+    } else if (state.phase == SessionState.Phase.CONNECTING || state.phase == SessionState.Phase.RECONNECTING) {
+        ConnectingCard()
+    }
+
+    notice?.let { text ->
+        val title = when (noticeKind) {
+            NoticeKind.Approval -> stringResource(R.string.banner_approval_title)
+            NoticeKind.Substitution -> stringResource(R.string.banner_notice_title)
+        }
+        InfoBanner(text = text, title = title, onDismiss = onAcknowledgeNotice)
+    }
+
+    HealthCard(state = state)
+}
+
 @Composable
 private fun StatusScreen(
     state: SessionState,
     isRunning: Boolean,
+    isLandscape: Boolean,
     cameraGranted: Boolean,
     notificationGranted: Boolean,
     notificationNoteDismissed: Boolean,
@@ -756,126 +816,55 @@ private fun StatusScreen(
     onPreviewEnabled: (Boolean) -> Unit,
     onEnableBlackout: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    ScreenScroll(horizontalPadding = if (isLandscape) 0.dp else 16.dp) {
-        // The things that block everything else.
-        if (!cameraGranted) {
-            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
-                // A permanent denial gets the Settings route, because the platform
-                // will no longer show a dialog (PRD §39: explain, do not nag).
-                if (permissionRequested && !context.shouldShowCameraRationale()) {
-                    PermissionDeniedCard(onOpenSettings = { context.openAppSettings() })
-                } else {
-                    CameraPermissionCard(onRequest = onRequestCamera)
-                }
-            }
-        } else if (!notificationGranted && !notificationNoteDismissed) {
-            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
-                NotificationPermissionNote(onDismiss = onDismissNotificationNote)
-            }
-        }
+    val showStreamPanel = cameraGranted && state.phase == SessionState.Phase.STREAMING
 
-        // A failure is calm prose with a way out, never a wall (PRD §38).
-        if (state.phase == SessionState.Phase.ERROR && state.error != null) {
-            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
-                ErrorCard(
-                    message = state.error,
-                    onRetry = onRetry,
-                    secondaryLabel = stringResource(R.string.action_scan_qr),
-                    onSecondary = onScanQr,
-                    onReportIssue = {
-                        val reportText = buildReport()
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(
-                            ClipData.newPlainText(
-                                context.getString(R.string.clipboard_diagnostics_report),
-                                reportText,
-                            ),
-                        )
-                        val intent = com.phonecam.camera.protocol.CrashReporter.buildGitHubIssueIntent(
-                            context = context,
-                            title = "[Error] Stream error: ${state.error}",
-                            bodyMarkdown = "### Error Message\n${state.error}\n\n### System Diagnostics\n```\n$reportText\n```",
-                        )
-                        runCatching { context.startActivity(intent) }
-                    },
-                )
-            }
-        } else if (state.phase == SessionState.Phase.CONNECTING || state.phase == SessionState.Phase.RECONNECTING) {
-            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
-                ConnectingCard()
-            }
-        }
-
-        // A capability substitution is normal operation, so it is an inline
-        // banner rather than a dialog (PRD §13). An approval instruction is a
-        // notice too but not a substitution, so it gets an accurate heading while
-        // staying in the same blue container.
-        notice?.let { text ->
-            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
-                val title = when (noticeKind) {
-                    NoticeKind.Approval -> stringResource(R.string.banner_approval_title)
-                    NoticeKind.Substitution -> stringResource(R.string.banner_notice_title)
-                }
-                InfoBanner(text = text, title = title, onDismiss = onAcknowledgeNotice)
-            }
-        }
-
-        // Advice about the phone itself. Renders nothing when there is none, so
-        // it costs no space in the common case.
-        Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
-            HealthCard(state = state)
-        }
-
-        // The picture itself, once there is one. Idle, it is absent rather than
-        // blank: a black rectangle on a screen that is not streaming looks like a
-        // failure.
-        val showStreamPanel = cameraGranted && state.phase == SessionState.Phase.STREAMING
-        if (isLandscape && showStreamPanel) {
-            Row(
+    if (isLandscape && showStreamPanel) {
+        // Two-column Landscape Studio layout:
+        // Left (weight 1.25f): full-height undistorted 16:9 camera stage.
+        // Right (weight 1f): independently scrollable banners + ConnectionCard.
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.Top,
+                    .weight(1.25f)
+                    .fillMaxHeight(),
+                contentAlignment = Alignment.Center,
             ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    StreamPreviewOrSaving(
-                        state = state,
-                        previewEnabled = previewEnabled,
-                        onSurfaceAvailable = onSurfaceAvailable,
-                        onPreviewEnabled = onPreviewEnabled,
-                        onEnableBlackout = onEnableBlackout,
-                    )
-                }
-                Box(modifier = Modifier.weight(1f)) {
-                    ConnectionCard(
-                        state = state,
-                        isRunning = isRunning,
-                        pairedServerName = pairedServerName,
-                        pairedAddress = pairedAddress,
-                        onScanQr = onScanQr,
-                        onSearch = onSearch,
-                        onConnectDiscovered = onConnectDiscovered,
-                        onConnectManual = onConnectManual,
-                        onForget = onForget,
-                    )
-                }
-            }
-        } else {
-            if (showStreamPanel) {
                 StreamPreviewOrSaving(
                     state = state,
                     previewEnabled = previewEnabled,
                     onSurfaceAvailable = onSurfaceAvailable,
                     onPreviewEnabled = onPreviewEnabled,
                     onEnableBlackout = onEnableBlackout,
-                    modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier,
                 )
             }
-
-            Box(modifier = if (isLandscape) Modifier.padding(horizontal = 16.dp) else Modifier) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                StatusBanners(
+                    state = state,
+                    cameraGranted = cameraGranted,
+                    notificationGranted = notificationGranted,
+                    notificationNoteDismissed = notificationNoteDismissed,
+                    permissionRequested = permissionRequested,
+                    notice = notice,
+                    noticeKind = noticeKind,
+                    buildReport = buildReport,
+                    onRequestCamera = onRequestCamera,
+                    onDismissNotificationNote = onDismissNotificationNote,
+                    onRetry = onRetry,
+                    onScanQr = onScanQr,
+                    onAcknowledgeNotice = onAcknowledgeNotice,
+                )
                 ConnectionCard(
                     state = state,
                     isRunning = isRunning,
@@ -888,6 +877,46 @@ private fun StatusScreen(
                     onForget = onForget,
                 )
             }
+        }
+    } else {
+        ScreenScroll {
+            StatusBanners(
+                state = state,
+                cameraGranted = cameraGranted,
+                notificationGranted = notificationGranted,
+                notificationNoteDismissed = notificationNoteDismissed,
+                permissionRequested = permissionRequested,
+                notice = notice,
+                noticeKind = noticeKind,
+                buildReport = buildReport,
+                onRequestCamera = onRequestCamera,
+                onDismissNotificationNote = onDismissNotificationNote,
+                onRetry = onRetry,
+                onScanQr = onScanQr,
+                onAcknowledgeNotice = onAcknowledgeNotice,
+            )
+
+            if (showStreamPanel) {
+                StreamPreviewOrSaving(
+                    state = state,
+                    previewEnabled = previewEnabled,
+                    onSurfaceAvailable = onSurfaceAvailable,
+                    onPreviewEnabled = onPreviewEnabled,
+                    onEnableBlackout = onEnableBlackout,
+                )
+            }
+
+            ConnectionCard(
+                state = state,
+                isRunning = isRunning,
+                pairedServerName = pairedServerName,
+                pairedAddress = pairedAddress,
+                onScanQr = onScanQr,
+                onSearch = onSearch,
+                onConnectDiscovered = onConnectDiscovered,
+                onConnectManual = onConnectManual,
+                onForget = onForget,
+            )
         }
     }
 }
@@ -905,54 +934,44 @@ private fun StreamPreviewOrSaving(
     if (previewEnabled) {
         val sensorOrientation = state.activeCamera?.orientationDegrees ?: 0
         val displayRotation = getDisplayRotationDegrees(context)
-        Box(
-            modifier = modifier.fillMaxWidth(),
-            contentAlignment = Alignment.Center,
-        ) {
-            CameraPreview(
-                onSurfaceAvailable = onSurfaceAvailable,
-                aspectRatio = aspectRatioOf(state.actualResolution, sensorOrientation, displayRotation),
-                mirror = state.mirror,
-                orientationDegrees = sensorOrientation,
-                displayRotationDegrees = displayRotation,
-            )
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Surface(
-                    onClick = onEnableBlackout,
-                    shape = CircleShape,
-                    color = Color(0xBB000000),
-                    border = BorderStroke(1.dp, Color(0x44FFFFFF)),
-                ) {
-                    Text(
-                        text = stringResource(R.string.action_blackout),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    )
-                }
+        val (streamWidth, streamHeight) = parseStreamDimensions(
+            state.actualResolution ?: state.requestedResolution,
+        )
 
-                Surface(
-                    onClick = { onPreviewEnabled(false) },
-                    shape = CircleShape,
-                    color = Color(0xBB000000),
-                    border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+        CameraPreview(
+            onSurfaceAvailable = onSurfaceAvailable,
+            modifier = modifier,
+            streamWidth = streamWidth,
+            streamHeight = streamHeight,
+            aspectRatio = 16f / 9f,
+            mirror = state.mirror,
+            orientationDegrees = sensorOrientation,
+            displayRotationDegrees = displayRotation,
+            scaleMode = PreviewScaleMode.FitCenter,
+            overlay = {
+                // Minimal semi-transparent studio controls anchored cleanly at bottom-right
+                // so the top center of the frame stays completely unobstructed.
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text(
-                        text = stringResource(R.string.action_hide_preview),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    PreviewQuickChip(
+                        icon = Icons.Filled.DarkMode,
+                        label = stringResource(R.string.action_oled_short),
+                        contentDescription = stringResource(R.string.action_blackout_oled),
+                        onClick = onEnableBlackout,
+                    )
+                    PreviewQuickChip(
+                        icon = Icons.Filled.VisibilityOff,
+                        label = stringResource(R.string.action_hide_short),
+                        contentDescription = stringResource(R.string.action_hide_preview),
+                        onClick = { onPreviewEnabled(false) },
                     )
                 }
-            }
-        }
+            },
+        )
     } else {
         PowerSavingCard(
             onEnablePreview = { onPreviewEnabled(true) },
@@ -962,9 +981,41 @@ private fun StreamPreviewOrSaving(
     }
 }
 
-/**
- * Elegant card displayed when preview is disabled during streaming to save battery and reduce heat.
- */
+@Composable
+private fun PreviewQuickChip(
+    icon: ImageVector,
+    label: String,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = PhoneCamShapes.Chip,
+        color = Color(0xCC090C10),
+        border = BorderStroke(1.dp, Color(0x38FFFFFF)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = Color(0xFFF1F5F9),
+                modifier = Modifier.size(14.dp),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFFF1F5F9),
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
 @Composable
 private fun PowerSavingCard(
     onEnablePreview: () -> Unit,
@@ -974,9 +1025,9 @@ private fun PowerSavingCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(PhoneCamShapes.Panel)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PhoneCamShapes.Panel)
+            .clip(PhoneCamShapes.Stage)
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PhoneCamShapes.Stage)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -986,8 +1037,8 @@ private fun PowerSavingCard(
         ) {
             Box(
                 modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
+                    .size(34.dp)
+                    .clip(PhoneCamShapes.Chip)
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center,
             ) {
@@ -995,7 +1046,7 @@ private fun PowerSavingCard(
                     imageVector = Icons.Filled.Bolt,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(18.dp),
                 )
             }
             Text(
@@ -1009,7 +1060,7 @@ private fun PowerSavingCard(
 
         Text(
             text = stringResource(R.string.power_saving_body),
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
@@ -1020,6 +1071,8 @@ private fun PowerSavingCard(
         ) {
             Button(
                 onClick = onEnablePreview,
+                shape = PhoneCamShapes.Chip,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
                 modifier = Modifier.weight(1f),
             ) {
                 Text(
@@ -1030,10 +1083,13 @@ private fun PowerSavingCard(
             }
             OutlinedButton(
                 onClick = onEnableBlackout,
+                shape = PhoneCamShapes.Chip,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
                 modifier = Modifier.weight(1f),
             ) {
                 Text(
-                    text = stringResource(R.string.action_blackout_oled),
+                    text = stringResource(R.string.action_blackout),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1042,64 +1098,84 @@ private fun PowerSavingCard(
     }
 }
 
-/** What the phone captures: the camera, and what that camera can do. */
 @Composable
 private fun CameraScreen(
     state: SessionState,
+    isLandscape: Boolean,
     onSelectCamera: (String) -> Unit,
 ) {
-    ScreenScroll {
-        CameraControlCard(state = state, onSelectCamera = onSelectCamera)
-        // Reference material rather than a task, so it sits below the card with
-        // no panel of its own.
-        CameraCapabilitySection(camera = state.activeCamera)
+    if (isLandscape) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            CameraControlCard(
+                state = state,
+                onSelectCamera = onSelectCamera,
+                modifier = Modifier.weight(1f),
+            )
+            CameraCapabilitySection(
+                camera = state.activeCamera,
+                modifier = Modifier.weight(1.1f),
+            )
+        }
+    } else {
+        ScreenScroll {
+            CameraControlCard(state = state, onSelectCamera = onSelectCamera)
+            CameraCapabilitySection(camera = state.activeCamera)
+        }
     }
 }
 
-/**
- * What the desktop receives: the stream's shape and the settings it runs with.
- *
- * The phone-preview switch lives here, not on the Status screen, because it is the
- * one control on this screen that the phone owns. Everything else is read-only by
- * protocol (the desktop drives `set_video`, `set_image`, `set_screen`), but whether
- * *this* phone spends a surface, power and heat on a viewfinder is the phone's
- * decision and nobody else's — and it is a decision about cost, which is a fact
- * about the output rather than about whether the stream is working.
- */
 @Composable
 private fun OutputScreen(
     state: SessionState,
+    isLandscape: Boolean,
     previewEnabled: Boolean,
     onPreviewEnabled: (Boolean) -> Unit,
     onEnableBlackout: () -> Unit = {},
 ) {
-    ScreenScroll {
-        StatusCard(state = state)
-        OutputCard(state = state)
-        PreviewSettingsCard(
-            previewEnabled = previewEnabled,
-            streaming = state.isStreaming,
-            onPreviewEnabled = onPreviewEnabled,
-            onEnableBlackout = onEnableBlackout,
-        )
+    if (isLandscape) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            StatusCard(state = state, modifier = Modifier.weight(1f))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OutputCard(state = state)
+                PreviewSettingsCard(
+                    previewEnabled = previewEnabled,
+                    streaming = state.isStreaming,
+                    onPreviewEnabled = onPreviewEnabled,
+                    onEnableBlackout = onEnableBlackout,
+                )
+            }
+        }
+    } else {
+        ScreenScroll {
+            StatusCard(state = state)
+            OutputCard(state = state)
+            PreviewSettingsCard(
+                previewEnabled = previewEnabled,
+                streaming = state.isStreaming,
+                onPreviewEnabled = onPreviewEnabled,
+                onEnableBlackout = onEnableBlackout,
+            )
+        }
     }
 }
 
-/**
- * The phone's own viewfinder, as a setting that can be reached while streaming.
- *
- * It used to be a switch inside the Status screen's preview block, which meant it
- * was only reachable while a stream was running *and* the user happened to be on
- * that screen — the one moment the screen is most likely to be scrolled past the
- * picture. As a setting it is visible and changeable whenever the app is open, and
- * it states what it costs rather than only what it does: the viewfinder is a
- * second camera output, and turning it off is the difference between a warm phone
- * and a cool one over a long stream.
- *
- * It is honest about what it cannot do while a stream is running only in one
- * direction: turning the preview back on mid-stream attaches the surface and
- * rebuilds the capture session, which the camera does without closing the device.
- */
 @Composable
 private fun PreviewSettingsCard(
     previewEnabled: Boolean,
@@ -1111,8 +1187,9 @@ private fun PreviewSettingsCard(
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
                     text = stringResource(R.string.preview_toggle_title),
                     style = MaterialTheme.typography.titleSmall,
@@ -1126,15 +1203,15 @@ private fun PreviewSettingsCard(
             }
             Switch(checked = previewEnabled, onCheckedChange = onPreviewEnabled)
         }
-        // Only while it matters: during a stream, the reassurance that the PC keeps
-        // receiving a picture is the question the user is actually asking.
         if (streaming) {
             Hint(stringResource(R.string.preview_toggle_streaming_note))
             OutlinedButton(
                 onClick = onEnableBlackout,
+                shape = PhoneCamShapes.Field,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 6.dp),
+                    .padding(top = 4.dp),
             ) {
                 Text(stringResource(R.string.action_blackout_oled))
             }
@@ -1142,10 +1219,10 @@ private fun PreviewSettingsCard(
     }
 }
 
-/** Software updates, diagnostics numbers, and the log. */
 @Composable
 private fun DiagnosticsScreen(
     state: SessionState,
+    isLandscape: Boolean,
     identity: IdentitySnapshot,
     encoderLabel: String,
     camerasProbed: Boolean,
@@ -1157,36 +1234,63 @@ private fun DiagnosticsScreen(
     onRefreshCapabilities: () -> Unit,
     onClearLog: () -> Unit,
 ) {
-    ScreenScroll {
-        UpdateCard(
-            appVersion = appVersion,
-            updateState = updateState,
-            onCheckForUpdates = onCheckForUpdates,
-        )
-        DiagnosticsCard(
-            deviceId = identity.deviceId,
-            deviceName = identity.deviceName,
-            secretFingerprint = identity.secretFingerprint,
-            encoderLabel = encoderLabel,
-            cameraCount = state.capabilities.size,
-            camerasProbed = camerasProbed,
-            appVersion = appVersion,
-            logLines = logLines,
-            onRefreshCapabilities = onRefreshCapabilities,
-            onClearLog = onClearLog,
-            buildReport = buildReport,
-        )
+    if (isLandscape) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            UpdateCard(
+                appVersion = appVersion,
+                updateState = updateState,
+                onCheckForUpdates = onCheckForUpdates,
+                modifier = Modifier.weight(1f),
+            )
+            DiagnosticsCard(
+                deviceId = identity.deviceId,
+                deviceName = identity.deviceName,
+                secretFingerprint = identity.secretFingerprint,
+                encoderLabel = encoderLabel,
+                cameraCount = state.capabilities.size,
+                camerasProbed = camerasProbed,
+                appVersion = appVersion,
+                logLines = logLines,
+                onRefreshCapabilities = onRefreshCapabilities,
+                onClearLog = onClearLog,
+                buildReport = buildReport,
+                modifier = Modifier.weight(1.15f),
+            )
+        }
+    } else {
+        ScreenScroll {
+            UpdateCard(
+                appVersion = appVersion,
+                updateState = updateState,
+                onCheckForUpdates = onCheckForUpdates,
+            )
+            DiagnosticsCard(
+                deviceId = identity.deviceId,
+                deviceName = identity.deviceName,
+                secretFingerprint = identity.secretFingerprint,
+                encoderLabel = encoderLabel,
+                cameraCount = state.capabilities.size,
+                camerasProbed = camerasProbed,
+                appVersion = appVersion,
+                logLines = logLines,
+                onRefreshCapabilities = onRefreshCapabilities,
+                onClearLog = onClearLog,
+                buildReport = buildReport,
+            )
+        }
     }
 }
 
 /**
- * OLED Pure-Black Ambient Mode.
- *
- * Draws true-black #000000 (100% OLED off) to completely eliminate screen glow
- * and color casting in dark environments. Displays a dim, minimal digital clock
- * (20% opacity) with subtle minute-by-minute offset for OLED anti-burn-in
- * protection, current battery percentage with icon, and a discrete live status badge.
- * Tapping uncovers controls; tapping again returns to black ambient.
+ * OLED Pure-Black Ambient Mode (`#000000`, 0-nit) with minute-by-minute
+ * anti-burn-in coordinate drift and tap-to-peek controls.
  */
 @Composable
 private fun BlackoutSurface(state: SessionState, onTap: () -> Unit) {
@@ -1204,13 +1308,12 @@ private fun BlackoutSurface(state: SessionState, onTap: () -> Unit) {
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val formattedTime = remember(currentTime) { timeFormat.format(Date(currentTime)) }
 
-    // Subtle minute-based offset shifting coordinates slightly every minute to prevent OLED burn-in
     val minute = calendar.get(Calendar.MINUTE)
     val burnInOffsetX = (((minute % 10) - 5) * 3).dp
     val burnInOffsetY = ((((minute / 10) % 6) - 3) * 3).dp
 
-    val ambientColor = Color(0x33FFFFFF) // 20% white opacity
-    val liveDotColor = Color(0x66FF3B30) // subtle dim live red
+    val ambientColor = Color(0x33FFFFFF)
+    val liveDotColor = PhoneCamStudioTheme.colors.live.copy(alpha = 0.55f)
 
     Box(
         modifier = Modifier
@@ -1230,7 +1333,7 @@ private fun BlackoutSurface(state: SessionState, onTap: () -> Unit) {
         ) {
             Text(
                 text = formattedTime,
-                style = MaterialTheme.typography.displayMedium,
+                style = MaterialTheme.typography.displayMedium.copy(fontFeatureSettings = "tnum"),
                 color = ambientColor,
                 fontWeight = FontWeight.Light,
                 letterSpacing = 2.sp,
@@ -1240,7 +1343,6 @@ private fun BlackoutSurface(state: SessionState, onTap: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                // ● Live status badge
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -1260,7 +1362,6 @@ private fun BlackoutSurface(state: SessionState, onTap: () -> Unit) {
                     )
                 }
 
-                // Battery percentage with icon
                 if (state.batteryPercent >= 0) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1274,7 +1375,7 @@ private fun BlackoutSurface(state: SessionState, onTap: () -> Unit) {
                         )
                         Text(
                             text = "${state.batteryPercent}%",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
                             color = ambientColor,
                         )
                     }
@@ -1311,9 +1412,7 @@ internal fun aspectRatioOf(
     }
 }
 
-/**
- * Resolves current display rotation in degrees (0, 90, 180, 270).
- */
+/** Resolves current display rotation in degrees (0, 90, 180, 270). */
 internal fun getDisplayRotationDegrees(context: Context): Int {
     val rotation = runCatching {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
@@ -1341,19 +1440,13 @@ private fun Context.findActivity(): android.app.Activity? {
     return null
 }
 
-/**
- * A calm indicator shown while connecting or reconnecting to a PC.
- *
- * Avoids flashing an alarming red error card when the session is simply
- * searching for or negotiating a connection to the desktop.
- */
 @Composable
 private fun ConnectingCard(modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(PhoneCamShapes.Panel)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PhoneCamShapes.Panel)
             .padding(16.dp)
             .semantics { liveRegion = LiveRegionMode.Polite },
@@ -1361,7 +1454,7 @@ private fun ConnectingCard(modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         CircularProgressIndicator(
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(18.dp),
             strokeWidth = 2.dp,
             color = MaterialTheme.colorScheme.primary,
         )

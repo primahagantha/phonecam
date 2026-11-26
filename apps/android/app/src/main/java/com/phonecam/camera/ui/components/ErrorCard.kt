@@ -24,6 +24,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.phonecam.camera.R
 import com.phonecam.camera.ui.theme.PhoneCamShapes
+import com.phonecam.camera.ui.theme.PhoneCamStudioTheme
 
 /**
  * A failure, in the product's voice.
@@ -50,12 +51,13 @@ fun ErrorCard(
     onSecondary: (() -> Unit)? = null,
     onReportIssue: (() -> Unit)? = null,
 ) {
+    val studio = PhoneCamStudioTheme.colors
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(PhoneCamShapes.Panel)
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.7f), PhoneCamShapes.Panel)
+            .background(studio.dangerSurface)
+            .border(1.dp, studio.dangerBorder, PhoneCamShapes.Panel)
             .padding(16.dp)
             .semantics { liveRegion = LiveRegionMode.Polite },
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -68,7 +70,7 @@ fun ErrorCard(
             Text(
                 text = stringResource(R.string.banner_error_title),
                 style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.error,
+                color = studio.dangerText,
             )
         }
         Text(

@@ -3,6 +3,7 @@ package com.phonecam.camera.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -17,73 +18,81 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.phonecam.camera.R
 import com.phonecam.camera.session.SessionState
 import com.phonecam.camera.ui.theme.PhoneCamShapes
+import com.phonecam.camera.ui.theme.PhoneCamStudioTheme
 import com.phonecam.camera.ui.theme.warning
 
 /**
- * The phase indicator: one pill, one word, one dot.
+ * The phase indicator: one pill, one semantic dot, one word.
  *
- * The seven session phases collapse onto four visual classes, because what the
- * user needs from this pill is not "which of seven states am I in" but "is
- * anything wrong, and do I need to do something".
- *
- *  - [PhaseClass.Live] and [PhaseClass.Ready] share the accent. Both are healthy
- *    and neither wants an action; the word beside the dot says which one it is.
- *    Giving them different colours would imply a difference in urgency that does
- *    not exist.
- *  - [PhaseClass.Working] is the warning hue, because a connection that is still
- *    being established is the one case where waiting is the correct response.
- *  - [PhaseClass.Problem] is the error hue and always comes with prose in the
- *    error card above.
- *  - [PhaseClass.Idle] is neutral. Nothing is running, and that is not a problem.
- *
- * Colour is never the only signal: the phase is written out beside the dot, so
- * the pill still works for a user who cannot distinguish the hues, and in bright
- * sunlight where green and amber converge.
+ * Colour carries real session state and is always paired with text:
+ *  - [PhaseClass.Live] / [PhaseClass.Ready]: semantic Live Green (`#22C55E`).
+ *  - [PhaseClass.Working]: Warning Amber (`#F59E0B`).
+ *  - [PhaseClass.Problem]: Danger Red (`#EF4444`).
+ *  - [PhaseClass.Idle]: muted slate neutral.
  */
 @Composable
-fun PhasePill(state: SessionState, modifier: Modifier = Modifier) {
+fun PhasePill(
+    state: SessionState,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
     val context = LocalContext.current
+    val studio = PhoneCamStudioTheme.colors
     val label = phaseLabel(context, state.phase)
-    val accent = phaseAccent(state.phase)
-    // Read outside the semantics lambda: `stringResource` is composable and the
-    // lambda is not.
+    val kind = phaseClass(state.phase)
+    val accent = phaseAccent(kind)
     val classLabel = phaseClassLabel(context, state.phase)
+
+    val containerColor = when (kind) {
+        PhaseClass.Live -> studio.liveContainer
+        PhaseClass.Problem -> studio.dangerSurface
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val borderColor = when (kind) {
+        PhaseClass.Live -> studio.live.copy(alpha = 0.45f)
+        PhaseClass.Problem -> studio.dangerBorder
+        else -> MaterialTheme.colorScheme.outline
+    }
+    val textColor = when (kind) {
+        PhaseClass.Live -> studio.onLiveContainer
+        PhaseClass.Problem -> studio.dangerText
+        else -> MaterialTheme.colorScheme.onSurface
+    }
 
     Row(
         modifier = modifier
             .clip(PhoneCamShapes.Control)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .border(1.dp, MaterialTheme.colorScheme.outline, PhoneCamShapes.Control)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            // The visible text already reads the phase; this adds the class
-            // ("problem") so a screen reader user gets the same glance the dot
-            // gives everyone else.
+            .background(containerColor)
+            .border(1.dp, borderColor, PhoneCamShapes.Control)
+            .padding(
+                horizontal = if (compact) 10.dp else 12.dp,
+                vertical = if (compact) 4.dp else 5.dp,
+            )
             .semantics { stateDescription = classLabel },
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // The dot is a redundant encoding, not decoration: it carries the phase
-        // class, and the text beside it carries the phase. Each one alone is
-        // enough to use the screen, which is the point.
-        Row(
+        Box(
             modifier = Modifier
-                .size(10.dp)
+                .size(if (compact) 7.dp else 8.dp)
                 .clip(CircleShape)
                 .background(accent),
-        ) {}
+        )
         Text(
             text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurface,
+            style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+            color = textColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
-/** The four things the pill can say. */
 private enum class PhaseClass { Live, Ready, Working, Problem, Idle }
 
 private fun phaseClass(phase: SessionState.Phase): PhaseClass = when (phase) {
@@ -98,13 +107,9 @@ private fun phaseClass(phase: SessionState.Phase): PhaseClass = when (phase) {
     SessionState.Phase.IDLE -> PhaseClass.Idle
 }
 
-/**
- * Every dot colour clears 3:1 against the pill's `surfaceVariant` background,
- * which is the WCAG minimum for a non-text indicator.
- */
 @Composable
-private fun phaseAccent(phase: SessionState.Phase): Color = when (phaseClass(phase)) {
-    PhaseClass.Live, PhaseClass.Ready -> MaterialTheme.colorScheme.primary
+private fun phaseAccent(kind: PhaseClass): Color = when (kind) {
+    PhaseClass.Live, PhaseClass.Ready -> PhoneCamStudioTheme.colors.live
     PhaseClass.Working -> MaterialTheme.colorScheme.warning
     PhaseClass.Problem -> MaterialTheme.colorScheme.error
     PhaseClass.Idle -> MaterialTheme.colorScheme.onSurfaceVariant
