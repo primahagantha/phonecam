@@ -351,19 +351,17 @@ pub fn is_phone_connected(device_present: Option<bool>) -> bool {
 /* Notice reconciliation                                               */
 /* ------------------------------------------------------------------ */
 
+/// Whether a `PairOk` ("Phone paired / is connected") notice contradicts the
+/// current connection state and must be dismissed immediately.
+pub fn is_pair_ok_stale(phase: &str, has_device: bool) -> bool {
+    !has_device || phase == "reconnecting" || phase == "idle"
+}
+
 /// The standing notices that a core state has made false.
 ///
 /// A notice describes the moment it was posted. When the fact it names later
 /// stops being true the notice has to go with it, or the app keeps asserting a
-/// state that is over. Three notices had no such sweep: the reconnecting banner
-/// outlived its retry and its button stopped a stream that had already stopped;
-/// the core-error banner outlived the failure and sat over a healthy
-/// connection; and the quality banner outlived the stream it described.
-///
-/// The pairing notices are deliberately **not** covered: a successful pairing
-/// emits its confirmation before the phone's control channel is up, so the core
-/// briefly reports no device while the notice is the user's confirmation.
-/// Sweeping on "no device" would flash it away.
+/// state that is over.
 pub fn stale_notice_keys(keys: &[String], phase: &str, has_error: bool) -> Vec<String> {
     let mut stale = Vec::new();
 
@@ -373,12 +371,32 @@ pub fn stale_notice_keys(keys: &[String], phase: &str, has_error: bool) -> Vec<S
     if phase != "streaming" && keys.iter().any(|k| k == "quality-changed") {
         stale.push("quality-changed".to_string());
     }
+    if (phase == "reconnecting" || phase == "idle") && keys.iter().any(|k| k == "pair-ok") {
+        stale.push("pair-ok".to_string());
+    }
     if !has_error {
         for key in keys {
             if let Some(rest) = key.strip_prefix("core-error:") {
                 stale.push(format!("core-error:{rest}"));
             }
         }
+    }
+    stale
+}
+
+/// Extended notice sweep that also dismisses `pair-ok` when no phone is connected.
+pub fn stale_notice_keys_for_state(
+    keys: &[String],
+    phase: &str,
+    has_error: bool,
+    has_device: bool,
+) -> Vec<String> {
+    let mut stale = stale_notice_keys(keys, phase, has_error);
+    if is_pair_ok_stale(phase, has_device)
+        && keys.iter().any(|k| k == "pair-ok")
+        && !stale.iter().any(|k| k == "pair-ok")
+    {
+        stale.push("pair-ok".to_string());
     }
     stale
 }
@@ -640,17 +658,29 @@ mod tests {
             "core-error:x".to_string(),
             "pair-ok".to_string(),
         ];
-        // While reconnecting with an error standing, only the quality banner is
-        // stale: it claims a running stream, and nothing is streaming.
+        // While reconnecting, both quality-changed and pair-ok are stale so
+        // "Phone paired / is connected" never contradicts "Reconnecting".
         let partial = stale_notice_keys(&keys, "reconnecting", true);
-        assert_eq!(partial, vec!["quality-changed".to_string()]);
+        assert!(partial.contains(&"quality-changed".to_string()));
+        assert!(partial.contains(&"pair-ok".to_string()));
+        assert!(!partial.contains(&"reconnecting".to_string()));
 
-        let stale = stale_notice_keys(&keys, "connected", false);
+        // When connected with a device, pair-ok stays valid while reconnecting/quality/error clear.
+        let stale = stale_notice_keys_for_state(&keys, "connected", false, true);
         assert!(stale.contains(&"reconnecting".to_string()));
         assert!(stale.contains(&"quality-changed".to_string()));
         assert!(stale.contains(&"core-error:x".to_string()));
-        // Pairing success is never swept on a missing device.
         assert!(!stale.contains(&"pair-ok".to_string()));
+
+        // With no device or idle phase, pair-ok is immediately dismissed.
+        assert!(is_pair_ok_stale("idle", true));
+        assert!(is_pair_ok_stale("reconnecting", true));
+        assert!(is_pair_ok_stale("connected", false));
+        assert!(!is_pair_ok_stale("connected", true));
+        assert!(!is_pair_ok_stale("streaming", true));
+
+        let stale_no_dev = stale_notice_keys_for_state(&keys, "connected", false, false);
+        assert!(stale_no_dev.contains(&"pair-ok".to_string()));
     }
 
     #[test]

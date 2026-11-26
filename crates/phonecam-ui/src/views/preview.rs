@@ -206,11 +206,9 @@ pub fn stage_frame_with_focus(
         .justify_center()
         .rounded(px(Radius::LG))
         .border_1()
-        .border_color(SHELL.border.alpha(0.45))
-        // The stage is recessed, not lifted: the one place a pure-black
-        // background is correct, because it is the letterbox around the picture.
-        .bg(gpui::rgb(0x000000))
-        .p(px(Space::PAD))
+        .border_color(SHELL.border)
+        .bg(SHELL.stage)
+        .p(px(20.0))
         .child(inner)
         .into_any_element()
 }
@@ -243,9 +241,9 @@ pub fn pairing_stage_with_context(
     };
 
     let title = if *expired {
-        "That code expired"
+        "Pairing code expired"
     } else {
-        "Scan this with PhoneCam on your phone"
+        "Scan QR code with PhoneCam"
     };
     let sub = if *expired {
         "Codes work once and last five minutes.".to_string()
@@ -253,25 +251,25 @@ pub fn pairing_stage_with_context(
         match expires_in_ms {
             Some(ms) => {
                 format!(
-                    "Works once · expires in {}",
+                    "Single-use code · expires in {}",
                     crate::views::state::format_duration(*ms)
                 )
             }
-            None => "Works once".to_string(),
+            None => "Single-use code".to_string(),
         }
     };
 
-    let qr_display_size = if viewport_height < 720.0 {
+    let qr_display_size = if viewport_height < 740.0 {
         200.0
     } else {
-        crate::theme::QR_SIZE as f32
+        248.0
     };
 
     let code: AnyElement = match qr {
         Some(image) => div()
-            .mt(px(Space::LG))
-            .rounded(px(Radius::LG))
-            .bg(gpui::rgb(0xf1f5f9))
+            .mt(px(Space::PAD))
+            .rounded(px(Radius::MD))
+            .bg(gpui::rgb(0xf8fafc))
             .p(px(Space::XL))
             .child(
                 gpui::img(image.clone())
@@ -280,31 +278,38 @@ pub fn pairing_stage_with_context(
             )
             .into_any_element(),
         None => div()
-            .mt(px(Space::LG))
+            .mt(px(Space::PAD))
             .w(px(qr_display_size))
             .h(px(qr_display_size))
+            .rounded(px(Radius::MD))
+            .bg(SHELL.recessed)
             .into_any_element(),
     };
 
-    let mut column = div()
+    let mut card = div()
+        .w_full()
+        .max_w(px(420.0))
+        .my_auto()
         .flex()
         .flex_col()
         .items_center()
-        .justify_center()
-        .my_auto()
-        .px(px(24.0))
-        .py(px(16.0))
+        .rounded(px(Radius::LG))
+        .border_1()
+        .border_color(SHELL.border)
+        .bg(SHELL.panel)
+        .p(px(24.0))
         .child(
             div()
                 .font(Fonts::display())
-                .text_size(px(Type::TITLE))
-                .line_height(px(Type::LINE_TITLE))
+                .text_size(px(Type::STATUS))
+                .line_height(px(26.0))
+                .text_center()
                 .text_color(Text::PRIMARY)
                 .child(title),
         )
         .child(
             div()
-                .mt(px(Space::SM))
+                .mt(px(Space::MD))
                 .font(numeric_font(Fonts::MONO))
                 .text_size(px(Type::XS))
                 .text_color(Text::MUTED)
@@ -313,10 +318,10 @@ pub fn pairing_stage_with_context(
         .child(code);
 
     if networks.len() > 1 {
-        column = column
+        card = card
             .child(
                 div()
-                    .mt(px(Space::LG))
+                    .mt(px(Space::PAD))
                     .flex()
                     .flex_row()
                     .flex_wrap()
@@ -350,16 +355,17 @@ pub fn pairing_stage_with_context(
                     .font(Fonts::sans())
                     .text_size(px(Type::XS))
                     .line_height(px(Type::LINE_XS))
+                    .text_center()
                     .text_color(Text::MUTED)
-                    .child("This PC is on more than one network. Pick the one your phone is on."),
+                    .child("Multiple networks detected. Select the Wi-Fi your phone is on."),
             );
     }
 
     if !expired && *no_phone_broadcasting {
-        column = column.child(
+        card = card.child(
             div()
-                .mt(px(Space::LG))
-                .max_w(px(384.0))
+                .mt(px(Space::PAD))
+                .w_full()
                 .child(crate::views::widgets::tinted_box(
                     Tone::Warn,
                     vec![div()
@@ -367,14 +373,14 @@ pub fn pairing_stage_with_context(
                         .text_size(px(Type::XS))
                         .line_height(px(Type::LINE_XS))
                         .text_color(Status::WARN)
-                        .child("No phone is broadcasting on this network yet. Open PhoneCam on your phone and check it is on the same Wi-Fi as this PC.")
+                        .child("No phone is broadcasting on this network yet. Open PhoneCam on your phone and confirm both devices share the same Wi-Fi.")
                         .into_any_element()],
                 )),
         );
     }
 
     let copy_btn = (!*expired && !payload.is_empty()).then(|| {
-        Button::new("Copy pairing code")
+        Button::new("Copy Pairing Code")
             .id("pairing-copy-code")
             .focus_with(focus.as_deref_mut(), "pairing-copy-code")
             .on_click(|_window, _cx| {
@@ -386,7 +392,7 @@ pub fn pairing_stage_with_context(
     });
 
     let primary_btn = if *expired {
-        Button::primary("Show a new code")
+        Button::primary("Show New Code")
             .id("pairing-new-code")
             .focus_with(focus.as_deref_mut(), "pairing-new-code")
             .on_click(|_window, _cx| {
@@ -403,7 +409,7 @@ pub fn pairing_stage_with_context(
             .into_any_element()
     };
 
-    column = column.child(
+    card = card.child(
         div()
             .mt(px(Space::SECTION))
             .flex()
@@ -426,9 +432,10 @@ pub fn pairing_stage_with_context(
         .items_center()
         .rounded(px(Radius::LG))
         .border_1()
-        .border_color(SHELL.border.alpha(0.45))
-        .bg(gpui::rgb(0x000000))
-        .child(column)
+        .border_color(SHELL.border)
+        .bg(SHELL.stage)
+        .p(px(20.0))
+        .child(card)
         .into_any_element()
 }
 
@@ -446,7 +453,7 @@ fn empty_body(content: &StageContent, mut focus: Option<&mut FocusContext<'_>>) 
     let action_element: AnyElement = match action {
         EmptyAction::WaitingForService => div()
             .mt(px(Space::SECTION))
-            .child(chip("Waiting for the service", Tone::Warn))
+            .child(chip("Waiting for local service", Tone::Warn))
             .into_any_element(),
         EmptyAction::StartStreaming { enabled, .. } => div()
             .mt(px(Space::SECTION))
@@ -456,37 +463,49 @@ fn empty_body(content: &StageContent, mut focus: Option<&mut FocusContext<'_>>) 
             .justify_center()
             .gap(px(Space::LG))
             .child(
-                Button::primary("Start streaming")
+                Button::primary("Start Streaming")
                     .id("stage-start-stream")
                     .focus_with(focus.as_deref_mut(), "stage-start-stream")
                     .disabled(!enabled)
-                    .on_click(|_window, _cx| {
-                        push_effect(SideEffect::StartStream)
-                    })
+                    .on_click(|_window, _cx| push_effect(SideEffect::StartStream))
                     .into_any_element(),
             )
             .child(
-                Button::new("Pair another phone")
+                Button::new("Pair Another Phone")
                     .id("stage-pair-another")
                     .focus_with(focus.as_deref_mut(), "stage-pair-another")
-                    .on_click(|_window, _cx| {
-                        push_effect(SideEffect::ArmPairing)
-                    })
+                    .on_click(|_window, _cx| push_effect(SideEffect::ArmPairing))
                     .into_any_element(),
             )
             .into_any_element(),
         EmptyAction::ShowPairingCode { remembered } => div()
             .mt(px(Space::SECTION))
+            .w_full()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(Space::LG))
+            .gap(px(Space::PAD))
             .child(
-                Button::primary("Show a pairing code")
-                    .id("stage-show-pairing")
-                    .focus_with(focus, "stage-show-pairing")
-                    .on_click(|_window, _cx| push_effect(SideEffect::ArmPairing))
-                    .into_any_element(),
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .justify_center()
+                    .gap(px(Space::LG))
+                    .child(
+                        Button::primary("Show QR Pairing Code")
+                            .id("stage-show-pairing")
+                            .focus_with(focus.as_deref_mut(), "stage-show-pairing")
+                            .on_click(|_window, _cx| push_effect(SideEffect::ArmPairing))
+                            .into_any_element(),
+                    )
+                    .child(
+                        Button::new("Connect via USB")
+                            .id("stage-connect-usb")
+                            .focus_with(focus, "stage-connect-usb")
+                            .on_click(|_window, _cx| push_effect(SideEffect::ConnectUsb(None)))
+                            .into_any_element(),
+                    ),
             )
             .child(
                 div()
@@ -496,25 +515,31 @@ fn empty_body(content: &StageContent, mut focus: Option<&mut FocusContext<'_>>) 
                     .text_center()
                     .text_color(Text::MUTED)
                     .child(if *remembered {
-                        "This PC already knows a phone. Open PhoneCam on it and it reconnects by itself."
+                        "This PC remembers your phone. Open PhoneCam on it to reconnect automatically."
                     } else {
-                        "Next: select 'PhoneCam Camera' in Zoom, OBS, or Discord."
+                        "Once connected, pick 'PhoneCam Camera' in OBS, Zoom, Meet, or Discord."
                     }),
             )
             .into_any_element(),
     };
 
     div()
+        .w_full()
+        .max_w(px(420.0))
         .flex()
         .flex_col()
         .items_center()
         .justify_center()
-        .max_w(px(416.0))
-        .px(px(32.0))
+        .rounded(px(Radius::LG))
+        .border_1()
+        .border_color(SHELL.border)
+        .bg(SHELL.panel)
+        .p(px(24.0))
         .child(
             div()
                 .font(Fonts::display())
-                .text_size(px(Type::DISPLAY))
+                .text_size(px(Type::STATUS))
+                .line_height(px(26.0))
                 .text_center()
                 .text_color(Text::PRIMARY)
                 .child(title.clone()),
@@ -532,7 +557,13 @@ fn empty_body(content: &StageContent, mut focus: Option<&mut FocusContext<'_>>) 
         .child(action_element)
         .children(output_note.as_ref().map(|note| {
             div()
-                .mt(px(Space::SECTION))
+                .mt(px(Space::PAD))
+                .rounded(px(Radius::PILL))
+                .border_1()
+                .border_color(SHELL.border)
+                .bg(SHELL.recessed)
+                .px(px(10.0))
+                .py(px(3.0))
                 .font(numeric_font(Fonts::MONO))
                 .text_size(px(Type::TWO_XS))
                 .text_color(Text::MUTED)
@@ -604,14 +635,157 @@ pub fn stage_gesture_feedback(state: &AppState) -> AnyElement {
         .into_any_element()
 }
 
+/// Sleek floating translucent bottom studio HUD pill bar rendered over the
+/// full-bleed live preview stage.
+pub fn live_studio_hud(
+    state: &AppState,
+    focus_preview: bool,
+    mut focus: Option<&mut FocusContext<'_>>,
+) -> AnyElement {
+    let preview_failed = state.has_notice(crate::views::state::FailureCode::DecoderFailed)
+        || state.has_notice(crate::views::state::FailureCode::DecoderUnsupported);
+    let mirror = state.settings.output_mirror;
+    let next_rot = (state.settings.output_rotation + 90) % 360;
+    let fps = state.core.as_ref().map(|c| c.stats.fps).unwrap_or(0.0);
+    let rtt = state
+        .core
+        .as_ref()
+        .map(|c| c.stats.latency_ms)
+        .filter(|ms| *ms > 0.0);
+
+    let mut metrics_parts: Vec<String> = Vec::new();
+    if fps > 0.0 {
+        metrics_parts.push(format!("{fps:.1} fps"));
+    }
+    if let Some((w, h)) = state.frame_size {
+        metrics_parts.push(format!("{w}x{h}"));
+    }
+    if let Some(ms) = rtt {
+        metrics_parts.push(format!("{ms:.0} ms"));
+    }
+    if state.settings.output_rotation != 0 {
+        metrics_parts.push(format!("{}°", state.settings.output_rotation));
+    }
+    let metrics_text = if metrics_parts.is_empty() {
+        "Live".to_string()
+    } else {
+        metrics_parts.join(" · ")
+    };
+
+    let status_tone = if preview_failed { Tone::Warn } else { Tone::Ok };
+    let status_label = if preview_failed { "No preview" } else { "Live" };
+
+    let hud_btn = |id: &'static str,
+                   label: &'static str,
+                   selected: bool,
+                   danger: bool,
+                   focus: Option<&mut FocusContext<'_>>,
+                   on_click: Box<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>|
+     -> AnyElement {
+        let mut btn = if danger {
+            Button::danger(label)
+        } else {
+            Button::new(label).selected(selected)
+        };
+        btn = btn
+            .id(id)
+            .focus_with(focus, id)
+            .on_click(move |w, cx| on_click(w, cx));
+        btn.into_any_element()
+    };
+
+    let bar = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(Space::MD))
+        .rounded(px(Radius::PILL))
+        .border_1()
+        .border_color(SHELL.control_border.alpha(0.85))
+        .bg(SHELL.stage.alpha(0.86))
+        .px(px(12.0))
+        .py(px(6.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(Space::MD))
+                .pl(px(Space::SM))
+                .pr(px(Space::MD))
+                .child(crate::views::widgets::status_dot(status_tone))
+                .child(
+                    div()
+                        .font(Fonts::sans())
+                        .text_size(px(Type::XS))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(status_tone.fg())
+                        .child(status_label),
+                ),
+        )
+        .child(hud_btn(
+            "hud-stop-stream",
+            "Stop",
+            false,
+            true,
+            focus.as_deref_mut(),
+            Box::new(|_w, _cx| push_effect(SideEffect::StopStream)),
+        ))
+        .child(hud_btn(
+            "hud-mirror",
+            if mirror { "Mirrored" } else { "Mirror" },
+            mirror,
+            false,
+            focus.as_deref_mut(),
+            Box::new(move |_w, _cx| push_effect(SideEffect::SetMirror(!mirror))),
+        ))
+        .child(hud_btn(
+            "hud-rotate",
+            "Rotate 90°",
+            state.settings.output_rotation != 0,
+            false,
+            focus.as_deref_mut(),
+            Box::new(move |_w, _cx| push_effect(SideEffect::SetRotation(next_rot))),
+        ))
+        .child(hud_btn(
+            "hud-focus",
+            if focus_preview { "Exit Focus" } else { "Focus" },
+            focus_preview,
+            false,
+            focus,
+            Box::new(|_w, _cx| push_effect(SideEffect::ToggleFocusPreview)),
+        ))
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(1.0))
+                .h(px(18.0))
+                .bg(SHELL.control_border),
+        )
+        .child(
+            div()
+                .px(px(Space::MD))
+                .font(numeric_font(Fonts::MONO))
+                .text_size(px(Type::TWO_XS))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(Text::BODY)
+                .child(metrics_text),
+        );
+
+    div()
+        .absolute()
+        .bottom(px(14.0))
+        .left(px(0.0))
+        .right(px(0.0))
+        .flex()
+        .flex_row()
+        .justify_center()
+        .px(px(16.0))
+        .child(bar)
+        .into_any_element()
+}
+
 /// The telemetry strip, inside the frame's bottom edge.
-///
-/// Deliberately low contrast: it is a confidence check, not the thing being
-/// watched. The badge reports what **this window** is showing, not what the
-/// phone is sending — when the decoder has stopped, the stream is genuinely
-/// still running and the virtual camera is still being fed, but this surface has
-/// no picture, and a green "Live" over a black rectangle is the app contradicting
-/// itself on its most important surface.
 pub fn telemetry(
     device_name: Option<String>,
     preview_failed: bool,
@@ -626,11 +800,11 @@ pub fn telemetry(
         .min_w(px(0.0))
         .items_center()
         .gap(px(Space::MD))
-        .rounded(px(Radius::MD))
+        .rounded(px(Radius::PILL))
         .border_1()
-        .border_color(SHELL.border.alpha(0.45))
-        .bg(SHELL.recessed.alpha(0.85))
-        .px(px(Space::LG))
+        .border_color(SHELL.control_border.alpha(0.7))
+        .bg(SHELL.stage.alpha(0.85))
+        .px(px(Space::XL))
         .py(px(Space::SM));
 
     left = left.child(if preview_failed {
@@ -656,11 +830,11 @@ pub fn telemetry(
         .flex_shrink_0()
         .items_center()
         .gap(px(Space::XL))
-        .rounded(px(Radius::MD))
+        .rounded(px(Radius::PILL))
         .border_1()
-        .border_color(SHELL.border.alpha(0.45))
-        .bg(SHELL.recessed.alpha(0.85))
-        .px(px(Space::LG))
+        .border_color(SHELL.control_border.alpha(0.7))
+        .bg(SHELL.stage.alpha(0.85))
+        .px(px(Space::XL))
         .py(px(Space::SM))
         .font(numeric_font(Fonts::MONO))
         .text_size(px(Type::TWO_XS))
@@ -669,8 +843,6 @@ pub fn telemetry(
     if let Some((w, h)) = frame_size {
         right = right.child(format!("{w}x{h}"));
     }
-    // The core's figure, not the preview's: it counts decoded frames from the
-    // phone, which is the number the virtual camera and any other app receive.
     if core_fps > 0.0 {
         right = right.child(format!("{core_fps:.1} fps"));
     }
@@ -800,26 +972,26 @@ pub fn preview_off_card_with_action(
         .px(px(32.0))
         .child(
             div()
+                .w_full()
+                .max_w(px(420.0))
                 .flex()
                 .flex_col()
                 .items_center()
-                .max_w(px(416.0))
                 .rounded(px(Radius::LG))
                 .border_1()
-                .border_color(SHELL.border.alpha(0.45))
-                .bg(SHELL.recessed)
-                .px(px(24.0))
-                .py(px(20.0))
+                .border_color(SHELL.border)
+                .bg(SHELL.panel)
+                .p(px(24.0))
                 .child(
                     div()
                         .font(Fonts::display())
-                        .text_size(px(Type::DISPLAY))
+                        .text_size(px(Type::STATUS))
                         .text_color(Text::PRIMARY)
                         .child("Preview is off"),
                 )
                 .child(
                     div()
-                        .mt(px(Space::MD))
+                        .mt(px(Space::LG))
                         .font(Fonts::sans())
                         .text_size(px(Type::TWO_SM))
                         .line_height(px(Type::LINE_TWO_SM))
@@ -827,7 +999,7 @@ pub fn preview_off_card_with_action(
                         .text_center()
                         .child("The phone is still streaming and the virtual camera is still publishing. Turn the preview back on in Preferences."),
                 )
-                .child(div().mt(px(Space::XL)).child(pref_button)),
+                .child(div().mt(px(Space::SECTION)).child(pref_button)),
         )
         .into_any_element()
 }
@@ -850,29 +1022,29 @@ pub fn preview_waiting_card_with_focus(
         .min_h(px(0.0))
         .items_center()
         .justify_center()
-        .px(px(32.0))
+        .px(px(24.0))
         .child(
             div()
+                .w_full()
+                .max_w(px(420.0))
                 .flex()
                 .flex_col()
                 .items_center()
-                .max_w(px(416.0))
                 .rounded(px(Radius::LG))
                 .border_1()
-                .border_color(SHELL.border.alpha(0.45))
-                .bg(SHELL.recessed)
-                .px(px(24.0))
-                .py(px(20.0))
+                .border_color(SHELL.border)
+                .bg(SHELL.panel)
+                .p(px(24.0))
                 .child(
                     div()
                         .font(Fonts::display())
-                        .text_size(px(Type::DISPLAY))
+                        .text_size(px(Type::STATUS))
                         .text_color(Text::PRIMARY)
                         .child("Waiting for video feed..."),
                 )
                 .child(
                     div()
-                        .mt(px(Space::MD))
+                        .mt(px(Space::LG))
                         .font(Fonts::sans())
                         .text_size(px(Type::TWO_SM))
                         .line_height(px(Type::LINE_TWO_SM))
@@ -884,7 +1056,7 @@ pub fn preview_waiting_card_with_focus(
                         )),
                 )
                 .child(
-                    div().mt(px(Space::XL)).child(
+                    div().mt(px(Space::SECTION)).child(
                         Button::danger("Cancel / Stop Camera")
                             .id("waiting-stop-camera")
                             .focus_with(focus, "waiting-stop-camera")

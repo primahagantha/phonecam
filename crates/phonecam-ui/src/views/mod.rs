@@ -12,7 +12,8 @@ pub use effects::{drain_effects, push_effect, SideEffect, Tab};
 pub use state::{
     bitrate_for, camera_facing_label, format_battery, format_bytes, format_duration,
     format_log_time, now_ms, screen_mode_label, stream_phase_label, thermal_label, AppState,
-    CoreStatus, FailureCode, LogLine, LogSource, Notice, NoticeAction, PairingPrompt, Settings,
+    CoreStatus, FailureCode, LogLine, LogSource, Notice, NoticeAction, PairingPrompt, ReleaseInfo,
+    Settings, UpdateStatus,
 };
 
 use std::collections::HashMap;
@@ -33,7 +34,11 @@ pub struct AppView {
     pub focus_preview: bool,
     /// Top-bar Preferences drawer open/closed state (UI-local).
     pub show_preferences: bool,
-    /// Capture -> Experimental (Labs) card expanded/collapsed state (default collapsed).
+    /// Software Updates modal open/closed state (UI-local).
+    pub show_updates: bool,
+    /// Setup -> USB Debugging Help accordion expanded/collapsed state (default collapsed).
+    pub usb_help_expanded: bool,
+    /// Camera -> Experimental (Labs) card expanded/collapsed state (default collapsed).
     pub labs_expanded: bool,
     /// Labs -> Supported gestures reference collapsed/expanded state.
     pub gesture_ref_expanded: bool,
@@ -66,6 +71,8 @@ impl AppView {
             tab: Tab::Setup,
             focus_preview: false,
             show_preferences: false,
+            show_updates: false,
+            usb_help_expanded: false,
             labs_expanded: false,
             gesture_ref_expanded: false,
             auto_armed_first_run: false,
@@ -248,6 +255,9 @@ impl Render for AppView {
             Rc::new(move |_window, app| {
                 view.update(app, |this, cx| {
                     this.show_preferences = !this.show_preferences;
+                    if this.show_preferences {
+                        this.show_updates = false;
+                    }
                     cx.notify();
                 });
             })
@@ -257,6 +267,7 @@ impl Render for AppView {
             Box::new(move |_window, app| {
                 view.update(app, |this, cx| {
                     this.show_preferences = true;
+                    this.show_updates = false;
                     cx.notify();
                 });
             })
@@ -266,6 +277,50 @@ impl Render for AppView {
             Rc::new(move |_window, app| {
                 view.update(app, |this, cx| {
                     this.show_preferences = false;
+                    cx.notify();
+                });
+            })
+        };
+        let on_toggle_updates: Rc<dyn Fn(&mut Window, &mut gpui::App) + 'static> = {
+            let view = view.clone();
+            Rc::new(move |_window, app| {
+                view.update(app, |this, cx| {
+                    this.show_updates = !this.show_updates;
+                    if this.show_updates {
+                        this.show_preferences = false;
+                        if matches!(this.state.update_status, UpdateStatus::Idle) {
+                            push_effect(SideEffect::CheckForUpdates);
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+        };
+        let on_open_updates: Rc<dyn Fn(&mut Window, &mut gpui::App) + 'static> = {
+            let view = view.clone();
+            Rc::new(move |_window, app| {
+                view.update(app, |this, cx| {
+                    this.show_updates = true;
+                    this.show_preferences = false;
+                    push_effect(SideEffect::CheckForUpdates);
+                    cx.notify();
+                });
+            })
+        };
+        let on_close_updates: Rc<dyn Fn(&mut Window, &mut gpui::App) + 'static> = {
+            let view = view.clone();
+            Rc::new(move |_window, app| {
+                view.update(app, |this, cx| {
+                    this.show_updates = false;
+                    cx.notify();
+                });
+            })
+        };
+        let on_toggle_usb_help: Rc<dyn Fn(&mut Window, &mut gpui::App) + 'static> = {
+            let view = view.clone();
+            Rc::new(move |_window, app| {
+                view.update(app, |this, cx| {
+                    this.usb_help_expanded = !this.usb_help_expanded;
                     cx.notify();
                 });
             })
@@ -291,17 +346,22 @@ impl Render for AppView {
 
         let ui_state = panels::RailUiState {
             show_preferences: self.show_preferences,
+            show_updates: self.show_updates,
+            usb_help_expanded: self.usb_help_expanded,
             labs_expanded: self.labs_expanded,
             gesture_ref_expanded: self.gesture_ref_expanded,
         };
         let callbacks = panels::PanelCallbacks {
             on_toggle_preferences: Some(on_toggle_preferences),
+            on_toggle_updates: Some(on_toggle_updates),
+            on_open_updates: Some(on_open_updates),
+            on_toggle_usb_help: Some(on_toggle_usb_help),
             on_toggle_labs: Some(on_toggle_labs),
             on_toggle_gesture_ref: Some(on_toggle_gesture_ref),
         };
 
         let mut focus_handles = std::mem::take(&mut self.focus_handles);
-        let (status_strip_el, stage, rail_el, prefs_overlay_el) = {
+        let (status_strip_el, stage, rail_el, prefs_overlay_el, updates_overlay_el) = {
             let mut focus_ctx = widgets::FocusContext::new(&mut focus_handles, cx);
 
             let status_strip_el = panels::status_strip_with_ui(
@@ -345,23 +405,15 @@ impl Render for AppView {
                         .min_w(px(0.0))
                         .rounded(px(Radius::LG))
                         .border_1()
-                        .border_color(SHELL.border.alpha(0.6))
-                        .bg(gpui::rgb(0x000000))
+                        .border_color(SHELL.border)
+                        .bg(SHELL.stage)
                         .overflow_hidden()
                         .child(picture)
                         .child(preview::stage_gesture_feedback(&self.state))
-                        .child(preview::telemetry(
-                            self.state.device_name(),
-                            self.state.has_notice(FailureCode::DecoderFailed)
-                                || self.state.has_notice(FailureCode::DecoderUnsupported),
-                            self.state.frame_size,
-                            self.state.core.as_ref().map(|c| c.stats.fps).unwrap_or(0.0),
-                            self.state
-                                .core
-                                .as_ref()
-                                .map(|c| c.stats.latency_ms)
-                                .filter(|ms| *ms >= 0.0),
-                            self.state.settings.output_rotation,
+                        .child(preview::live_studio_hud(
+                            &self.state,
+                            self.focus_preview,
+                            Some(&mut focus_ctx),
                         ))
                         .into_any_element()
                 }
@@ -401,7 +453,23 @@ impl Render for AppView {
                 None
             };
 
-            (status_strip_el, stage, rail_el, prefs_overlay_el)
+            let updates_overlay_el = if self.show_updates {
+                Some(panels::updates_modal(
+                    &self.state,
+                    Some(on_close_updates),
+                    Some(&mut focus_ctx),
+                ))
+            } else {
+                None
+            };
+
+            (
+                status_strip_el,
+                stage,
+                rail_el,
+                prefs_overlay_el,
+                updates_overlay_el,
+            )
         };
         self.focus_handles = focus_handles;
 
@@ -412,8 +480,8 @@ impl Render for AppView {
             .h_full()
             .min_h(px(0.0))
             .overflow_hidden()
-            .gap(px(Space::XL))
-            .p(px(Space::XL))
+            .gap(px(Space::PAD))
+            .p(px(Space::PAD))
             .child(stage);
 
         if let Some(rail_el) = rail_el {
@@ -433,7 +501,10 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ExitFocusPreview, _window, cx| {
-                if this.show_preferences {
+                if this.show_updates {
+                    this.show_updates = false;
+                    cx.notify();
+                } else if this.show_preferences {
                     this.show_preferences = false;
                     cx.notify();
                 } else if this.focus_preview {
@@ -490,6 +561,10 @@ impl Render for AppView {
 
         if let Some(prefs) = prefs_overlay_el {
             root = root.child(prefs);
+        }
+
+        if let Some(updates) = updates_overlay_el {
+            root = root.child(updates);
         }
 
         if self.state.pairing_prompt.is_some() {

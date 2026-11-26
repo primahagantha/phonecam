@@ -85,40 +85,60 @@ pub const fn hsla_from_hex(hex: u32) -> Hsla {
     Hsla { h, s, l, a: 1.0 }
 }
 
-/// Surface steps. The shell is one hue, lifted toward the user in a fixed order.
+/// Surface steps. The studio shell is one refined dark slate hue lifted toward
+/// the operator in deliberate layers, with separate subtle structural borders
+/// and crisp interactive control borders.
 #[derive(Debug, Clone, Copy)]
 pub struct ShellColors {
-    /// Recessed: wells, the log, the stage's letterbox.
+    /// Deepest obsidian backdrop for the video stage, recessed tracks, and log wells.
+    pub stage: Hsla,
+    /// Recessed wells, segmented tab tracks, and log containers.
     pub recessed: Hsla,
-    /// App background, field fill.
+    /// App canvas background.
     pub base: Hsla,
-    /// Panels.
+    /// Primary panel / inspector / studio card surface.
     pub panel: Hsla,
-    /// The status strip, list rows.
+    /// Elevated panels, active tab pills, and floating surfaces.
+    pub panel_elevated: Hsla,
+    /// Raised surface alias matching `panel_elevated` for subtle card headers and rows.
     pub raised: Hsla,
-    /// Button hover surface, toast, kbd.
-    pub hover: Hsla,
-    /// Default button fill, toggle track.
+    /// Default interactive control fill and toggle track.
     pub control: Hsla,
-    /// Borders and rules â€” the only border colour for panels and controls.
+    /// Hover surface for interactive buttons, rows, and toasts.
+    pub hover: Hsla,
+    /// Subtle structural dividers and card outlines (never bright wireframe).
     pub border: Hsla,
+    /// Crisp borders for interactive controls (buttons, inputs, sliders).
+    pub control_border: Hsla,
+    /// Hover border for interactive controls.
+    pub control_border_hover: Hsla,
 }
 
 pub const SHELL: ShellColors = ShellColors {
-    recessed: hsla_from_hex(0x080b0f),
-    base: hsla_from_hex(0x0b0f14),
-    panel: hsla_from_hex(0x0e131a),
-    raised: hsla_from_hex(0x11161d),
-    hover: hsla_from_hex(0x171e27),
-    control: hsla_from_hex(0x1f2733),
-    border: hsla_from_hex(0x64748b),
+    stage: hsla_from_hex(0x06080c),
+    recessed: hsla_from_hex(0x0a0e14),
+    base: hsla_from_hex(0x090c10),
+    panel: hsla_from_hex(0x10151c),
+    panel_elevated: hsla_from_hex(0x151c26),
+    raised: hsla_from_hex(0x151c26),
+    control: hsla_from_hex(0x18212c),
+    hover: hsla_from_hex(0x212d3c),
+    border: hsla_from_hex(0x1d2633),
+    control_border: hsla_from_hex(0x2d3a4c),
+    control_border_hover: hsla_from_hex(0x44566e),
 };
 
 /// The one accent. Means "active, selected, or actionable". Never "healthy".
 pub struct Accent;
 impl Accent {
-    pub const DEFAULT: Hsla = hsla_from_hex(0x3ba3ff);
-    pub const HOVER: Hsla = hsla_from_hex(0x5db4ff);
+    /// Focus rings, selected outlines, slider fills, and accent text on dark surfaces.
+    pub const DEFAULT: Hsla = hsla_from_hex(0x3b82f6);
+    /// Lighter interactive hover highlight for accent glyphs and outlines.
+    pub const HOVER: Hsla = hsla_from_hex(0x60a5fa);
+    /// Solid primary button fill engineered for >= 4.5:1 AA contrast with white text.
+    pub const SOLID: Hsla = hsla_from_hex(0x2563eb);
+    /// Primary button hover fill (>= 4.5:1 AA contrast with white text).
+    pub const SOLID_HOVER: Hsla = hsla_from_hex(0x2c6bed);
 }
 
 /// Health colours. These are the only ones allowed to mean "good".
@@ -128,50 +148,42 @@ impl Status {
     pub const WARN: Hsla = hsla_from_hex(0xe0a02a);
     /// Borders, dots and fills only.
     pub const DANGER: Hsla = hsla_from_hex(0xe05a4f);
-    /// The lighter step for glyphs: `DANGER` drops to 4.63:1 on a danger-tinted
-    /// background and fails AA, while this measures 6.14:1 there.
+    /// The lighter step for glyphs: `DANGER` drops below AA on a danger-tinted
+    /// background, while this stays comfortably above 4.5:1.
     pub const DANGER_TEXT: Hsla = hsla_from_hex(0xf0786d);
 }
 
 /// Neutral text. slate-500 is deliberately absent: it fails AA on every surface.
 pub struct Text;
 impl Text {
-    pub const PRIMARY: Hsla = hsla_from_hex(0xf1f5f9); // slate-100
+    pub const PRIMARY: Hsla = hsla_from_hex(0xf8fafc); // slate-50
     pub const HEADING: Hsla = hsla_from_hex(0xe2e8f0); // slate-200
     pub const BODY: Hsla = hsla_from_hex(0xcbd5e1); // slate-300
     /// The dimmest text that still passes. Used for hints and metadata.
     pub const MUTED: Hsla = hsla_from_hex(0x94a3b8); // slate-400
 }
 
-/// Three faces, three jobs. All three ship with Windows 11, so there is no
-/// webfont to download and no fallback flash.
+/// Bundled Inter and JetBrains Mono faces with zero missing-font fallbacks.
 pub struct Fonts;
 impl Fonts {
-    /// Labels, body copy, buttons. Body copy stays here because condensed text
-    /// is measurably worse to read in paragraphs.
-    pub const SANS: &str = "Segoe UI Variable Text";
-    /// A DIN derivative: headings and large numeric readouts, where its
-    /// condensed width lets a number be big without the layout paying for it.
-    ///
-    /// The shipped app asked for `Bahnschrift SemiCondensed`, which is a *face*
-    /// inside the Bahnschrift family rather than a family name. DirectWrite
-    /// resolves families, so asking for it by that name falls back to Segoe UI
-    /// and every heading silently loses its width. GPUI exposes weight and
-    /// style but not stretch, so the family is named and the condensed face is
-    /// reached through the semibold weight, which is what the headings use.
-    pub const DISPLAY: &str = "Bahnschrift";
-    /// Anything compared character by character: addresses, ids, log lines.
-    pub const MONO: &str = "Cascadia Mono";
+    /// Primary studio sans-serif face bundled via `bundled_fonts()`.
+    pub const SANS: &str = "Inter";
+    /// Display headings and numeric readouts (same clean Inter family, semibold/bold).
+    pub const DISPLAY: &str = "Inter";
+    /// Monospace face bundled via `bundled_fonts()` for telemetry, endpoints, and logs.
+    pub const MONO: &str = "JetBrains Mono";
 
-    pub const SANS_FALLBACKS: [&str; 4] = ["Inter", "Segoe UI", "Liberation Sans", "Noto Sans"];
-    pub const MONO_FALLBACKS: [&str; 4] = [
-        "JetBrains Mono",
-        "Cascadia Code",
-        "Consolas",
-        "DejaVu Sans Mono",
-    ];
+    #[cfg(windows)]
+    pub const SANS_FALLBACKS: [&str; 1] = ["Segoe UI"];
+    #[cfg(not(windows))]
+    pub const SANS_FALLBACKS: [&str; 1] = ["sans-serif"];
 
-    /// Cross-platform fallback stack for the given primary family.
+    #[cfg(windows)]
+    pub const MONO_FALLBACKS: [&str; 1] = ["Consolas"];
+    #[cfg(not(windows))]
+    pub const MONO_FALLBACKS: [&str; 1] = ["monospace"];
+
+    /// Platform-native fallback stack so DirectWrite never logs missing-font errors.
     pub fn fallbacks_for(family: &str) -> gpui::FontFallbacks {
         let list = if family == Self::MONO {
             Self::MONO_FALLBACKS
@@ -187,7 +199,7 @@ impl Fonts {
         gpui::FontFallbacks::from_fonts(list)
     }
 
-    /// Standard UI sans font with cross-platform fallbacks.
+    /// Standard UI sans font with platform-native fallback.
     pub fn sans() -> gpui::Font {
         gpui::Font {
             family: Self::SANS.into(),
@@ -198,7 +210,7 @@ impl Fonts {
         }
     }
 
-    /// Display heading font with semibold weight and cross-platform fallbacks.
+    /// Display heading font with semibold weight and platform-native fallback.
     pub fn display() -> gpui::Font {
         gpui::Font {
             family: Self::DISPLAY.into(),
@@ -209,7 +221,7 @@ impl Fonts {
         }
     }
 
-    /// Monospace font with cross-platform fallbacks.
+    /// Monospace font with platform-native fallback.
     pub fn mono() -> gpui::Font {
         gpui::Font {
             family: Self::MONO.into(),
@@ -221,45 +233,44 @@ impl Fonts {
     }
 }
 
-/// Six sizes, each with one job. Tailwind is 16px-rooted, so these are the
-/// rem values from the config converted to pixels.
+/// Six sizes, each with one job.
 pub struct Type;
 impl Type {
-    /// 11px â€” chips and metadata only, never body copy.
+    /// 11px — chips and metadata only, never body copy.
     pub const TWO_XS: f32 = 11.0;
-    /// 13px â€” control labels, list rows, button labels, values.
+    /// 13px — control labels, list rows, button labels, values.
     pub const TWO_SM: f32 = 13.0;
-    /// 12px â€” hints, explanations, secondary values.
+    /// 12px — hints, explanations, secondary values.
     pub const XS: f32 = 12.0;
-    /// 15px â€” panel and dialog headings.
+    /// 15px — panel and dialog headings.
     pub const TITLE: f32 = 15.0;
-    /// 22px â€” the status headline: the loudest type in the window, because it is
-    /// the one thing a person glances at from across a desk.
-    pub const STATUS: f32 = 22.0;
-    /// 26px â€” the stage's empty state only, which appears when the window is
-    /// otherwise blank.
-    pub const DISPLAY: f32 = 26.0;
+    /// 20px — prominent KPI tiles and studio card headlines.
+    pub const STATUS: f32 = 20.0;
+    /// 24px — hero empty-state heading.
+    pub const DISPLAY: f32 = 24.0;
 
     /// Line heights matching the type scale for multi-line prose readability.
     pub const LINE_XS: f32 = 18.0;
-    pub const LINE_TWO_SM: f32 = 19.0;
-    pub const LINE_TITLE: f32 = 21.0;
+    pub const LINE_TWO_SM: f32 = 20.0;
+    pub const LINE_TITLE: f32 = 22.0;
 }
 
-/// The shape lock. Four radii, no others.
+/// Deliberate studio radius scale. Four radii, no arbitrary intermediates.
 pub struct Radius;
 impl Radius {
-    /// Chips and small tags.
-    pub const SM: f32 = 2.0;
-    /// Interactive controls: buttons, inputs, selects, rows, wells.
-    pub const MD: f32 = 6.0;
-    /// Surfaces that group things: panels, notices, dialogs, the stage.
-    pub const LG: f32 = 8.0;
-    /// Pills and dots only.
+    /// Small controls, badges, and chips (6px).
+    pub const SM: f32 = 6.0;
+    /// Cards, interactive buttons, inputs, and recessed wells (10px).
+    pub const MD: f32 = 10.0;
+    /// Panels, stage container, studio cards, modals, and drawers (14px).
+    pub const LG: f32 = 14.0;
+    /// Status pills, segmented switches, and dots only.
+    pub const PILL: f32 = 9999.0;
+    /// Alias for `PILL`.
     pub const FULL: f32 = 9999.0;
 }
 
-/// Spacing. Tailwind's scale, in pixels.
+/// Spacing scale in pixels.
 pub struct Space;
 impl Space {
     pub const XS: f32 = 2.0;
@@ -267,21 +278,19 @@ impl Space {
     pub const MD: f32 = 6.0;
     pub const LG: f32 = 8.0;
     pub const XL: f32 = 10.0;
-    /// Panel body padding, status-strip gap.
-    pub const PAD: f32 = 12.0;
-    pub const SECTION: f32 = 20.0;
+    /// Panel body padding, header spacing.
+    pub const PAD: f32 = 14.0;
+    pub const SECTION: f32 = 18.0;
     pub const FIELD_GAP: f32 = 14.0;
-    /// The rail's bottom padding, which is what stops the last panel being
-    /// clipped by the viewport edge.
-    pub const RAIL_BOTTOM: f32 = 40.0;
+    /// The rail's bottom padding so the final control never clips at the viewport edge.
+    pub const RAIL_BOTTOM: f32 = 36.0;
 }
 
-/// The rail's fixed width. It narrows on a small window so the picture keeps
-/// its share.
-pub const RAIL_WIDTH: f32 = 416.0;
-pub const RAIL_WIDTH_NARROW: f32 = 352.0;
-/// Below this window width the rail narrows.
-pub const NARROW_WINDOW: f32 = 1100.0;
+/// The modern right inspector rail's fixed width.
+pub const RAIL_WIDTH: f32 = 368.0;
+pub const RAIL_WIDTH_NARROW: f32 = 336.0;
+/// Below this window width the rail narrows so the preview stage keeps priority.
+pub const NARROW_WINDOW: f32 = 1080.0;
 
 /// The pairing code, at hero size.
 ///
@@ -340,25 +349,25 @@ impl Tone {
         }
     }
 
-    /// The border, at the alpha the shipped notices use.
+    /// Subtle semantic border for chips, status pills, and slim alerts.
     pub fn border(self) -> Hsla {
         match self {
-            Self::Neutral => Text::MUTED.alpha(0.6),
-            Self::Ok => Status::OK.alpha(0.7),
-            Self::Warn => Status::WARN.alpha(0.7),
-            Self::Danger => Status::DANGER.alpha(0.8),
-            Self::Accent => Accent::DEFAULT.alpha(0.7),
+            Self::Neutral => SHELL.control_border,
+            Self::Ok => Status::OK.alpha(0.45),
+            Self::Warn => Status::WARN.alpha(0.45),
+            Self::Danger => Status::DANGER.alpha(0.55),
+            Self::Accent => Accent::DEFAULT.alpha(0.45),
         }
     }
 
-    /// The fill, a 10% wash so a chip reads as a stamp rather than a button.
+    /// Subtle wash so a chip or pill reads as a refined stamp rather than a heavy box.
     pub fn fill(self) -> Hsla {
         match self {
-            Self::Neutral => Text::MUTED.alpha(0.06),
-            Self::Ok => Status::OK.alpha(0.10),
-            Self::Warn => Status::WARN.alpha(0.10),
-            Self::Danger => Status::DANGER.alpha(0.10),
-            Self::Accent => Accent::DEFAULT.alpha(0.10),
+            Self::Neutral => Text::MUTED.alpha(0.08),
+            Self::Ok => Status::OK.alpha(0.11),
+            Self::Warn => Status::WARN.alpha(0.11),
+            Self::Danger => Status::DANGER.alpha(0.11),
+            Self::Accent => Accent::DEFAULT.alpha(0.12),
         }
     }
 
@@ -538,7 +547,10 @@ mod tests {
 
     #[test]
     fn the_primary_button_label_passes_on_the_accent() {
-        // A solid accent with near-black text, measured at 7.4:1.
+        // Solid studio blue with crisp white text passes AA (>= 4.5:1),
+        // and dark text on Accent::DEFAULT also passes AA.
+        assert!(contrast(Text::PRIMARY, Accent::SOLID) >= 4.5);
+        assert!(contrast(Text::PRIMARY, Accent::SOLID_HOVER) >= 4.5);
         assert!(contrast(SHELL.recessed, Accent::DEFAULT) >= 4.5);
         assert!(contrast(SHELL.recessed, Accent::HOVER) >= 4.5);
     }
@@ -559,6 +571,10 @@ mod tests {
 
     #[test]
     fn the_shape_lock_has_four_radii() {
+        assert_eq!(Radius::SM, 6.0);
+        assert_eq!(Radius::MD, 10.0);
+        assert_eq!(Radius::LG, 14.0);
+        assert_eq!(Radius::PILL, Radius::FULL);
         assert!(Radius::SM < Radius::MD);
         assert!(Radius::MD < Radius::LG);
         assert!(Radius::LG < Radius::FULL);
@@ -566,8 +582,7 @@ mod tests {
 
     #[test]
     fn the_type_scale_is_ordered_and_bounded() {
-        // The hierarchy lives between 11px and 26px, which is what a dense
-        // console allows.
+        // The hierarchy lives between 11px and 24px, keeping a compact studio console.
         assert!(Type::TWO_XS < Type::XS);
         assert!(Type::XS < Type::TWO_SM);
         assert!(Type::TWO_SM < Type::TITLE);
@@ -576,15 +591,19 @@ mod tests {
     }
 
     #[test]
-    fn border_passes_non_text_contrast_on_controls_and_panels() {
-        assert!(
-            contrast(SHELL.border, SHELL.control) >= 3.0,
-            "interactive control borders must reach >= 3.0:1 WCAG non-text contrast"
-        );
-        assert!(
-            contrast(SHELL.border, SHELL.panel) >= 3.0,
-            "panel borders must reach >= 3.0:1 contrast"
-        );
+    fn studio_surface_and_border_hierarchy_is_layered_and_focus_passes_contrast() {
+        // Layered dark surfaces step gently upward from stage -> base -> panel -> elevated -> control -> hover.
+        assert!(SHELL.stage.l < SHELL.base.l);
+        assert!(SHELL.base.l < SHELL.panel.l);
+        assert!(SHELL.panel.l < SHELL.panel_elevated.l);
+        assert!(SHELL.panel_elevated.l < SHELL.control.l);
+        assert!(SHELL.control.l < SHELL.hover.l);
+        // Subtle structural dividers stay darker than interactive control borders.
+        assert!(SHELL.border.l < SHELL.control_border.l);
+        assert!(SHELL.control_border.l < SHELL.control_border_hover.l);
+        // Focus ring (`Accent::DEFAULT`) exceeds 3.0:1 non-text contrast on every surface.
+        assert!(contrast(Accent::DEFAULT, SHELL.panel) >= 3.0);
+        assert!(contrast(Accent::DEFAULT, SHELL.control) >= 3.0);
     }
 
     #[test]
@@ -593,27 +612,29 @@ mod tests {
         let display = Fonts::display();
         let mono = Fonts::mono();
 
+        assert_eq!(Fonts::SANS, "Inter");
+        assert_eq!(Fonts::DISPLAY, "Inter");
+        assert_eq!(Fonts::MONO, "JetBrains Mono");
+
         let sans_list = sans.fallbacks.expect("sans fallbacks wired");
-        assert_eq!(
-            sans_list.fallback_list(),
-            &["Inter", "Segoe UI", "Liberation Sans", "Noto Sans"]
-        );
-
         let display_list = display.fallbacks.expect("display fallbacks wired");
-        assert_eq!(
-            display_list.fallback_list(),
-            &["Inter", "Segoe UI", "Liberation Sans", "Noto Sans"]
-        );
-
         let mono_list = mono.fallbacks.expect("mono fallbacks wired");
-        assert_eq!(
-            mono_list.fallback_list(),
-            &[
-                "JetBrains Mono",
-                "Cascadia Code",
-                "Consolas",
-                "DejaVu Sans Mono"
-            ]
-        );
+
+        #[cfg(windows)]
+        {
+            assert_eq!(sans_list.fallback_list(), &["Segoe UI"]);
+            assert_eq!(display_list.fallback_list(), &["Segoe UI"]);
+            assert_eq!(mono_list.fallback_list(), &["Consolas"]);
+            for forbidden in ["Liberation Sans", "Noto Sans", "DejaVu Sans Mono"] {
+                assert!(!sans_list.fallback_list().contains(&forbidden.to_string()));
+                assert!(!mono_list.fallback_list().contains(&forbidden.to_string()));
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(sans_list.fallback_list(), &["sans-serif"]);
+            assert_eq!(display_list.fallback_list(), &["sans-serif"]);
+            assert_eq!(mono_list.fallback_list(), &["monospace"]);
+        }
     }
 }

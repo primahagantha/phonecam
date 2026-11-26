@@ -64,6 +64,8 @@ pub enum SideEffect {
     ToggleAlwaysOnTop,
     SelectPairingNetwork(usize),
     CopyPairingPayload,
+    CheckForUpdates,
+    OpenUpdateUrl(String),
 }
 
 /// The four destinations in the rail, in the order the job happens.
@@ -81,18 +83,18 @@ impl Tab {
     pub fn label(self) -> &'static str {
         match self {
             Self::Setup => "Setup",
-            Self::Capture => "Capture",
-            Self::Publish => "Publish",
-            Self::Diagnostics => "Diagnostics",
+            Self::Capture => "Camera",
+            Self::Publish => "Output",
+            Self::Diagnostics => "System",
         }
     }
 
     pub fn hint(self) -> &'static str {
         match self {
-            Self::Setup => "Pair a phone (Ctrl+1)",
-            Self::Capture => "Choose what the phone captures (Ctrl+2)",
-            Self::Publish => "The camera other apps open (Ctrl+3)",
-            Self::Diagnostics => "Live numbers and the service log (Ctrl+4)",
+            Self::Setup => "Connect via Wi-Fi or USB (Ctrl+1)",
+            Self::Capture => "Camera lens, framing, exposure & Labs (Ctrl+2)",
+            Self::Publish => "Virtual camera output & resolution (Ctrl+3)",
+            Self::Diagnostics => "Telemetry, updates & service logs (Ctrl+4)",
         }
     }
 
@@ -157,10 +159,29 @@ mod tests {
     }
 
     #[test]
-    fn tab_labels_are_verbs_not_nouns() {
-        // "Camera" and "Output" as a pair read as synonyms; these cannot.
-        assert_eq!(Tab::Capture.label(), "Capture");
-        assert_eq!(Tab::Publish.label(), "Publish");
+    fn tab_labels_match_studio_inspector_sections() {
+        assert_eq!(Tab::Setup.label(), "Setup");
+        assert_eq!(Tab::Capture.label(), "Camera");
+        assert_eq!(Tab::Publish.label(), "Output");
+        assert_eq!(Tab::Diagnostics.label(), "System");
+    }
+
+    #[test]
+    fn update_checker_effects_queue_and_drain() {
+        drain_effects();
+        push_effect(SideEffect::CheckForUpdates);
+        push_effect(SideEffect::OpenUpdateUrl(
+            "https://github.com/primahagantha/phonecam/releases/tag/v1.5.0".into(),
+        ));
+        assert_eq!(
+            drain_effects(),
+            vec![
+                SideEffect::CheckForUpdates,
+                SideEffect::OpenUpdateUrl(
+                    "https://github.com/primahagantha/phonecam/releases/tag/v1.5.0".into()
+                ),
+            ]
+        );
     }
 
     #[test]

@@ -361,8 +361,31 @@ impl Default for CoreStatus {
     }
 }
 
+/// Metadata for a newer PhoneCam release published on GitHub Releases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseInfo {
+    pub version: String,
+    pub tag: String,
+    pub url: String,
+    pub changelog: String,
+    pub published_at: Option<String>,
+}
+
+/// State of the user-initiated GitHub Releases update check.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum UpdateStatus {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate {
+        current: String,
+    },
+    Available(ReleaseInfo),
+    Failed(String),
+}
+
 /// Everything the window draws.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AppState {
     pub core: Option<CoreState>,
     pub status: CoreStatus,
@@ -396,6 +419,39 @@ pub struct AppState {
     pub gesture_action: Option<String>,
     /// Whether auto-framing tracking is currently locked via Open Palm gesture.
     pub tracking_locked: bool,
+    /// Status of user-initiated software update check.
+    pub update_status: UpdateStatus,
+    /// Running desktop app SemVer string.
+    pub current_version: String,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            core: None,
+            status: CoreStatus::default(),
+            settings: Settings::default(),
+            capabilities: None,
+            notices: Vec::new(),
+            logs: Vec::new(),
+            log_filter_level: None,
+            log_filter_source: None,
+            pairing_prompt: None,
+            toast: None,
+            toast_expires_at_ms: None,
+            frame_size: None,
+            phone_stats: None,
+            pending_camera_id: None,
+            local_ip: None,
+            audio_level: 0.0,
+            available_audio_devices: Vec::new(),
+            active_gesture: None,
+            gesture_action: None,
+            tracking_locked: false,
+            update_status: UpdateStatus::Idle,
+            current_version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
 }
 
 impl AppState {
@@ -527,7 +583,8 @@ impl AppState {
         self.notices.iter().any(|n| n.code == code)
     }
 
-    /// Applies the sweep: notices whose fact is over are removed.
+    /// Applies the sweep: notices whose fact is over are removed, including
+    /// `PairOk` whenever the phone is absent, idle, or reconnecting.
     pub fn reconcile_notices(&mut self) {
         let keys: Vec<String> = self.notices.iter().map(|n| n.dedupe_key.clone()).collect();
         let has_error = self
@@ -535,8 +592,15 @@ impl AppState {
             .as_ref()
             .map(|c| c.error.is_some())
             .unwrap_or(false);
-        for key in crate::theme::rules::stale_notice_keys(&keys, self.phase(), has_error) {
+        let phase = self.phase().to_string();
+        let has_device = self.has_device();
+        for key in
+            crate::theme::rules::stale_notice_keys_for_state(&keys, &phase, has_error, has_device)
+        {
             self.dismiss_notice(&key);
+        }
+        if crate::theme::rules::is_pair_ok_stale(&phase, has_device) {
+            self.notices.retain(|n| n.code != FailureCode::PairOk);
         }
     }
 
@@ -798,8 +862,55 @@ mod tests {
         let indices: Vec<usize> = Tab::ALL.iter().map(|t| t.index()).collect();
         assert_eq!(indices, vec![0, 1, 2, 3]);
         assert_eq!(Tab::Setup.label(), "Setup");
-        assert_eq!(Tab::Capture.label(), "Capture");
-        assert_eq!(Tab::Publish.label(), "Publish");
+        assert_eq!(Tab::Capture.label(), "Camera");
+        assert_eq!(Tab::Publish.label(), "Output");
+        assert_eq!(Tab::Diagnostics.label(), "System");
+    }
+
+    #[test]
+    fn app_state_defaults_update_status_and_current_version() {
+        let state = AppState::default();
+        assert_eq!(state.update_status, UpdateStatus::Idle);
+        assert_eq!(state.current_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn reconcile_notices_dismisses_pair_ok_when_reconnecting_idle_or_no_device() {
+        let mut state = AppState::default();
+        state.add_notice(
+            FailureCode::PairOk,
+            vec![("name".into(), "Pixel".into())],
+            "pair-ok".into(),
+        );
+        // No device & idle -> PairOk dismissed.
+        state.reconcile_notices();
+        assert!(!state.has_notice(FailureCode::PairOk));
+
+        // Connected with device -> PairOk stays.
+        state.core = Some(CoreState {
+            phase: StreamPhase::Connected,
+            device: Some(phonecam_protocol::DeviceIdentity {
+                device_id: "d1".into(),
+                name: "Pixel".into(),
+                model: "Pixel".into(),
+                android_version: 34,
+            }),
+            ..Default::default()
+        });
+        state.add_notice(
+            FailureCode::PairOk,
+            vec![("name".into(), "Pixel".into())],
+            "pair-ok".into(),
+        );
+        state.reconcile_notices();
+        assert!(state.has_notice(FailureCode::PairOk));
+
+        // Phase transitions to reconnecting -> PairOk dismissed immediately.
+        if let Some(core) = state.core.as_mut() {
+            core.phase = StreamPhase::Reconnecting;
+        }
+        state.reconcile_notices();
+        assert!(!state.has_notice(FailureCode::PairOk));
     }
 
     #[test]

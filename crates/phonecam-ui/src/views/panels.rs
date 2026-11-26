@@ -12,11 +12,11 @@ use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Hsla, ScrollHandle, SharedString};
 
 use crate::theme::rules;
-use crate::theme::{Accent, Fonts, Radius, Space, Status, Text, Tone, Type, SHELL};
+use crate::theme::{hsla_from_hex, Accent, Fonts, Radius, Space, Status, Text, Tone, Type, SHELL};
 use crate::views::effects::{push_effect, SideEffect, Tab};
 use crate::views::state::{
     camera_facing_label, format_battery, format_log_time, resolution_label_of, thermal_label,
-    AppState, LogSource, NoticeAction,
+    AppState, FailureCode, LogSource, NoticeAction, UpdateStatus,
 };
 use crate::views::widgets::{
     chip, key_value, numeric_font, prose, section, status_dot, tinted_box, well, Button,
@@ -27,6 +27,8 @@ use crate::views::widgets::{
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RailUiState {
     pub show_preferences: bool,
+    pub show_updates: bool,
+    pub usb_help_expanded: bool,
     pub labs_expanded: bool,
     pub gesture_ref_expanded: bool,
 }
@@ -35,6 +37,9 @@ pub struct RailUiState {
 #[derive(Default)]
 pub struct PanelCallbacks {
     pub on_toggle_preferences: Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
+    pub on_toggle_updates: Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
+    pub on_open_updates: Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
+    pub on_toggle_usb_help: Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
     pub on_toggle_labs: Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
     pub on_toggle_gesture_ref: Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
 }
@@ -55,7 +60,7 @@ pub fn tone_of(tone: crate::theme::rules::StatusTone) -> Tone {
 /* Status strip                                                        */
 /* ------------------------------------------------------------------ */
 
-/// Renders a crisp vector battery gauge without Unicode emojis.
+/// Renders a crisp vector battery gauge pill without Unicode emojis.
 fn battery_indicator(battery: i32, charging: bool, tone: Tone, label: &str) -> AnyElement {
     let pct = (battery.clamp(0, 100) as f32) / 100.0;
     let fill_color = if charging {
@@ -72,12 +77,12 @@ fn battery_indicator(battery: i32, charging: bool, tone: Tone, label: &str) -> A
         .flex_shrink_0()
         .items_center()
         .gap(px(Space::SM))
-        .rounded(px(Radius::SM))
+        .rounded(px(Radius::PILL))
         .border_1()
         .border_color(tone.border())
         .bg(tone.fill())
-        .px(px(Space::MD))
-        .py(px(Space::XS))
+        .px(px(Space::LG))
+        .py(px(4.0))
         .child(
             div()
                 .flex()
@@ -105,15 +110,14 @@ fn battery_indicator(battery: i32, charging: bool, tone: Tone, label: &str) -> A
             div()
                 .font(numeric_font(Fonts::MONO))
                 .text_size(px(Type::TWO_XS))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(tone.fg())
-                .child(label.to_uppercase()),
+                .child(label.to_string()),
         )
         .into_any_element()
 }
 
-/// The one sentence the app says about itself, plus the top-bar Preferences gear
-/// and Stop control.
+/// The top studio header strip.
 pub fn status_strip(state: &AppState) -> AnyElement {
     status_strip_with_ui(
         state,
@@ -123,7 +127,8 @@ pub fn status_strip(state: &AppState) -> AnyElement {
     )
 }
 
-/// Interactive `status_strip` wired with Preferences drawer toggle and focus handling.
+/// Interactive fixed-height (`54px`) top studio header with zero vertical clipping
+/// and zero label collisions.
 pub fn status_strip_with_ui(
     state: &AppState,
     ui: RailUiState,
@@ -132,6 +137,7 @@ pub fn status_strip_with_ui(
 ) -> AnyElement {
     let summary = state.status_summary();
     let tone = tone_of(summary.tone);
+    let show_real_state_dot = !matches!(tone, Tone::Neutral);
 
     let vcam_running = state.vcam_state() == Some("running");
     let streaming = state.is_streaming();
@@ -144,118 +150,22 @@ pub fn status_strip_with_ui(
             .and_then(|c| c.vcam.as_ref())
             .map(|v| v.name.as_str()),
     );
-    let vcam_tone = if state.vcam_state() == Some("error") {
-        Tone::Danger
+    let vcam_consumers =
+        rules::vcam_consumer_summary(state.vcam_state(), streaming, state.vcam_consumers());
+    let vcam_pill_text = match vcam_consumers {
+        Some(c) => format!("{vcam_label} · {c}"),
+        None => vcam_label,
+    };
+    let vcam_dot_tone = if state.vcam_state() == Some("error") {
+        Some(Tone::Danger)
     } else if vcam_running && streaming {
-        Tone::Ok
+        Some(Tone::Ok)
     } else if vcam_running {
-        Tone::Accent
+        Some(Tone::Accent)
     } else {
-        Tone::Neutral
+        None
     };
 
-    let mut row = div()
-        .flex()
-        .flex_row()
-        .flex_wrap()
-        .flex_shrink_0()
-        .items_center()
-        .gap(px(Space::PAD))
-        .border_b_1()
-        .border_color(SHELL.border.alpha(0.35))
-        .bg(SHELL.raised)
-        .px(px(16.0))
-        .py(px(Space::PAD))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .min_w(px(0.0))
-                .items_center()
-                .gap(px(Space::XL))
-                .child(status_dot(tone))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w(px(0.0))
-                        .max_w(px(280.0))
-                        .child(
-                            div()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .font(Fonts::display())
-                                .text_size(px(Type::STATUS))
-                                .text_color(Text::PRIMARY)
-                                .child(summary.headline.clone()),
-                        )
-                        .children(summary.detail.clone().map(|detail| {
-                            div()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .font(Fonts::mono())
-                                .text_size(px(Type::TWO_XS))
-                                .text_color(Text::MUTED)
-                                .child(detail)
-                        })),
-                ),
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .w(px(1.0))
-                .h(px(32.0))
-                .bg(SHELL.border.alpha(0.45)),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .min_w(px(0.0))
-                .items_center()
-                .gap(px(Space::XL))
-                .child(
-                    div()
-                        .font(Fonts::sans())
-                        .text_size(px(Type::TWO_XS))
-                        .text_color(Text::MUTED)
-                        .child(if vcam_running && streaming {
-                            "Publishing to"
-                        } else {
-                            "Virtual camera"
-                        }),
-                )
-                .child(chip(vcam_label, vcam_tone))
-                .children(
-                    rules::vcam_consumer_summary(
-                        state.vcam_state(),
-                        streaming,
-                        state.vcam_consumers(),
-                    )
-                    .map(|text| {
-                        div()
-                            .font(Fonts::sans())
-                            .text_size(px(Type::TWO_XS))
-                            .text_color(Text::MUTED)
-                            .child(text)
-                    }),
-                ),
-        );
-
-    let has_device = state.has_device();
-    let phone_device_name = state.device_name().or_else(|| {
-        state.core.as_ref().and_then(|c| {
-            c.device.as_ref().map(|d| {
-                if !d.name.trim().is_empty() {
-                    d.name.clone()
-                } else if !d.model.trim().is_empty() {
-                    clean_device_model(&d.model)
-                } else {
-                    "Phone".to_string()
-                }
-            })
-        })
-    });
     let phone_state = state.core.as_ref().and_then(|c| c.phone.as_ref());
     let battery_info = phone_state.and_then(|p| {
         format_battery(p.battery, p.charging).map(|batt| {
@@ -269,96 +179,162 @@ pub fn status_strip_with_ui(
     });
     let thermal_info = phone_state.and_then(|p| thermal_label(p.thermal));
 
-    if has_device || phone_device_name.is_some() || battery_info.is_some() || thermal_info.is_some()
-    {
-        row = row.child(
-            div()
-                .flex_shrink_0()
-                .w(px(1.0))
-                .h(px(24.0))
-                .bg(SHELL.border.alpha(0.45)),
-        );
+    let has_update_available = matches!(state.update_status, UpdateStatus::Available(_));
 
-        let mut phone_container = div()
-            .flex()
-            .flex_row()
-            .min_w(px(0.0))
-            .items_center()
-            .gap(px(Space::XL));
-
-        let device_label = phone_device_name.unwrap_or_else(|| "Phone".to_string());
-        if device_label != "Phone" {
-            phone_container = phone_container.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .min_w(px(0.0))
-                    .max_w(px(220.0))
-                    .items_center()
-                    .gap(px(Space::SM))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .font(Fonts::sans())
-                            .text_size(px(Type::TWO_XS))
-                            .text_color(Text::MUTED)
-                            .child("Phone"),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .font(Fonts::sans())
-                            .text_size(px(Type::TWO_XS))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(Text::PRIMARY)
-                            .child(device_label),
-                    ),
-            );
-        } else {
-            phone_container = phone_container.child(
-                div()
-                    .font(Fonts::sans())
-                    .text_size(px(Type::TWO_XS))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(Text::MUTED)
-                    .child("Phone"),
-            );
-        }
-
-        if let Some((pct, charging, batt, tone)) = battery_info {
-            phone_container = phone_container.child(battery_indicator(pct, charging, tone, &batt));
-        }
-
-        if let Some((label, critical)) = thermal_info {
-            phone_container = phone_container.child(chip(
-                label,
-                if critical { Tone::Danger } else { Tone::Warn },
-            ));
-        }
-
-        row = row.child(phone_container);
-    }
-
-    let mut right_actions = div()
-        .ml_auto()
+    // Left cluster: status pill + single-line truncated muted detail.
+    let mut status_pill = div()
         .flex()
         .flex_row()
         .flex_shrink_0()
         .items_center()
-        .gap(px(Space::MD));
+        .gap(px(Space::MD))
+        .rounded(px(Radius::PILL))
+        .border_1()
+        .border_color(tone.border())
+        .bg(tone.fill())
+        .px(px(10.0))
+        .py(px(4.0));
 
-    if streaming {
-        right_actions = right_actions.child(
-            Button::new("Stop")
-                .id("strip-stop")
-                .focus_with(focus.as_deref_mut(), "strip-stop")
-                .on_click(|_window, _cx| push_effect(SideEffect::StopStream)),
+    if show_real_state_dot {
+        status_pill = status_pill.child(status_dot(tone));
+    }
+    status_pill = status_pill.child(
+        div()
+            .font(Fonts::sans())
+            .text_size(px(Type::TWO_SM))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(if matches!(tone, Tone::Neutral) {
+                Text::PRIMARY
+            } else {
+                tone.fg()
+            })
+            .child(summary.headline.clone()),
+    );
+
+    let mut left_cluster = div()
+        .flex()
+        .flex_row()
+        .flex_1()
+        .min_w(px(0.0))
+        .items_center()
+        .gap(px(12.0))
+        .child(status_pill);
+
+    if let Some(detail) = summary.detail {
+        left_cluster = left_cluster.child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .font(Fonts::sans())
+                .text_size(px(Type::XS))
+                .text_color(Text::MUTED)
+                .child(detail),
         );
     }
 
+    // Right cluster: vcam pill, optional battery/thermal, Updates button, Preferences button.
+    let mut right_cluster = div()
+        .flex()
+        .flex_row()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(Space::LG));
+
+    // Sleek PhoneCam Camera pill
+    let mut vcam_pill = div()
+        .flex()
+        .flex_row()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(Space::MD))
+        .rounded(px(Radius::PILL))
+        .border_1()
+        .border_color(SHELL.border)
+        .bg(SHELL.control)
+        .px(px(10.0))
+        .py(px(4.0));
+    if let Some(dot_tone) = vcam_dot_tone {
+        vcam_pill = vcam_pill.child(status_dot(dot_tone));
+    }
+    vcam_pill = vcam_pill.child(
+        div()
+            .font(Fonts::sans())
+            .text_size(px(Type::XS))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(Text::HEADING)
+            .child(vcam_pill_text),
+    );
+    right_cluster = right_cluster.child(vcam_pill);
+
+    if let Some((pct, charging, batt, b_tone)) = battery_info {
+        right_cluster = right_cluster.child(battery_indicator(pct, charging, b_tone, &batt));
+    }
+    if let Some((label, critical)) = thermal_info {
+        right_cluster = right_cluster.child(chip(
+            label,
+            if critical { Tone::Danger } else { Tone::Warn },
+        ));
+    }
+
+    // Updates button (small accent dot ONLY when an update is available)
+    let toggle_updates_cb = callbacks.on_toggle_updates.clone();
+    let mut updates_btn = div()
+        .id("top-updates-btn")
+        .key_context("Control")
+        .flex()
+        .flex_row()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(Space::MD))
+        .rounded(px(Radius::SM))
+        .border_1()
+        .border_color(if ui.show_updates {
+            Accent::DEFAULT.alpha(0.75)
+        } else {
+            SHELL.control_border
+        })
+        .bg(if ui.show_updates {
+            Accent::DEFAULT.alpha(0.14)
+        } else {
+            SHELL.control
+        })
+        .px(px(10.0))
+        .py(px(5.0))
+        .cursor_pointer()
+        .hover(|s| s.border_color(SHELL.control_border_hover).bg(SHELL.hover))
+        .focus(|s| s.border_2().border_color(Accent::DEFAULT))
+        .font(Fonts::sans())
+        .text_size(px(Type::XS))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(Text::HEADING)
+        .child("Updates")
+        .on_click(move |_ev, window, cx| {
+            if let Some(ref cb) = toggle_updates_cb {
+                cb(window, cx);
+            } else {
+                push_effect(SideEffect::CheckForUpdates);
+            }
+        });
+    if has_update_available {
+        updates_btn = updates_btn.child(
+            div()
+                .flex_shrink_0()
+                .w(px(6.0))
+                .h(px(6.0))
+                .rounded(px(Radius::PILL))
+                .bg(Accent::DEFAULT),
+        );
+    }
+    if let Some(ctx) = focus.as_deref_mut() {
+        let (handle, idx) = ctx.acquire("top-updates-btn");
+        updates_btn = updates_btn.track_focus(&handle).tab_index(idx);
+    }
+    right_cluster = right_cluster.child(updates_btn);
+
+    // Preferences button
     let toggle_prefs_cb = callbacks.on_toggle_preferences.clone();
-    right_actions = right_actions.child(
+    right_cluster = right_cluster.child(
         Button::new("Preferences")
             .id("top-preferences-gear")
             .selected(ui.show_preferences)
@@ -370,22 +346,41 @@ pub fn status_strip_with_ui(
             }),
     );
 
-    row.child(right_actions).into_any_element()
+    div()
+        .flex()
+        .flex_row()
+        .flex_shrink_0()
+        .h(px(54.0))
+        .items_center()
+        .justify_between()
+        .gap(px(16.0))
+        .border_b_1()
+        .border_color(SHELL.border)
+        .bg(SHELL.panel)
+        .px(px(16.0))
+        .child(left_cluster)
+        .child(right_cluster)
+        .into_any_element()
 }
 
 /* ------------------------------------------------------------------ */
 /* Notice bar                                                          */
 /* ------------------------------------------------------------------ */
 
-/// The failure banners. Collapses to nothing when there are none.
+/// Compact slim alert bar. Automatically suppresses stale `PairOk` notices so
+/// they can never contradict "No phone connected" or "Reconnecting".
 pub fn notice_bar(state: &AppState) -> AnyElement {
     if state.notices.is_empty() {
         return div().into_any_element();
     }
 
+    let pair_ok_stale = rules::is_pair_ok_stale(state.phase(), state.has_device());
     let mut seen = std::collections::HashSet::new();
     let mut unique_notices = Vec::new();
     for notice in state.notices.iter().rev() {
+        if notice.code == FailureCode::PairOk && pair_ok_stale {
+            continue;
+        }
         let body = notice.code.body(&notice.values);
         let key = (notice.code, body);
         if seen.insert(key) {
@@ -395,6 +390,9 @@ pub fn notice_bar(state: &AppState) -> AnyElement {
             }
         }
     }
+    if unique_notices.is_empty() {
+        return div().into_any_element();
+    }
     unique_notices.reverse();
 
     div()
@@ -402,8 +400,8 @@ pub fn notice_bar(state: &AppState) -> AnyElement {
         .flex_col()
         .flex_shrink_0()
         .gap(px(Space::MD))
-        .px(px(Space::XL))
-        .pt(px(Space::XL))
+        .px(px(Space::PAD))
+        .pt(px(Space::LG))
         .children(unique_notices.into_iter().map(|notice| {
             let tone = notice.code.tone();
             let id = notice.id;
@@ -413,32 +411,40 @@ pub fn notice_bar(state: &AppState) -> AnyElement {
             let mut banner = div()
                 .flex()
                 .flex_row()
-                .items_start()
+                .items_center()
+                .justify_between()
                 .gap(px(Space::PAD))
-                .rounded(px(Radius::LG))
+                .rounded(px(Radius::MD))
                 .border_1()
                 .border_color(tone.border())
                 .bg(tone.fill())
-                .px(px(Space::PAD))
-                .py(px(Space::LG))
+                .px(px(12.0))
+                .py(px(8.0))
                 .child(
                     div()
+                        .flex()
+                        .flex_row()
                         .flex_1()
                         .min_w(px(0.0))
+                        .items_center()
+                        .gap(px(Space::LG))
+                        .child(status_dot(tone))
                         .child(
                             div()
+                                .flex_shrink_0()
                                 .font(Fonts::sans())
-                                .text_size(px(Type::TWO_SM))
+                                .text_size(px(Type::XS))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(tone.fg())
                                 .child(notice.code.title()),
                         )
                         .child(
                             div()
-                                .mt(px(Space::XS))
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .truncate()
                                 .font(Fonts::sans())
                                 .text_size(px(Type::XS))
-                                .line_height(px(Type::LINE_XS))
                                 .text_color(Text::BODY)
                                 .child(notice.code.body(&notice.values)),
                         ),
@@ -448,13 +454,12 @@ pub fn notice_bar(state: &AppState) -> AnyElement {
                 .flex()
                 .flex_shrink_0()
                 .items_center()
-                .gap(px(Space::MD))
-                .pt(px(Space::XS));
+                .gap(px(Space::SM));
             if let Some(action) = action {
                 actions = actions.child(action_button(action, primary, id));
             }
             actions = actions.child(
-                Button::ghost("x")
+                Button::ghost("×")
                     .id(format!("notice-dismiss-{id}"))
                     .on_click(move |_window, _cx| push_effect(SideEffect::DismissNotice(id))),
             );
@@ -563,12 +568,12 @@ pub fn pair_request_prompt(state: &AppState) -> AnyElement {
         .child(
             div()
                 .w_full()
-                .max_w(px(384.0))
+                .max_w(px(420.0))
                 .rounded(px(Radius::LG))
                 .border_1()
-                .border_color(Text::MUTED.alpha(0.6))
+                .border_color(SHELL.control_border)
                 .bg(SHELL.panel)
-                .p(px(16.0))
+                .p(px(20.0))
                 .child(
                     div()
                         .font(Fonts::sans())
@@ -716,88 +721,101 @@ pub fn rail_with_ui(
         crate::theme::RAIL_WIDTH
     };
 
-    let nav = div()
-        .flex()
-        .flex_row()
+    let nav_track = div()
         .flex_shrink_0()
         .border_b_1()
-        .border_color(SHELL.border.alpha(0.35))
-        .children(Tab::ALL.iter().map(|entry| {
-            let selected = *entry == tab;
-            let target = *entry;
-            let hint_text = entry.hint();
-            let mut tab_el = div()
-                .id(gpui::ElementId::Name(SharedString::from(format!(
-                    "tab-{}",
-                    entry.label()
-                ))))
-                .key_context("Control")
-                .flex_1()
+        .border_color(SHELL.border)
+        .px(px(14.0))
+        .py(px(12.0))
+        .child(
+            div()
                 .flex()
+                .flex_row()
                 .items_center()
-                .justify_center()
-                .px(px(Space::PAD))
-                .py(px(Space::XL))
-                .font(Fonts::sans())
-                .text_size(px(Type::TWO_SM))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(if selected { Text::PRIMARY } else { Text::MUTED })
-                .border_b_2()
-                .border_color(if selected {
-                    Accent::DEFAULT
-                } else {
-                    gpui::transparent_black()
-                })
-                .cursor_pointer()
-                .hover(move |style| {
-                    if selected {
-                        style
-                    } else {
-                        style.text_color(Text::HEADING).border_color(SHELL.border)
+                .gap(px(4.0))
+                .rounded(px(Radius::PILL))
+                .border_1()
+                .border_color(SHELL.border)
+                .bg(SHELL.recessed)
+                .p(px(3.0))
+                .children(Tab::ALL.iter().map(|entry| {
+                    let selected = *entry == tab;
+                    let target = *entry;
+                    let hint_text = entry.hint();
+                    let active_bg = hsla_from_hex(0x1a2330);
+                    let mut tab_el = div()
+                        .id(gpui::ElementId::Name(SharedString::from(format!(
+                            "tab-{}",
+                            entry.label()
+                        ))))
+                        .key_context("Control")
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(Radius::PILL))
+                        .px(px(8.0))
+                        .py(px(7.0))
+                        .font(Fonts::sans())
+                        .text_size(px(Type::XS))
+                        .font_weight(if selected {
+                            gpui::FontWeight::SEMIBOLD
+                        } else {
+                            gpui::FontWeight::MEDIUM
+                        })
+                        .text_color(if selected { Text::PRIMARY } else { Text::MUTED })
+                        .bg(if selected {
+                            active_bg
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .border_1()
+                        .border_color(if selected {
+                            SHELL.control_border
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            if selected {
+                                style
+                            } else {
+                                style.text_color(Text::HEADING).bg(SHELL.hover.alpha(0.55))
+                            }
+                        })
+                        .focus(|style| style.border_2().border_color(Accent::DEFAULT))
+                        .tooltip(move |_window, cx| {
+                            let tip = hint_text;
+                            cx.new(|_| TooltipText(tip)).into()
+                        })
+                        .child(entry.label())
+                        .on_click(move |_event, _window, _cx| {
+                            push_effect(SideEffect::SetTab(target))
+                        })
+                        .on_key_down(move |ev, _window, cx| {
+                            if matches!(ev.keystroke.key.as_str(), "enter" | "space") {
+                                push_effect(SideEffect::SetTab(target));
+                                cx.stop_propagation();
+                            }
+                        });
+
+                    if let Some(ctx) = focus.as_deref_mut() {
+                        let (handle, idx) = ctx.acquire(&format!("tab-{}", entry.index()));
+                        tab_el = tab_el.track_focus(&handle).tab_index(idx);
                     }
-                })
-                .focus(|style| style.border_color(Accent::DEFAULT))
-                .tooltip(move |_window, cx| {
-                    let tip = hint_text;
-                    cx.new(|_| TooltipText(tip)).into()
-                })
-                .child(entry.label())
-                .on_click(move |_event, _window, _cx| push_effect(SideEffect::SetTab(target)))
-                .on_key_down(move |ev, _window, cx| {
-                    if matches!(ev.keystroke.key.as_str(), "enter" | "space") {
-                        push_effect(SideEffect::SetTab(target));
-                        cx.stop_propagation();
-                    }
-                });
 
-            if let Some(ctx) = focus.as_deref_mut() {
-                let (handle, idx) = ctx.acquire(&format!("tab-{}", entry.index()));
-                tab_el = tab_el.track_focus(&handle).tab_index(idx);
-            }
-
-            tab_el.into_any_element()
-        }));
-
-    let tab_subtitle = div()
-        .flex_shrink_0()
-        .border_b_1()
-        .border_color(SHELL.border.alpha(0.25))
-        .bg(SHELL.recessed.alpha(0.5))
-        .px(px(Space::PAD))
-        .py(px(Space::SM))
-        .font(Fonts::sans())
-        .text_size(px(Type::XS))
-        .text_color(Text::MUTED)
-        .child(tab.hint());
+                    tab_el.into_any_element()
+                })),
+        );
 
     let body: Vec<AnyElement> = match tab {
         Tab::Setup => vec![
-            connect_panel_with_focus(state, focus.as_deref_mut()),
+            connect_panel_with_ui(state, ui, callbacks, focus.as_deref_mut()),
             paired_phone_panel(state),
         ],
         Tab::Capture => vec![capture_panel_with_ui(state, ui, callbacks, focus)],
         Tab::Publish => vec![publish_panel(state), connection_panel(state)],
-        Tab::Diagnostics => vec![diagnostics_panel(state)],
+        Tab::Diagnostics => vec![diagnostics_panel_with_ui(state, callbacks, focus)],
     };
 
     div()
@@ -810,10 +828,9 @@ pub fn rail_with_ui(
         .overflow_hidden()
         .rounded(px(Radius::LG))
         .border_1()
-        .border_color(SHELL.border.alpha(0.45))
+        .border_color(SHELL.border)
         .bg(SHELL.panel)
-        .child(nav)
-        .child(tab_subtitle)
+        .child(nav_track)
         .child(
             div()
                 .id(gpui::ElementId::Name(SharedString::from(format!(
@@ -826,8 +843,8 @@ pub fn rail_with_ui(
                 .min_h(px(0.0))
                 .overflow_y_scroll()
                 .track_scroll(scroll_handle)
-                .gap(px(Space::XL))
-                .p(px(Space::XL))
+                .gap(px(14.0))
+                .p(px(14.0))
                 // The bottom padding is what stops the last panel being clipped
                 // by the viewport edge.
                 .pb(px(Space::RAIL_BOTTOM))
@@ -867,19 +884,41 @@ impl gpui::Render for TooltipText {
 /// stage owns that action and offering the same job twice is what made the
 /// first-run screen feel like a coin toss.
 pub fn connect_panel(state: &AppState) -> AnyElement {
-    connect_panel_with_focus(state, None)
+    connect_panel_with_ui(
+        state,
+        RailUiState::default(),
+        &PanelCallbacks::default(),
+        None,
+    )
 }
 
 /// Pairing and connection setup panel with keyboard focus support.
 pub fn connect_panel_with_focus(
     state: &AppState,
+    focus: Option<&mut FocusContext<'_>>,
+) -> AnyElement {
+    connect_panel_with_ui(
+        state,
+        RailUiState::default(),
+        &PanelCallbacks::default(),
+        focus,
+    )
+}
+
+/// Clean studio Setup tab: compact Wi-Fi card (IP:Port badge + 2 concise steps),
+/// compact USB Cable card with collapsible "USB Debugging Help" accordion, and
+/// cleanly stacked USB auto-connect toggle.
+pub fn connect_panel_with_ui(
+    state: &AppState,
+    ui: RailUiState,
+    callbacks: &PanelCallbacks,
     mut focus: Option<&mut FocusContext<'_>>,
 ) -> AnyElement {
     let pairing_open = state.core.as_ref().map(|c| c.pairing.open).unwrap_or(false);
     let connected = state.has_device();
     let streaming = state.is_streaming();
 
-    let mut panel = Panel::new("Pairing");
+    let mut panel = Panel::new("Connection");
     if pairing_open {
         panel = panel.action(
             Button::new("Cancel")
@@ -899,7 +938,7 @@ pub fn connect_panel_with_focus(
                 .text_size(px(Type::XS))
                 .line_height(px(Type::LINE_XS))
                 .text_color(Text::HEADING)
-                .child("A phone is connected. Pairing another one here will not disturb it.")
+                .child("A phone is connected. Pairing another device will not disturb the current session.")
                 .into_any_element()],
         ));
     }
@@ -909,52 +948,33 @@ pub fn connect_panel_with_focus(
             div()
                 .w_full()
                 .min_w(px(0.0))
-                .mt(px(Space::LG))
                 .rounded(px(Radius::MD))
                 .border_1()
-                .border_color(Accent::DEFAULT.alpha(0.5))
-                .bg(Accent::DEFAULT.alpha(0.05))
-                .px(px(Space::XL))
-                .py(px(Space::LG))
+                .border_color(Accent::DEFAULT.alpha(0.45))
+                .bg(Accent::DEFAULT.alpha(0.08))
+                .p(px(14.0))
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
                 .child(
                     div()
                         .font(Fonts::sans())
                         .text_size(px(Type::XS))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(Accent::DEFAULT)
-                        .child("Pairing open"),
+                        .child("QR code ready on stage"),
                 )
                 .child(
                     div()
-                        .mt(px(Space::SM))
                         .font(Fonts::sans())
                         .text_size(px(Type::XS))
                         .line_height(px(Type::LINE_XS))
                         .text_color(Text::BODY)
-                        .child(
-                            "The code is in the preview area, on the left. Point your phone at it.",
-                        ),
+                        .child("Point PhoneCam on your phone at the QR code on the left."),
                 )
                 .into_any_element(),
         );
-    } else {
-        children.push(prose(if connected {
-            "Press Pair another phone in the preview area to show a code."
-        } else {
-            "Press Show a pairing code in the preview area. Your phone scans it once, and this PC remembers it from then on."
-        }));
     }
-
-    children.push(
-        div()
-            .mt(px(Space::SM))
-            .font(Fonts::sans())
-            .text_size(px(Type::XS))
-            .line_height(px(Type::LINE_XS))
-            .text_color(Text::BODY)
-            .child("Next: select 'PhoneCam Camera' in Zoom, OBS, or Discord.")
-            .into_any_element(),
-    );
 
     let has_lan_ip = state
         .local_ip
@@ -965,160 +985,104 @@ pub fn connect_panel_with_focus(
         Some(ip) => format!("{ip}:{}", phonecam_protocol::SERVICE_PORT),
         None => "Unavailable".to_string(),
     };
-    let wifi_tone = if has_lan_ip && state.status.connected {
-        Tone::Accent
-    } else {
-        Tone::Neutral
-    };
 
-    children.push(section(
-        "Connect via Wi-Fi",
-        vec![div()
+    // Compact Wi-Fi card (IP:Port monospace badge + 2 concise steps)
+    let wifi_card = div()
+        .w_full()
+        .min_w(px(0.0))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .rounded(px(Radius::MD))
+        .border_1()
+        .border_color(SHELL.border)
+        .bg(SHELL.recessed)
+        .p(px(16.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(10.0))
+                .child(
+                    div()
+                        .font(Fonts::sans())
+                        .text_size(px(Type::TWO_SM))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(Text::PRIMARY)
+                        .child("Wi-Fi"),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .rounded(px(Radius::SM))
+                        .border_1()
+                        .border_color(SHELL.control_border)
+                        .bg(SHELL.control)
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .font(numeric_font(Fonts::MONO))
+                        .text_size(px(Type::TWO_XS))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(if has_lan_ip {
+                            Text::PRIMARY
+                        } else {
+                            Text::MUTED
+                        })
+                        .child(wifi_endpoint),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(wifi_step_row(
+                    "1.",
+                    "Keep your phone and PC on the same Wi-Fi network.",
+                ))
+                .child(wifi_step_row(
+                    "2.",
+                    "Scan the QR code on the left, or enter the address above in PhoneCam Android.",
+                )),
+        )
+        .into_any_element();
+
+    children.push(wifi_card);
+
+    // Compact USB Cable card with collapsible "USB Debugging Help" accordion
+    children.push(usb_list_with_ui(
+        state,
+        ui.usb_help_expanded,
+        callbacks.on_toggle_usb_help.clone(),
+        focus.as_deref_mut(),
+    ));
+
+    // Cleanly stacked USB automation toggle
+    children.push(
+        div()
             .w_full()
-            .min_w(px(0.0))
-            .flex()
-            .flex_col()
-            .gap(px(Space::SM))
             .rounded(px(Radius::MD))
             .border_1()
-            .border_color(if has_lan_ip {
-                Accent::DEFAULT.alpha(0.35)
-            } else {
-                SHELL.border.alpha(0.45)
-            })
-            .bg(if has_lan_ip {
-                Accent::DEFAULT.alpha(0.06)
-            } else {
-                SHELL.recessed
-            })
-            .p(px(Space::PAD))
+            .border_color(SHELL.border)
+            .bg(SHELL.recessed)
+            .px(px(10.0))
+            .py(px(6.0))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(Space::SM))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .min_w(px(0.0))
-                            .items_center()
-                            .gap(px(Space::SM))
-                            .child(status_dot(wifi_tone))
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .font(Fonts::sans())
-                                    .text_size(px(Type::TWO_SM))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(Text::PRIMARY)
-                                    .child("Wi-Fi / LAN Network"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .rounded(px(Radius::FULL))
-                            .border_1()
-                            .border_color(SHELL.border)
-                            .bg(SHELL.base)
-                            .px(px(Space::SM))
-                            .py(px(2.0))
-                            .font(numeric_font(Fonts::MONO))
-                            .text_size(px(Type::TWO_XS))
-                            .text_color(Accent::DEFAULT)
-                            .child(format!("Port {}", phonecam_protocol::SERVICE_PORT)),
-                    ),
+                Toggle::new("Auto-connect on USB plug", state.settings.auto_connect_usb)
+                    .id("setup-auto-connect-usb")
+                    .focus_with(focus, "setup-auto-connect-usb")
+                    .detail(Some(if state.settings.auto_connect_usb {
+                        "Automatically bridges a plugged-in USB phone"
+                    } else {
+                        "Connect manually via USB button"
+                    }))
+                    .on_change(|val, _window, _cx| push_effect(SideEffect::SetAutoConnectUsb(val)))
+                    .into_element(),
             )
-            .child(
-                div()
-                    .mt(px(Space::XS))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(Space::MD))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .font(Fonts::sans())
-                            .text_size(px(Type::XS))
-                            .text_color(Text::MUTED)
-                            .child("PC IP address"),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .font(numeric_font(Fonts::MONO))
-                            .text_size(px(Type::TWO_SM))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(if has_lan_ip {
-                                Text::PRIMARY
-                            } else {
-                                Text::MUTED
-                            })
-                            .child(wifi_endpoint),
-                    ),
-            )
-            .child(
-                div()
-                    .mt(px(Space::SM))
-                    .flex()
-                    .flex_col()
-                    .gap(px(Space::XS))
-                    .child(wifi_step_row(
-                        "1.",
-                        "Connect phone and PC to the same Wi-Fi network.",
-                    ))
-                    .child(wifi_step_row(
-                        "2.",
-                        "In PhoneCam Android, scan the QR code on the left or tap Search.",
-                    ))
-                    .child(wifi_step_row(
-                        "3.",
-                        "Or enter the PC IP address above manually in the Android app.",
-                    )),
-            )
-            .into_any_element()],
-    ));
-
-    children.push(section(
-        "Or use a cable",
-        vec![
-            usb_list_with_focus(state, focus.as_deref_mut()),
-            div()
-                .mt(px(Space::MD))
-                .font(Fonts::sans())
-                .text_size(px(Type::XS))
-                .line_height(px(Type::LINE_XS))
-                .text_color(Text::MUTED)
-                .child("A cable is worth trying when Wi-Fi is unreliable. It needs USB debugging switched on in the phone's developer options.")
-                .into_any_element(),
-        ],
-    ));
-
-    children.push(section(
-        "USB automation",
-        vec![
-            Toggle::new("Auto-connect on USB plug", state.settings.auto_connect_usb)
-                .id("setup-auto-connect-usb")
-                .focus_with(focus, "setup-auto-connect-usb")
-                .detail(Some(if state.settings.auto_connect_usb {
-                    "Automatic USB setup"
-                } else {
-                    "Manual"
-                }))
-                .on_change(|val, _window, _cx| push_effect(SideEffect::SetAutoConnectUsb(val)))
-                .into_element(),
-            prose(
-                "Automatically bridges a plugged-in USB phone to PhoneCam so you do not need to scan a QR code.",
-            ),
-        ],
-    ));
+            .into_any_element(),
+    );
 
     panel.children(children).into_element()
 }
@@ -1207,10 +1171,15 @@ pub fn usb_list_summary(
 /// The cable list, which has four disjoint states.
 #[allow(dead_code)]
 fn usb_list(state: &AppState) -> AnyElement {
-    usb_list_with_focus(state, None)
+    usb_list_with_ui(state, false, None, None)
 }
 
-fn usb_list_with_focus(state: &AppState, mut focus: Option<&mut FocusContext<'_>>) -> AnyElement {
+fn usb_list_with_ui(
+    state: &AppState,
+    help_expanded: bool,
+    on_toggle_help: Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
+    mut focus: Option<&mut FocusContext<'_>>,
+) -> AnyElement {
     let usb = state.core.as_ref().map(|c| &c.usb);
     let adb = usb.map(|u| u.adb_available);
     let device_count = usb.map(|u| u.devices.len()).unwrap_or(0);
@@ -1220,16 +1189,41 @@ fn usb_list_with_focus(state: &AppState, mut focus: Option<&mut FocusContext<'_>
         let forwarding = usb.map(|u| u.forwarding).unwrap_or(false);
         let devices = usb.map(|u| u.devices.clone()).unwrap_or_default();
         let mut column = div()
-            .flex()
-            .flex_col()
             .w_full()
             .min_w(px(0.0))
-            .mb(px(Space::MD))
-            .font(Fonts::sans())
-            .text_size(px(Type::XS))
-            .line_height(px(Type::LINE_XS))
-            .text_color(Text::MUTED)
-            .child(usb_list_summary(&devices, forwarding));
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .rounded(px(Radius::MD))
+            .border_1()
+            .border_color(SHELL.border)
+            .bg(SHELL.recessed)
+            .p(px(16.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .font(Fonts::sans())
+                            .text_size(px(Type::TWO_SM))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(Text::PRIMARY)
+                            .child("USB Cable"),
+                    )
+                    .child(chip(
+                        if forwarding {
+                            "Tunnel open"
+                        } else {
+                            "Detected"
+                        },
+                        if forwarding { Tone::Ok } else { Tone::Accent },
+                    )),
+            )
+            .child(prose(usb_list_summary(&devices, forwarding)));
 
         for device in devices {
             let model_clean = clean_device_model(&device.model);
@@ -1250,30 +1244,30 @@ fn usb_list_with_focus(state: &AppState, mut focus: Option<&mut FocusContext<'_>
                     UsbDeviceAction::OfflineHint => "Offline",
                 }
             };
-            let serial_detail = format!("serial {} · {}", device.serial, mode_label);
+            let serial_detail = format!("{} · {}", device.serial, mode_label);
 
             column = column.child(
                 div()
                     .w_full()
                     .min_w(px(0.0))
-                    .mt(px(Space::MD))
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .gap(px(Space::MD))
-                    .rounded(px(Radius::MD))
+                    .gap(px(10.0))
+                    .rounded(px(Radius::SM))
                     .border_1()
-                    .border_color(SHELL.border.alpha(0.45))
-                    .bg(SHELL.raised.alpha(0.6))
-                    .px(px(Space::LG))
-                    .py(px(Space::MD))
+                    .border_color(SHELL.border)
+                    .bg(SHELL.panel)
+                    .px(px(12.0))
+                    .py(px(10.0))
                     .child(
                         div()
                             .flex_1()
                             .min_w(px(0.0))
                             .flex()
                             .flex_col()
+                            .gap(px(2.0))
                             .child(
                                 div()
                                     .min_w(px(0.0))
@@ -1288,7 +1282,6 @@ fn usb_list_with_focus(state: &AppState, mut focus: Option<&mut FocusContext<'_>
                                 div()
                                     .min_w(px(0.0))
                                     .truncate()
-                                    .mt(px(2.0))
                                     .font(Fonts::mono())
                                     .text_size(px(Type::TWO_XS))
                                     .text_color(Text::MUTED)
@@ -1314,7 +1307,7 @@ fn usb_list_with_focus(state: &AppState, mut focus: Option<&mut FocusContext<'_>
                                 }
                                 (false, UsbDeviceAction::UsePhone) => {
                                     let btn_id = format!("usb-use-{serial_id}");
-                                    Button::new("Use this phone")
+                                    Button::primary("Connect")
                                         .id(btn_id.clone())
                                         .focus_with(focus.as_deref_mut(), &btn_id)
                                         .on_click(move |_window, _cx| {
@@ -1337,11 +1330,10 @@ fn usb_list_with_focus(state: &AppState, mut focus: Option<&mut FocusContext<'_>
 
         column = column.child(
             div()
-                .mt(px(Space::MD))
                 .flex()
                 .flex_row()
                 .flex_wrap()
-                .gap(px(Space::MD))
+                .gap(px(10.0))
                 .child(
                     Button::new("Check again")
                         .id("usb-check-again-list")
@@ -1359,45 +1351,26 @@ fn usb_list_with_focus(state: &AppState, mut focus: Option<&mut FocusContext<'_>
         return column.into_any_element();
     }
 
-    let (chip_label, body): (&'static str, AnyElement) = match readiness {
+    let (chip_label, summary_copy) = match readiness {
         rules::UsbReadiness::ToolsMissing => (
-            "Cable tools missing",
-            div()
-                .mt(px(Space::MD))
-                .font(Fonts::sans())
-                .text_size(px(Type::XS))
-                .line_height(px(Type::LINE_XS))
-                .text_color(Text::MUTED)
-                .child("PhoneCam ships Google's Android platform tools, but they are missing from this copy. Reinstall PhoneCam, or install them yourself and check again.")
-                .into_any_element(),
+            "Tools missing",
+            "Android platform-tools are missing from this copy. Reinstall PhoneCam or download platform-tools.",
         ),
         rules::UsbReadiness::Unknown => (
-            "Not checked yet",
-            div()
-                .mt(px(Space::MD))
-                .font(Fonts::sans())
-                .text_size(px(Type::XS))
-                .line_height(px(Type::LINE_XS))
-                .text_color(Text::MUTED)
-                .child("Connect the phone with a data cable and turn on USB debugging, then check again.")
-                .into_any_element(),
+            "Not checked",
+            "Plug in a USB data cable with USB debugging enabled, then click Check again.",
         ),
         _ => (
-            "No phone detected",
-            usb_debugging_guide(),
+            "Not connected",
+            "Plug in a USB data cable with USB debugging enabled for zero-jitter tethered video.",
         ),
     };
 
-    let mut actions = div()
-        .mt(px(Space::MD))
-        .flex()
-        .flex_row()
-        .flex_wrap()
-        .gap(px(Space::MD));
+    let mut actions = div().flex().flex_row().flex_wrap().gap(px(10.0));
 
     if matches!(readiness, rules::UsbReadiness::ToolsMissing) {
         actions = actions.child(
-            Button::new("Download platform-tools")
+            Button::new("Download tools")
                 .id("usb-download-tools")
                 .focus_with(focus.as_deref_mut(), "usb-download-tools")
                 .on_click(|_window, _cx| push_effect(SideEffect::OpenPlatformToolsUrl)),
@@ -1415,20 +1388,22 @@ fn usb_list_with_focus(state: &AppState, mut focus: Option<&mut FocusContext<'_>
         actions = actions.child(
             Button::new("Restart ADB")
                 .id("usb-restart-adb-empty")
-                .focus_with(focus, "usb-restart-adb-empty")
+                .focus_with(focus.as_deref_mut(), "usb-restart-adb-empty")
                 .on_click(|_window, _cx| push_effect(SideEffect::RestartAdb)),
         );
     }
 
-    div()
+    let mut card = div()
         .w_full()
         .min_w(px(0.0))
         .flex()
         .flex_col()
+        .gap(px(10.0))
         .rounded(px(Radius::MD))
-        .bg(SHELL.raised)
-        .px(px(Space::LG))
-        .py(px(Space::MD))
+        .border_1()
+        .border_color(SHELL.border)
+        .bg(SHELL.recessed)
+        .p(px(16.0))
         .child(
             div()
                 .w_full()
@@ -1436,19 +1411,55 @@ fn usb_list_with_focus(state: &AppState, mut focus: Option<&mut FocusContext<'_>
                 .flex_row()
                 .items_center()
                 .justify_between()
-                .gap(px(Space::LG))
+                .gap(px(10.0))
                 .child(
                     div()
                         .font(Fonts::sans())
                         .text_size(px(Type::TWO_SM))
-                        .text_color(Text::MUTED)
-                        .child("Cable"),
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(Text::PRIMARY)
+                        .child("USB Cable"),
                 )
                 .child(chip(chip_label, Tone::Neutral)),
         )
-        .child(body)
-        .child(actions)
-        .into_any_element()
+        .child(prose(summary_copy))
+        .child(actions);
+
+    if !matches!(readiness, rules::UsbReadiness::ToolsMissing) {
+        let help_toggle = div()
+            .pt(px(6.0))
+            .border_t_1()
+            .border_color(SHELL.border)
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .font(Fonts::sans())
+                    .text_size(px(Type::XS))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(Text::BODY)
+                    .child("USB Debugging Help"),
+            )
+            .child(
+                Button::ghost(if help_expanded { "Hide" } else { "Show steps" })
+                    .id("setup-usb-help-toggle")
+                    .focus_with(focus, "setup-usb-help-toggle")
+                    .on_click(move |window, cx| {
+                        if let Some(ref cb) = on_toggle_help {
+                            cb(window, cx);
+                        }
+                    }),
+            );
+        card = card.child(help_toggle);
+        if help_expanded {
+            card = card.child(usb_debugging_guide());
+        }
+    }
+
+    card.into_any_element()
 }
 
 /// The step-by-step instructions for turning on USB debugging.
@@ -2090,18 +2101,18 @@ pub fn capture_panel_with_ui(
         ));
     }
 
-    // --- Quick Framing (Mirror, Rotation, Auto-Rotate) right at top of Capture ---
+    // --- Framing (Mirror, Rotation, Auto-Rotate) ---
     let next_mirror = !state.settings.output_mirror;
     let quick_framing = section(
-        "Quick framing",
+        "Framing",
         vec![
             div()
                 .flex()
                 .flex_row()
                 .flex_wrap()
                 .items_center()
-                .gap(px(Space::SM))
-                .mb(px(Space::SM))
+                .gap(px(10.0))
+                .mb(px(Space::LG))
                 .child(
                     Button::new(if state.settings.output_mirror {
                         "Mirrored"
@@ -2130,13 +2141,12 @@ pub fn capture_panel_with_ui(
                 .detail(Some(if state.settings.auto_rotate {
                     "Follows phone orientation"
                 } else {
-                    "Locked"
+                    "Orientation locked"
                 }))
                 .on_change(|enabled, _window, _cx| push_effect(SideEffect::SetAutoRotate(enabled)))
                 .into_element(),
         ],
     );
-    children.push(quick_framing);
 
     let resolved_id = cameras
         .iter()
@@ -2145,11 +2155,6 @@ pub fn capture_panel_with_ui(
         .map(|c| c.id.as_str())
         .unwrap_or(selected.as_str())
         .to_string();
-
-    children.push(section(
-        "Which camera",
-        vec![camera_tiles(&cameras, &resolved_id)],
-    ));
 
     let res_options = resolution_presets(
         selected_cam
@@ -2231,7 +2236,7 @@ pub fn capture_panel_with_ui(
     let bitrate_control = div()
         .flex()
         .flex_col()
-        .gap(px(Space::SM))
+        .gap(px(Space::LG))
         .child(
             div()
                 .flex()
@@ -2271,7 +2276,7 @@ pub fn capture_panel_with_ui(
                 .flex()
                 .flex_row()
                 .flex_wrap()
-                .gap(px(Space::XS))
+                .gap(px(Space::LG))
                 .children(
                     [
                         (2_000_000, "2M Eco", "bitrate-2M"),
@@ -2294,8 +2299,10 @@ pub fn capture_panel_with_ui(
         .into_any_element();
 
     children.push(section(
-        "What it captures",
+        "Source & Quality",
         vec![
+            camera_tiles(&cameras, &resolved_id),
+            div().h(px(Space::SM)).into_any_element(),
             crate::views::widgets::field(
                 "Resolution",
                 Some(res_hint),
@@ -2303,7 +2310,7 @@ pub fn capture_panel_with_ui(
                     .flex()
                     .flex_row()
                     .flex_wrap()
-                    .gap(px(Space::SM))
+                    .gap(px(Space::LG))
                     .children(res_options.into_iter().map(|res| {
                         let active = state.settings.resolution == res;
                         let label = if res == "auto" {
@@ -2336,7 +2343,7 @@ pub fn capture_panel_with_ui(
                     .flex()
                     .flex_row()
                     .flex_wrap()
-                    .gap(px(Space::SM))
+                    .gap(px(Space::LG))
                     .children(fps_options.into_iter().map(|fps_opt| {
                         let active = current_fps_opt == fps_opt;
                         let label = match fps_opt {
@@ -2365,6 +2372,7 @@ pub fn capture_panel_with_ui(
             ),
         ],
     ));
+    children.push(quick_framing);
 
     // Link & smoothness (plain language; technical RTT/cadence stays in Diagnostics)
     let latency_ms = state
@@ -2813,7 +2821,7 @@ pub fn capture_panel_with_ui(
     );
 
     children.push(section(
-        "Camera controls",
+        "Exposure & Focus",
         vec![
             zoom_element,
             torch_element,
@@ -3311,17 +3319,17 @@ fn camera_tiles(cameras: &[phonecam_protocol::CameraCapability], selected_id: &s
                 .border_color(if is_selected {
                     Accent::DEFAULT
                 } else {
-                    SHELL.border
+                    SHELL.control_border
                 })
                 .bg(if is_selected {
-                    Accent::DEFAULT.alpha(0.12)
+                    Accent::DEFAULT.alpha(0.14)
                 } else {
                     SHELL.control
                 })
-                .px(px(Space::MD))
-                .py(px(Space::SM))
+                .px(px(12.0))
+                .py(px(10.0))
                 .cursor_pointer()
-                .hover(|s| s.border_color(Accent::HOVER).bg(SHELL.hover))
+                .hover(|s| s.border_color(SHELL.control_border_hover).bg(SHELL.hover))
                 .focus(|s| s.border_2().border_color(Accent::DEFAULT))
                 .child(
                     div()
@@ -3404,7 +3412,7 @@ pub fn publish_panel(state: &AppState) -> AnyElement {
     let starting = state_label == "starting";
     let streaming = state.is_streaming();
 
-    let panel = Panel::new("Publish to other apps").action(chip(
+    let panel = Panel::new("Virtual Camera").action(chip(
         match state_label {
             "starting" => "Starting",
             "running" if streaming => "Live",
@@ -3438,21 +3446,43 @@ pub fn publish_panel(state: &AppState) -> AnyElement {
     );
 
     children.push(match vcam_error {
-        Some(error) => div()
-            .font(Fonts::sans())
-            .text_size(px(Type::XS))
-            .line_height(px(Type::LINE_XS))
-            .text_color(Status::DANGER_TEXT)
-            .child(error)
-            .into_any_element(),
+        Some(error) => tinted_box(
+            Tone::Danger,
+            vec![div()
+                .font(Fonts::sans())
+                .text_size(px(Type::XS))
+                .line_height(px(Type::LINE_XS))
+                .text_color(Status::DANGER_TEXT)
+                .child(error)
+                .into_any_element()],
+        ),
         None => prose(if running && streaming {
-            "Pick PhoneCam Camera in Meet, OBS or any other app. It is carrying your phone right now."
+            "Select 'PhoneCam Camera' in OBS, Zoom, Meet, or Discord. It is carrying your live phone video."
         } else if running {
-            "Registered and waiting. It shows a stand-in until the phone stream starts."
+            "Registered and ready. Apps see a stand-in slate until you start streaming."
         } else {
-            "Turn this on to make the phone selectable in other apps."
+            "Enable this to expose your phone as a system webcam in other apps."
         }),
     });
+
+    // 1-click registration / troubleshoot bar
+    children.push(
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(10.0))
+            .child(
+                Button::new(if state.vcam_registered() {
+                    "Restart Virtual Camera"
+                } else {
+                    "Register Virtual Camera"
+                })
+                .id("publish-restart-vcam")
+                .on_click(|_window, _cx| push_effect(SideEffect::RestartVcam)),
+            )
+            .into_any_element(),
+    );
 
     let sideways = state.settings.output_rotation == 90 || state.settings.output_rotation == 270;
 
@@ -3667,8 +3697,18 @@ pub fn connection_panel(state: &AppState) -> AnyElement {
 /* Diagnostics                                                         */
 /* ------------------------------------------------------------------ */
 
-/// The numbers, and the log.
+/// The System / Diagnostics panel: 2x2 KPI tiles, Software Updates card, device/output
+/// info cards, and filterable log viewer.
 pub fn diagnostics_panel(state: &AppState) -> AnyElement {
+    diagnostics_panel_with_ui(state, &PanelCallbacks::default(), None)
+}
+
+/// Interactive System panel wired with the Software Updates modal trigger and focus tracking.
+pub fn diagnostics_panel_with_ui(
+    state: &AppState,
+    callbacks: &PanelCallbacks,
+    mut focus: Option<&mut FocusContext<'_>>,
+) -> AnyElement {
     let (status_chip_label, status_tone) = if !state.status.connected {
         ("Error", Tone::Danger)
     } else if state.is_streaming() {
@@ -3677,43 +3717,11 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
         ("Idle", Tone::Neutral)
     };
 
-    let panel = Panel::new("Diagnostics").action(chip(status_chip_label, status_tone));
+    let panel = Panel::new("System").action(chip(status_chip_label, status_tone));
 
     let mut children: Vec<AnyElement> = Vec::new();
 
-    // 1. Action Toolbar: 2x2 grid
-    let toolbar = div()
-        .grid()
-        .grid_cols(2)
-        .gap(px(Space::MD))
-        .child(
-            Button::new("Refresh")
-                .id("diag-refresh")
-                .full_width()
-                .on_click(|_window, _cx| push_effect(SideEffect::RefreshState)),
-        )
-        .child(
-            Button::new("Copy Report")
-                .id("diag-copy-report")
-                .full_width()
-                .on_click(|_window, _cx| push_effect(SideEffect::CopyDiagnosticsReport)),
-        )
-        .child(
-            Button::new("Export")
-                .id("diag-export")
-                .full_width()
-                .on_click(|_window, _cx| push_effect(SideEffect::ExportDiagnostics)),
-        )
-        .child(
-            Button::new("Open Log File")
-                .id("diag-open-log")
-                .full_width()
-                .on_click(|_window, _cx| push_effect(SideEffect::OpenLogFile)),
-        )
-        .into_any_element();
-    children.push(toolbar);
-
-    // 2. Live Throughput Metric Cards
+    // 1. Live Throughput 2x2 KPI Tiles
     let stats = state.core.as_ref().map(|c| &c.stats);
     let readout = rules::throughput_readout(stats, state.phase(), crate::theme::EMPTY_VALUE);
     let fps_display = if readout.fps == crate::theme::EMPTY_VALUE {
@@ -3725,13 +3733,56 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
     let throughput_grid = div()
         .grid()
         .grid_cols(2)
-        .gap(px(Space::MD))
+        .gap(px(10.0))
         .child(metric_card_tile("FPS", fps_display))
         .child(metric_card_tile("Bitrate", readout.bitrate))
         .child(metric_card_tile("Latency (RTT)", readout.latency))
         .child(metric_card_tile("Dropped", readout.dropped))
         .into_any_element();
-    children.push(section("Throughput", vec![throughput_grid]));
+    children.push(throughput_grid);
+
+    // 2. Software Updates Card
+    children.push(software_updates_card(
+        state,
+        callbacks.on_open_updates.clone(),
+        focus.as_deref_mut(),
+    ));
+
+    // 3. Action Toolbar: 2x2 grid with generous 10px spacing
+    let toolbar = div()
+        .grid()
+        .grid_cols(2)
+        .gap(px(10.0))
+        .child(
+            Button::new("Refresh")
+                .id("diag-refresh")
+                .focus_with(focus.as_deref_mut(), "diag-refresh")
+                .full_width()
+                .on_click(|_window, _cx| push_effect(SideEffect::RefreshState)),
+        )
+        .child(
+            Button::new("Copy Report")
+                .id("diag-copy-report")
+                .focus_with(focus.as_deref_mut(), "diag-copy-report")
+                .full_width()
+                .on_click(|_window, _cx| push_effect(SideEffect::CopyDiagnosticsReport)),
+        )
+        .child(
+            Button::new("Export")
+                .id("diag-export")
+                .focus_with(focus.as_deref_mut(), "diag-export")
+                .full_width()
+                .on_click(|_window, _cx| push_effect(SideEffect::ExportDiagnostics)),
+        )
+        .child(
+            Button::new("Open Log File")
+                .id("diag-open-log")
+                .focus_with(focus, "diag-open-log")
+                .full_width()
+                .on_click(|_window, _cx| push_effect(SideEffect::OpenLogFile)),
+        )
+        .into_any_element();
+    children.push(section("Diagnostics tools", vec![toolbar]));
 
     // 3. Structured System & Device Info Cards
     let device = state.core.as_ref().and_then(|c| c.device.as_ref());
@@ -4234,6 +4285,397 @@ pub fn diagnostics_panel(state: &AppState) -> AnyElement {
     panel.children(children).into_element()
 }
 
+/// Software Updates summary card displayed inside the System tab.
+pub fn software_updates_card(
+    state: &AppState,
+    on_open_updates: Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
+    focus: Option<&mut FocusContext<'_>>,
+) -> AnyElement {
+    let (badge_label, badge_tone, detail_text, cta_label, primary_cta) = match &state.update_status
+    {
+        UpdateStatus::Idle => (
+            format!("v{}", state.current_version),
+            Tone::Neutral,
+            "Checks GitHub Releases only when you click below.".to_string(),
+            "Check for Updates",
+            false,
+        ),
+        UpdateStatus::Checking => (
+            "Checking...".to_string(),
+            Tone::Accent,
+            "Querying GitHub Releases for the latest version...".to_string(),
+            "View Status",
+            false,
+        ),
+        UpdateStatus::UpToDate { current } => (
+            "Up to date".to_string(),
+            Tone::Ok,
+            format!("PhoneCam v{current} is the latest release."),
+            "Check Again",
+            false,
+        ),
+        UpdateStatus::Available(info) => (
+            format!("{} available", info.tag),
+            Tone::Accent,
+            format!(
+                "Newer release available (current v{}).",
+                state.current_version
+            ),
+            "View Update & Changelog",
+            true,
+        ),
+        UpdateStatus::Failed(err) => (
+            "Check failed".to_string(),
+            Tone::Danger,
+            err.clone(),
+            "Try Again",
+            false,
+        ),
+    };
+
+    let action_btn = if primary_cta {
+        Button::primary(cta_label)
+    } else {
+        Button::new(cta_label)
+    }
+    .id("system-check-updates")
+    .focus_with(focus, "system-check-updates")
+    .on_click(move |window, cx| {
+        if let Some(ref cb) = on_open_updates {
+            cb(window, cx);
+        } else {
+            push_effect(SideEffect::CheckForUpdates);
+        }
+    });
+
+    div()
+        .w_full()
+        .min_w(px(0.0))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .rounded(px(Radius::MD))
+        .border_1()
+        .border_color(SHELL.border)
+        .bg(SHELL.recessed)
+        .p(px(16.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(10.0))
+                .child(
+                    div()
+                        .font(Fonts::sans())
+                        .text_size(px(Type::TWO_SM))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(Text::PRIMARY)
+                        .child("Software Updates"),
+                )
+                .child(chip(badge_label, badge_tone)),
+        )
+        .child(prose(detail_text))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap(px(10.0))
+                .child(action_btn),
+        )
+        .into_any_element()
+}
+
+/// Sleek centered Software Update modal showing current vs latest GitHub version,
+/// scrollable changelog notes, "Check Again", and "Download Update on GitHub".
+pub fn updates_modal(
+    state: &AppState,
+    on_close: Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App) + 'static>>,
+    mut focus: Option<&mut FocusContext<'_>>,
+) -> AnyElement {
+    let close_btn = Button::ghost("Close")
+        .id("updates-modal-close")
+        .focus_with(focus.as_deref_mut(), "updates-modal-close")
+        .on_click(move |window, cx| {
+            if let Some(ref cb) = on_close {
+                cb(window, cx);
+            }
+        });
+
+    let current_ver_str = format!("v{}", state.current_version);
+    let (latest_ver_str, latest_tone, status_banner) = match &state.update_status {
+        UpdateStatus::Idle => (
+            crate::theme::EMPTY_VALUE.to_string(),
+            Tone::Neutral,
+            prose("Click Check for Updates to query GitHub Releases. PhoneCam never checks automatically in the background."),
+        ),
+        UpdateStatus::Checking => (
+            "Checking...".to_string(),
+            Tone::Accent,
+            tinted_box(
+                Tone::Accent,
+                vec![div()
+                    .font(Fonts::sans())
+                    .text_size(px(Type::XS))
+                    .line_height(px(Type::LINE_XS))
+                    .text_color(Text::PRIMARY)
+                    .child("Contacting GitHub Releases...")
+                    .into_any_element()],
+            ),
+        ),
+        UpdateStatus::UpToDate { current } => (
+            format!("v{current}"),
+            Tone::Ok,
+            tinted_box(
+                Tone::Ok,
+                vec![div()
+                    .font(Fonts::sans())
+                    .text_size(px(Type::XS))
+                    .line_height(px(Type::LINE_XS))
+                    .text_color(Status::OK)
+                    .child(format!("You are running the latest version (v{current})."))
+                    .into_any_element()],
+            ),
+        ),
+        UpdateStatus::Available(info) => (
+            info.tag.clone(),
+            Tone::Accent,
+            tinted_box(
+                Tone::Accent,
+                vec![div()
+                    .font(Fonts::sans())
+                    .text_size(px(Type::XS))
+                    .line_height(px(Type::LINE_XS))
+                    .text_color(Text::PRIMARY)
+                    .child(match info.published_at.as_deref() {
+                        Some(date) if !date.is_empty() => {
+                            format!("Release {} is ready to download (published {}).", info.tag, date)
+                        }
+                        _ => format!("Release {} is ready to download.", info.tag),
+                    })
+                    .into_any_element()],
+            ),
+        ),
+        UpdateStatus::Failed(err) => (
+            "Unavailable".to_string(),
+            Tone::Danger,
+            tinted_box(
+                Tone::Danger,
+                vec![div()
+                    .font(Fonts::sans())
+                    .text_size(px(Type::XS))
+                    .line_height(px(Type::LINE_XS))
+                    .text_color(Status::DANGER_TEXT)
+                    .child(err.clone())
+                    .into_any_element()],
+            ),
+        ),
+    };
+
+    let version_row = div()
+        .grid()
+        .grid_cols(2)
+        .gap(px(10.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .rounded(px(Radius::MD))
+                .border_1()
+                .border_color(SHELL.border)
+                .bg(SHELL.recessed)
+                .p(px(14.0))
+                .child(
+                    div()
+                        .font(Fonts::sans())
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(Text::MUTED)
+                        .child("Installed Version"),
+                )
+                .child(
+                    div()
+                        .font(numeric_font(Fonts::MONO))
+                        .text_size(px(Type::TITLE))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(Text::PRIMARY)
+                        .child(current_ver_str),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .rounded(px(Radius::MD))
+                .border_1()
+                .border_color(SHELL.border)
+                .bg(SHELL.recessed)
+                .p(px(14.0))
+                .child(
+                    div()
+                        .font(Fonts::sans())
+                        .text_size(px(Type::TWO_XS))
+                        .text_color(Text::MUTED)
+                        .child("Latest on GitHub"),
+                )
+                .child(
+                    div()
+                        .font(numeric_font(Fonts::MONO))
+                        .text_size(px(Type::TITLE))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(if matches!(latest_tone, Tone::Neutral) {
+                            Text::MUTED
+                        } else {
+                            latest_tone.fg()
+                        })
+                        .child(latest_ver_str),
+                ),
+        );
+
+    let mut card = div()
+        .w_full()
+        .max_w(px(500.0))
+        .flex()
+        .flex_col()
+        .gap(px(14.0))
+        .rounded(px(Radius::LG))
+        .border_1()
+        .border_color(SHELL.control_border)
+        .bg(SHELL.panel)
+        .p(px(20.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .font(Fonts::display())
+                        .text_size(px(Type::STATUS))
+                        .text_color(Text::PRIMARY)
+                        .child("Software Updates"),
+                )
+                .child(close_btn),
+        )
+        .child(version_row)
+        .child(status_banner);
+
+    if let UpdateStatus::Available(info) = &state.update_status {
+        let changelog_lines: Vec<AnyElement> = if info.changelog.trim().is_empty() {
+            vec![prose("No release notes provided for this tag.")]
+        } else {
+            info.changelog
+                .lines()
+                .map(|line| {
+                    let trimmed = line.trim_end();
+                    div()
+                        .font(Fonts::sans())
+                        .text_size(px(Type::XS))
+                        .line_height(px(Type::LINE_XS))
+                        .text_color(if trimmed.starts_with('#') {
+                            Text::PRIMARY
+                        } else {
+                            Text::BODY
+                        })
+                        .font_weight(if trimmed.starts_with('#') {
+                            gpui::FontWeight::SEMIBOLD
+                        } else {
+                            gpui::FontWeight::NORMAL
+                        })
+                        .child(if trimmed.is_empty() {
+                            " ".to_string()
+                        } else {
+                            trimmed.to_string()
+                        })
+                        .into_any_element()
+                })
+                .collect()
+        };
+
+        card = card.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .font(Fonts::sans())
+                        .text_size(px(Type::XS))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(Text::HEADING)
+                        .child("Changelog"),
+                )
+                .child(
+                    div()
+                        .id("updates-changelog-scroll")
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .max_h(px(220.0))
+                        .overflow_y_scroll()
+                        .rounded(px(Radius::MD))
+                        .border_1()
+                        .border_color(SHELL.border)
+                        .bg(SHELL.recessed)
+                        .p(px(14.0))
+                        .children(changelog_lines),
+                ),
+        );
+    }
+
+    let is_checking = matches!(state.update_status, UpdateStatus::Checking);
+    let mut footer = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .justify_end()
+        .gap(px(10.0))
+        .pt(px(4.0))
+        .child(
+            Button::new(if matches!(state.update_status, UpdateStatus::Idle) {
+                "Check for Updates"
+            } else {
+                "Check Again"
+            })
+            .id("updates-check-again")
+            .disabled(is_checking)
+            .focus_with(focus.as_deref_mut(), "updates-check-again")
+            .on_click(|_window, _cx| push_effect(SideEffect::CheckForUpdates)),
+        );
+
+    if let UpdateStatus::Available(info) = &state.update_status {
+        let download_url = info.url.clone();
+        footer = footer.child(
+            Button::primary("Download Update on GitHub")
+                .id("updates-download-github")
+                .focus_with(focus, "updates-download-github")
+                .on_click(move |_window, _cx| {
+                    push_effect(SideEffect::OpenUpdateUrl(download_url.clone()))
+                }),
+        );
+    }
+
+    card = card.child(footer);
+
+    div()
+        .id("updates-modal-overlay")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(gpui::hsla(0.0, 0.0, 0.0, 0.68))
+        .p(px(24.0))
+        .child(card)
+        .into_any_element()
+}
+
 /// A modern metric card tile: rounded corners, dark recessed background, subtle border,
 /// small label, and large prominent bold numeric value with unit.
 fn metric_card_tile(label: &'static str, value: impl Into<SharedString>) -> AnyElement {
@@ -4243,15 +4685,15 @@ fn metric_card_tile(label: &'static str, value: impl Into<SharedString>) -> AnyE
         .justify_between()
         .rounded(px(Radius::MD))
         .border_1()
-        .border_color(SHELL.border.alpha(0.45))
+        .border_color(SHELL.border)
         .bg(SHELL.recessed)
-        .p(px(Space::PAD))
-        .gap(px(Space::XS))
+        .p(px(14.0))
+        .gap(px(4.0))
         .child(
             div()
                 .font(Fonts::sans())
                 .text_size(px(Type::TWO_XS))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(Text::MUTED)
                 .child(label),
         )
@@ -4274,10 +4716,10 @@ fn info_card(rows: Vec<AnyElement>) -> AnyElement {
         .flex_col()
         .rounded(px(Radius::MD))
         .border_1()
-        .border_color(SHELL.border.alpha(0.45))
+        .border_color(SHELL.border)
         .bg(SHELL.recessed)
-        .px(px(Space::PAD))
-        .py(px(Space::XS))
+        .px(px(16.0))
+        .py(px(6.0))
         .children(rows)
         .into_any_element()
 }
@@ -4440,15 +4882,15 @@ pub fn preferences_drawer(
         .child(
             div()
                 .id("preferences-drawer-scroll")
-                .w(px(416.0))
+                .w(px(396.0))
                 .max_w_full()
                 .h_full()
                 .overflow_y_scroll()
                 .rounded(px(Radius::LG))
                 .border_1()
-                .border_color(SHELL.border)
-                .bg(SHELL.base)
-                .p(px(Space::PAD))
+                .border_color(SHELL.control_border)
+                .bg(SHELL.panel)
+                .p(px(16.0))
                 .child(preferences_panel_with_focus(state, on_close, focus)),
         )
         .into_any_element()
@@ -4575,9 +5017,9 @@ fn preferences_panel_with_focus(
                 key_value("F11", "Full-window preview", false),
                 key_value("Esc", "Leave full-window preview / close drawer", false),
                 key_value("Ctrl+1", "Setup tab", false),
-                key_value("Ctrl+2", "Capture tab", false),
-                key_value("Ctrl+3", "Publish tab", false),
-                key_value("Ctrl+4", "Diagnostics tab", false),
+                key_value("Ctrl+2", "Camera tab", false),
+                key_value("Ctrl+3", "Output tab", false),
+                key_value("Ctrl+4", "System tab", false),
                 key_value("Tab / Shift+Tab", "Navigate controls", false),
                 key_value("Enter / Space", "Activate focused control", false),
             ],
@@ -4622,9 +5064,13 @@ fn pill_button(
     on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let (border, background, text) = if selected {
-        (Accent::DEFAULT, SHELL.control, Accent::DEFAULT)
+        (
+            Accent::DEFAULT.alpha(0.75),
+            Accent::DEFAULT.alpha(0.14),
+            Text::PRIMARY,
+        )
     } else {
-        (SHELL.border, SHELL.control, Text::PRIMARY)
+        (SHELL.control_border, SHELL.control, Text::HEADING)
     };
 
     let mut el = div()
@@ -4634,12 +5080,13 @@ fn pill_button(
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .rounded(px(Radius::MD))
+        .min_h(px(32.0))
+        .rounded(px(Radius::SM))
         .border_1()
         .border_color(border)
         .bg(background)
-        .px(px(Space::LG))
-        .py(px(Space::SM))
+        .px(px(12.0))
+        .py(px(6.0))
         .font(Fonts::sans())
         .text_size(px(Type::XS))
         .font_weight(gpui::FontWeight::MEDIUM)
@@ -4650,11 +5097,15 @@ fn pill_button(
         el = el.opacity(0.4).cursor_default();
     } else {
         let hover_border = if selected {
-            Accent::DEFAULT
+            Accent::HOVER
         } else {
-            Text::MUTED
+            SHELL.control_border_hover
         };
-        let hover_bg = if selected { SHELL.control } else { SHELL.hover };
+        let hover_bg = if selected {
+            Accent::DEFAULT.alpha(0.22)
+        } else {
+            SHELL.hover
+        };
         let cb = Rc::new(on_click);
         let key_cb = Rc::clone(&cb);
         el = el
@@ -4683,9 +5134,13 @@ fn pill_button_compact(
     on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let (border, background, text) = if selected {
-        (Accent::DEFAULT, SHELL.control, Accent::DEFAULT)
+        (
+            Accent::DEFAULT.alpha(0.75),
+            Accent::DEFAULT.alpha(0.14),
+            Text::PRIMARY,
+        )
     } else {
-        (SHELL.border, SHELL.control, Text::PRIMARY)
+        (SHELL.control_border, SHELL.control, Text::BODY)
     };
 
     let mut el = div()
@@ -4695,12 +5150,13 @@ fn pill_button_compact(
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .rounded(px(Radius::MD))
+        .min_h(px(28.0))
+        .rounded(px(Radius::SM))
         .border_1()
         .border_color(border)
         .bg(background)
-        .px(px(Space::MD))
-        .py(px(Space::XS))
+        .px(px(10.0))
+        .py(px(5.0))
         .font(Fonts::sans())
         .text_size(px(Type::XS))
         .font_weight(gpui::FontWeight::MEDIUM)
@@ -4711,11 +5167,15 @@ fn pill_button_compact(
         el = el.opacity(0.4).cursor_default();
     } else {
         let hover_border = if selected {
-            Accent::DEFAULT
+            Accent::HOVER
         } else {
-            Text::MUTED
+            SHELL.control_border_hover
         };
-        let hover_bg = if selected { SHELL.control } else { SHELL.hover };
+        let hover_bg = if selected {
+            Accent::DEFAULT.alpha(0.22)
+        } else {
+            SHELL.hover
+        };
         let cb = Rc::new(on_click);
         let key_cb = Rc::clone(&cb);
         el = el
@@ -5513,6 +5973,8 @@ mod tests {
             &state,
             RailUiState {
                 show_preferences: false,
+                show_updates: false,
+                usb_help_expanded: false,
                 labs_expanded: false,
                 gesture_ref_expanded: false,
             },
@@ -5523,6 +5985,8 @@ mod tests {
             &state,
             RailUiState {
                 show_preferences: true,
+                show_updates: true,
+                usb_help_expanded: true,
                 labs_expanded: true,
                 gesture_ref_expanded: true,
             },
@@ -5530,6 +5994,77 @@ mod tests {
             None,
         );
         let _drawer = preferences_drawer(&state, None, None);
+    }
+
+    #[test]
+    fn updates_modal_and_software_updates_card_render_all_states() {
+        let mut state = AppState::default();
+        let _idle_card = software_updates_card(&state, None, None);
+        let _idle_modal = updates_modal(&state, None, None);
+
+        state.update_status = UpdateStatus::Checking;
+        let _checking_modal = updates_modal(&state, None, None);
+
+        state.update_status = UpdateStatus::UpToDate {
+            current: state.current_version.clone(),
+        };
+        let _up_to_date_modal = updates_modal(&state, None, None);
+
+        state.update_status = UpdateStatus::Available(crate::views::state::ReleaseInfo {
+            version: "2.0.0".into(),
+            tag: "v2.0.0".into(),
+            url: "https://github.com/primahagantha/phonecam/releases/tag/v2.0.0".into(),
+            changelog: "## What's New\n- Studio UI overhaul\n- Bundled Inter fonts".into(),
+            published_at: Some("2026-11-26".into()),
+        });
+        let _avail_card = software_updates_card(&state, None, None);
+        let _avail_modal = updates_modal(&state, None, None);
+        let _strip_with_dot = status_strip(&state);
+
+        state.update_status = UpdateStatus::Failed("Network unreachable".into());
+        let _failed_modal = updates_modal(&state, None, None);
+    }
+
+    #[test]
+    fn setup_panel_collapses_usb_debugging_help_by_default() {
+        let mut state = AppState::default();
+        state.status.connected = true;
+        state.core = Some(phonecam_protocol::CoreState {
+            usb: phonecam_protocol::UsbStatus {
+                adb_available: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let callbacks = PanelCallbacks::default();
+        let _collapsed = connect_panel_with_ui(&state, RailUiState::default(), &callbacks, None);
+        let _expanded = connect_panel_with_ui(
+            &state,
+            RailUiState {
+                usb_help_expanded: true,
+                ..RailUiState::default()
+            },
+            &callbacks,
+            None,
+        );
+    }
+
+    #[test]
+    fn live_studio_hud_renders_with_telemetry_and_controls() {
+        let mut state = AppState::default();
+        state.status.connected = true;
+        state.frame_size = Some((1920, 1080));
+        state.core = Some(phonecam_protocol::CoreState {
+            phase: phonecam_protocol::StreamPhase::Streaming,
+            stats: phonecam_protocol::ConnectionStats {
+                fps: 59.8,
+                latency_ms: 14.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let _hud = crate::views::preview::live_studio_hud(&state, false, None);
+        let _hud_focus = crate::views::preview::live_studio_hud(&state, true, None);
     }
 
     #[test]

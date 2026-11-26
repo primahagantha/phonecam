@@ -99,11 +99,11 @@ impl IntoElement for Panel {
             .flex_row()
             .items_center()
             .justify_between()
-            .gap(px(Space::LG))
+            .gap(px(10.0))
             .border_b_1()
-            .border_color(SHELL.border.alpha(0.35))
-            .px(px(Space::PAD))
-            .py(px(Space::LG))
+            .border_color(SHELL.border)
+            .px(px(16.0))
+            .py(px(12.0))
             .child(
                 div()
                     .font(Fonts::display())
@@ -116,30 +116,27 @@ impl IntoElement for Panel {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(Space::MD))
+                    .gap(px(10.0))
                     .children(self.actions)
             }));
 
-        // No border and no shadow: a panel is a *grouping surface*, and giving it
-        // a border, a fill and a shadow at once is the generic "card" look. The
-        // fill alone separates it from the shell, and the header rule does the
-        // rest. Depth in this window comes from the stage being recessed, not
-        // from every panel claiming to float.
         div()
             .flex()
             .flex_col()
             .flex_shrink_0()
             .w_full()
-            .rounded(px(Radius::LG))
-            .bg(SHELL.panel)
+            .rounded(px(Radius::MD))
+            .border_1()
+            .border_color(SHELL.border)
+            .bg(SHELL.panel_elevated)
             .child(header)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_shrink_0()
-                    .px(px(Space::PAD))
-                    .py(px(Space::PAD))
+                    .gap(px(10.0))
+                    .p(px(16.0))
                     .children(self.children),
             )
             .into_any_element()
@@ -375,16 +372,16 @@ impl IntoElement for Button {
 
     fn into_element(self) -> Self::Element {
         let (border, background, text) = match (self.variant, self.disabled) {
-            (ButtonVariant::Primary, true) => (Accent::DEFAULT, Accent::DEFAULT, SHELL.recessed),
-            (ButtonVariant::Primary, false) => (Accent::DEFAULT, Accent::DEFAULT, SHELL.recessed),
+            (ButtonVariant::Primary, true) => (Accent::SOLID, Accent::SOLID, Text::PRIMARY),
+            (ButtonVariant::Primary, false) => (Accent::SOLID, Accent::SOLID, Text::PRIMARY),
             (ButtonVariant::Danger, true) => (
-                Status::DANGER.alpha(0.8),
-                Status::DANGER.alpha(0.1),
+                Status::DANGER.alpha(0.55),
+                Status::DANGER.alpha(0.12),
                 Status::DANGER_TEXT,
             ),
             (ButtonVariant::Danger, false) => (
-                Status::DANGER.alpha(0.8),
-                Status::DANGER.alpha(0.1),
+                Status::DANGER.alpha(0.55),
+                Status::DANGER.alpha(0.12),
                 Status::DANGER_TEXT,
             ),
             (ButtonVariant::Ghost, true) => (
@@ -397,20 +394,24 @@ impl IntoElement for Button {
                 gpui::transparent_black(),
                 Text::MUTED,
             ),
-            (ButtonVariant::Default, _) if self.selected => {
-                (Accent::DEFAULT, SHELL.control, Accent::DEFAULT)
-            }
-            (ButtonVariant::Default, true) => (SHELL.border, SHELL.control, Text::PRIMARY),
-            (ButtonVariant::Default, false) => (SHELL.border, SHELL.control, Text::PRIMARY),
+            (ButtonVariant::Default, _) if self.selected => (
+                Accent::DEFAULT.alpha(0.75),
+                Accent::DEFAULT.alpha(0.14),
+                Text::PRIMARY,
+            ),
+            (ButtonVariant::Default, true) => (SHELL.control_border, SHELL.control, Text::PRIMARY),
+            (ButtonVariant::Default, false) => (SHELL.control_border, SHELL.control, Text::PRIMARY),
         };
 
         // The hover style is what separates a control from a label.
         let (hover_border, hover_bg) = match (self.variant, self.disabled) {
-            (ButtonVariant::Primary, false) => (Accent::HOVER, Accent::HOVER),
-            (ButtonVariant::Danger, false) => (Status::DANGER, Status::DANGER.alpha(0.2)),
-            (ButtonVariant::Ghost, false) => (gpui::transparent_black(), SHELL.hover),
-            (ButtonVariant::Default, false) if self.selected => (Accent::DEFAULT, SHELL.control),
-            (ButtonVariant::Default, false) => (Text::MUTED, SHELL.hover),
+            (ButtonVariant::Primary, false) => (Accent::SOLID_HOVER, Accent::SOLID_HOVER),
+            (ButtonVariant::Danger, false) => (Status::DANGER, Status::DANGER.alpha(0.22)),
+            (ButtonVariant::Ghost, false) => (SHELL.border, SHELL.hover),
+            (ButtonVariant::Default, false) if self.selected => {
+                (Accent::HOVER, Accent::DEFAULT.alpha(0.20))
+            }
+            (ButtonVariant::Default, false) => (SHELL.control_border_hover, SHELL.hover),
             (_, true) => (border, background),
         };
 
@@ -422,13 +423,14 @@ impl IntoElement for Button {
             .flex_shrink_0()
             .items_center()
             .justify_center()
+            .min_h(px(34.0))
             .gap(px(Space::MD))
-            .rounded(px(Radius::MD))
+            .rounded(px(Radius::SM))
             .border_1()
             .border_color(border)
             .bg(background)
-            .px(px(Space::XL))
-            .py(px(Space::MD))
+            .px(px(14.0))
+            .py(px(8.0))
             .font(Fonts::sans())
             .text_size(px(Type::TWO_SM))
             .font_weight(gpui::FontWeight::MEDIUM)
@@ -487,10 +489,7 @@ pub fn numeric_font(family: &'static str) -> gpui::Font {
     }
 }
 
-/// A status chip.
-///
-/// The only uppercase-with-tracking in the system: a three-word status token
-/// genuinely benefits from being read as a stamp.
+/// A compact status badge/chip.
 pub fn chip(label: impl Into<SharedString>, tone: Tone) -> AnyElement {
     div()
         .flex()
@@ -501,12 +500,13 @@ pub fn chip(label: impl Into<SharedString>, tone: Tone) -> AnyElement {
         .border_1()
         .border_color(tone.border())
         .bg(tone.fill())
-        .px(px(Space::MD))
-        .py(px(Space::XS))
-        .font(Fonts::display())
+        .px(px(Space::LG))
+        .py(px(3.0))
+        .font(Fonts::sans())
         .text_size(px(Type::TWO_XS))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(tone.fg())
-        .child(label.into().to_uppercase())
+        .child(label.into())
         .into_any_element()
 }
 
@@ -514,9 +514,9 @@ pub fn chip(label: impl Into<SharedString>, tone: Tone) -> AnyElement {
 pub fn status_dot(tone: Tone) -> AnyElement {
     div()
         .flex_shrink_0()
-        .w(px(8.0))
-        .h(px(8.0))
-        .rounded(px(Radius::FULL))
+        .w(px(7.0))
+        .h(px(7.0))
+        .rounded(px(Radius::PILL))
         .bg(tone.dot())
         .into_any_element()
 }
@@ -566,11 +566,12 @@ pub fn well(children: Vec<AnyElement>) -> AnyElement {
         .min_w(px(0.0))
         .flex()
         .flex_col()
+        .gap(px(10.0))
         .rounded(px(Radius::MD))
         .border_1()
-        .border_color(SHELL.border.alpha(0.35))
+        .border_color(SHELL.border)
         .bg(SHELL.recessed)
-        .p(px(Space::MD))
+        .p(px(16.0))
         .children(children)
         .into_any_element()
 }
@@ -667,14 +668,14 @@ impl IntoElement for Toggle {
     fn into_element(self) -> Self::Element {
         let checked = self.checked;
         let track_bg = if checked {
-            Accent::DEFAULT
+            Accent::SOLID
         } else {
             SHELL.control
         };
         let track_border = if checked {
             Accent::DEFAULT
         } else {
-            SHELL.border
+            SHELL.control_border
         };
 
         let elem_id = self.id.unwrap_or_else(|| self.label.clone());
@@ -686,29 +687,33 @@ impl IntoElement for Toggle {
             .justify_between()
             .gap(px(Space::PAD))
             .mb(px(Space::SM))
-            .rounded(px(Radius::MD))
+            .rounded(px(Radius::SM))
             .border_1()
             .border_color(gpui::transparent_black())
-            .px(px(Space::SM))
-            .py(px(Space::XS))
+            .px(px(Space::MD))
+            .py(px(Space::MD))
             .child(
                 div()
-                    .flex_shrink()
+                    .flex_1()
                     .min_w(px(0.0))
+                    .pr(px(12.0))
                     .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_baseline()
-                    .gap(px(Space::MD))
+                    .flex_col()
+                    .gap(px(2.0))
                     .child(
                         div()
+                            .min_w(px(0.0))
+                            .truncate()
                             .font(Fonts::sans())
                             .text_size(px(Type::TWO_SM))
-                            .text_color(Text::BODY)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(Text::HEADING)
                             .child(self.label),
                     )
                     .children(self.detail.map(|detail| {
                         div()
+                            .min_w(px(0.0))
+                            .truncate()
                             .font(Fonts::sans())
                             .text_size(px(Type::TWO_XS))
                             .text_color(Text::MUTED)
@@ -721,19 +726,19 @@ impl IntoElement for Toggle {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .w(px(28.0))
-                    .h(px(16.0))
-                    .rounded(px(Radius::FULL))
+                    .w(px(34.0))
+                    .h(px(20.0))
+                    .rounded(px(Radius::PILL))
                     .border_1()
                     .border_color(track_border)
                     .bg(track_bg)
                     .child(
                         div()
-                            .w(px(12.0))
-                            .h(px(12.0))
-                            .rounded(px(Radius::FULL))
+                            .w(px(14.0))
+                            .h(px(14.0))
+                            .rounded(px(Radius::PILL))
                             .bg(Text::PRIMARY)
-                            .ml(px(if checked { 12.0 } else { 2.0 })),
+                            .ml(px(if checked { 16.0 } else { 2.0 })),
                     ),
             );
 
@@ -743,7 +748,7 @@ impl IntoElement for Toggle {
             row = row
                 .key_context("Control")
                 .cursor_pointer()
-                .hover(|style| style.bg(SHELL.hover).border_color(SHELL.border.alpha(0.5)))
+                .hover(|style| style.bg(SHELL.hover).border_color(SHELL.control_border))
                 .focus(|style| style.border_2().border_color(Accent::DEFAULT));
 
             if let Some(ref handle) = self.focus_handle {
@@ -943,16 +948,14 @@ impl IntoElement for Slider {
         let track = div()
             .relative()
             .w_full()
-            .h(px(6.0))
-            .rounded(px(Radius::FULL))
-            .border_1()
-            .border_color(SHELL.border)
-            .bg(SHELL.recessed)
+            .h(px(5.0))
+            .rounded(px(Radius::PILL))
+            .bg(SHELL.control)
             .child(
                 div()
                     .h_full()
                     .w(gpui::relative(ratio))
-                    .rounded(px(Radius::FULL))
+                    .rounded(px(Radius::PILL))
                     .bg(Accent::DEFAULT),
             )
             .child(
@@ -960,10 +963,10 @@ impl IntoElement for Slider {
                     .absolute()
                     .top(px(-5.0))
                     .left(gpui::relative(ratio))
-                    .ml(px(-7.0))
-                    .w(px(14.0))
-                    .h(px(14.0))
-                    .rounded(px(Radius::FULL))
+                    .ml(px(-7.5))
+                    .w(px(15.0))
+                    .h(px(15.0))
+                    .rounded(px(Radius::PILL))
                     .border_2()
                     .border_color(Accent::DEFAULT)
                     .bg(Text::PRIMARY),
@@ -973,13 +976,13 @@ impl IntoElement for Slider {
         let mut container = div()
             .id(gpui::ElementId::Name(slider_id.clone()))
             .w_full()
-            .h(px(24.0))
+            .h(px(26.0))
             .flex()
             .items_center()
-            .rounded(px(Radius::MD))
+            .rounded(px(Radius::SM))
             .border_1()
             .border_color(gpui::transparent_black())
-            .px(px(Space::SM))
+            .px(px(Space::MD))
             .child(track);
 
         if self.disabled {
@@ -988,7 +991,7 @@ impl IntoElement for Slider {
             container = container
                 .key_context("Control")
                 .cursor_pointer()
-                .hover(|s| s.border_color(SHELL.border.alpha(0.5)))
+                .hover(|s| s.border_color(SHELL.control_border))
                 .focus(|s| s.border_2().border_color(Accent::DEFAULT));
 
             if let Some(ref handle) = self.focus_handle {
@@ -1177,12 +1180,14 @@ mod interaction_tests {
     /// The hover colours a variant resolves to, mirroring the builder.
     fn hover_target(variant: ButtonVariant, disabled: bool, selected: bool) -> (Hsla, Hsla) {
         match (variant, disabled) {
-            (ButtonVariant::Primary, false) => (Accent::HOVER, Accent::HOVER),
-            (ButtonVariant::Danger, false) => (Status::DANGER, Status::DANGER.alpha(0.2)),
-            (ButtonVariant::Ghost, false) => (gpui::transparent_black(), SHELL.hover),
-            (ButtonVariant::Default, false) if selected => (Accent::DEFAULT, SHELL.control),
-            (ButtonVariant::Default, false) => (Text::MUTED, SHELL.hover),
-            (_, true) => (SHELL.border, SHELL.control),
+            (ButtonVariant::Primary, false) => (Accent::SOLID_HOVER, Accent::SOLID_HOVER),
+            (ButtonVariant::Danger, false) => (Status::DANGER, Status::DANGER.alpha(0.22)),
+            (ButtonVariant::Ghost, false) => (SHELL.border, SHELL.hover),
+            (ButtonVariant::Default, false) if selected => {
+                (Accent::HOVER, Accent::DEFAULT.alpha(0.20))
+            }
+            (ButtonVariant::Default, false) => (SHELL.control_border_hover, SHELL.hover),
+            (_, true) => (SHELL.control_border, SHELL.control),
         }
     }
 
@@ -1209,7 +1214,7 @@ mod interaction_tests {
     #[test]
     fn a_disabled_button_has_no_hover_change() {
         let (border, background) = hover_target(ButtonVariant::Default, true, false);
-        assert_eq!(format!("{border:?}"), format!("{:?}", SHELL.border));
+        assert_eq!(format!("{border:?}"), format!("{:?}", SHELL.control_border));
         assert_eq!(format!("{background:?}"), format!("{:?}", SHELL.control));
     }
 

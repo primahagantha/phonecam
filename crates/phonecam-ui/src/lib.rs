@@ -28,9 +28,49 @@
 pub mod theme;
 pub mod views;
 
+use std::borrow::Cow;
+
 pub use theme::rules;
 pub use views::{
     bind_keys, default_keybindings, drain_effects, push_effect, AppView, ExitFocusPreview,
-    SelectTabCapture, SelectTabDiagnostics, SelectTabPublish, SelectTabSetup, SelectTabStream,
-    SelectTabVideo, SideEffect, Tab, TabNext, TabPrev, ToggleFocusPreview, ToggleStream,
+    ReleaseInfo, SelectTabCapture, SelectTabDiagnostics, SelectTabPublish, SelectTabSetup,
+    SelectTabStream, SelectTabVideo, SideEffect, Tab, TabNext, TabPrev, ToggleFocusPreview,
+    ToggleStream, UpdateStatus,
 };
+
+/// Bundled open-source Inter and JetBrains Mono TrueType fonts embedded into the
+/// binary so GPUI renders crisp typography on every platform without missing-font
+/// fallback errors.
+pub fn bundled_fonts() -> Vec<Cow<'static, [u8]>> {
+    vec![
+        Cow::Borrowed(include_bytes!("../assets/fonts/Inter-Regular.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Inter-Medium.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Inter-SemiBold.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Inter-Bold.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf")),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_fonts_are_valid_truetype_binaries() {
+        let fonts = bundled_fonts();
+        assert_eq!(fonts.len(), 6);
+        for (idx, font) in fonts.iter().enumerate() {
+            assert!(
+                font.len() > 100_000,
+                "font #{idx} unexpectedly small ({} bytes)",
+                font.len()
+            );
+            assert_eq!(
+                &font[0..4],
+                &[0x00, 0x01, 0x00, 0x00],
+                "font #{idx} must start with valid TrueType sfnt header"
+            );
+        }
+    }
+}
