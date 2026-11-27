@@ -224,9 +224,10 @@ pub fn set_window_always_on_top(hwnd: isize, enabled: bool) {
 pub fn set_window_icon(hwnd: isize) {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         GetSystemMetrics, LoadIconW, LoadImageW, SendMessageW, HICON, ICON_BIG, ICON_SMALL,
-        IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE, SM_CXICON, SM_CXSMICON, SM_CYICON,
+        IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE, LR_SHARED, SM_CXICON, SM_CXSMICON, SM_CYICON,
         SM_CYSMICON, WM_SETICON,
     };
 
@@ -235,6 +236,15 @@ pub fn set_window_icon(hwnd: isize) {
     }
     let hwnd = HWND(hwnd as *mut _);
 
+    // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
+    let cx_big = unsafe { GetSystemMetrics(SM_CXICON) };
+    // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
+    let cy_big = unsafe { GetSystemMetrics(SM_CYICON) };
+    // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
+    let cx_sm = unsafe { GetSystemMetrics(SM_CXSMICON) };
+    // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
+    let cy_sm = unsafe { GetSystemMetrics(SM_CYSMICON) };
+
     let icon_path = find_icon_path();
     let (hicon_big, hicon_small) = if let Some(ref path) = icon_path {
         let wide_path: Vec<u16> = path
@@ -242,14 +252,6 @@ pub fn set_window_icon(hwnd: isize) {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
-        let cx_big = unsafe { GetSystemMetrics(SM_CXICON) };
-        // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
-        let cy_big = unsafe { GetSystemMetrics(SM_CYICON) };
-        // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
-        let cx_sm = unsafe { GetSystemMetrics(SM_CXSMICON) };
-        // SAFETY: `GetSystemMetrics` takes an integer metric constant and reads no pointers.
-        let cy_sm = unsafe { GetSystemMetrics(SM_CYSMICON) };
 
         // SAFETY: `wide_path` is a null-terminated UTF-16 buffer alive across `LoadImageW`.
         let big = unsafe {
@@ -283,7 +285,40 @@ pub fn set_window_icon(hwnd: isize) {
 
         (big, small)
     } else {
-        (None, None)
+        // Fallback to the embedded executable icon resource (ID 1 from app.rc).
+        // SAFETY: `GetModuleHandleW(null)` returns the current executable's HMODULE.
+        let hinst = unsafe { GetModuleHandleW(PCWSTR::null()) }
+            .ok()
+            .map(Into::into);
+        // SAFETY: Resource ID 1 (`MAKEINTRESOURCEW(1)`) is a valid integer resource identifier.
+        let big = unsafe {
+            LoadImageW(
+                hinst,
+                PCWSTR(std::ptr::without_provenance(1)),
+                IMAGE_ICON,
+                cx_big,
+                cy_big,
+                LR_SHARED,
+            )
+        }
+        .ok()
+        .map(|h| HICON(h.0))
+        .filter(|h| !h.is_invalid());
+        // SAFETY: Resource ID 1 (`MAKEINTRESOURCEW(1)`) is a valid integer resource identifier.
+        let small = unsafe {
+            LoadImageW(
+                hinst,
+                PCWSTR(std::ptr::without_provenance(1)),
+                IMAGE_ICON,
+                cx_sm,
+                cy_sm,
+                LR_SHARED,
+            )
+        }
+        .ok()
+        .map(|h| HICON(h.0))
+        .filter(|h| !h.is_invalid());
+        (big, small)
     };
 
     let fallback = if hicon_big.is_none() && hicon_small.is_none() {
@@ -670,11 +705,11 @@ mod imp {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
-        GetCursorPos, LoadIconW, LoadImageW, RegisterClassW, SetForegroundWindow, ShowWindow,
-        TrackPopupMenu, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
-        MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CONTEXTMENU, WM_LBUTTONUP, WM_RBUTTONUP,
-        WNDCLASSW,
+        GetCursorPos, GetSystemMetrics, LoadIconW, LoadImageW, RegisterClassW, SetForegroundWindow,
+        ShowWindow, TrackPopupMenu, HICON, IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE, LR_SHARED,
+        MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, SM_CXSMICON, SM_CYSMICON, SW_SHOW,
+        TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CONTEXTMENU,
+        WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW,
     };
 
     /// The message the tray posts when its icon is clicked.
@@ -812,6 +847,11 @@ mod imp {
             data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
             data.uCallbackMessage = WM_PHONECAM_TRAY;
 
+            // SAFETY: `GetSystemMetrics` reads small icon dimensions without touching memory.
+            let cx_sm = unsafe { GetSystemMetrics(SM_CXSMICON) };
+            // SAFETY: `GetSystemMetrics` reads small icon dimensions without touching memory.
+            let cy_sm = unsafe { GetSystemMetrics(SM_CYSMICON) };
+
             let mut owned_icon = None;
             if let Some(icon_path) = find_icon_path() {
                 let wide_path = wide(&icon_path.to_string_lossy());
@@ -821,15 +861,38 @@ mod imp {
                         None,
                         PCWSTR(wide_path.as_ptr()),
                         IMAGE_ICON,
-                        0,
-                        0,
-                        LR_LOADFROMFILE | LR_DEFAULTSIZE,
+                        cx_sm,
+                        cy_sm,
+                        LR_LOADFROMFILE,
                     )
                 } {
                     let hicon = HICON(handle.0);
                     if !hicon.is_invalid() {
                         data.hIcon = hicon;
                         owned_icon = Some(hicon);
+                    }
+                }
+            }
+            if data.hIcon.is_invalid() {
+                // Fallback to embedded executable resource icon (ID 1 from app.rc).
+                // SAFETY: `GetModuleHandleW(null)` returns the current executable's HMODULE.
+                let hinst = unsafe { GetModuleHandleW(PCWSTR::null()) }
+                    .ok()
+                    .map(Into::into);
+                // SAFETY: Resource ID 1 (`MAKEINTRESOURCEW(1)`) is a valid integer resource ID.
+                if let Ok(handle) = unsafe {
+                    LoadImageW(
+                        hinst,
+                        PCWSTR(std::ptr::without_provenance(1)),
+                        IMAGE_ICON,
+                        cx_sm,
+                        cy_sm,
+                        LR_SHARED,
+                    )
+                } {
+                    let hicon = HICON(handle.0);
+                    if !hicon.is_invalid() {
+                        data.hIcon = hicon;
                     }
                 }
             }

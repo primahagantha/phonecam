@@ -1,17 +1,169 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A phone with a lens. Drawn inside the 72dp safe zone of the 108dp icon. -->
+<!-- PhoneCam precision optical studio lens strictly inside the 66dp adaptive safe circle. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- Subtle barrel ambient occlusion -->
     <path
-        android:fillColor="@color/phonecam_primary"
-        android:pathData="M42,26h24a6,6 0 0 1 6,6v44a6,6 0 0 1 -6,6h-24a6,6 0 0 1 -6,-6v-44a6,6 0 0 1 6,-6z" />
+        android:fillColor="#88020408"
+        android:pathData="M54,55.0m-22.5,0a22.5,22.5 0,1 1,45.0 0a22.5,22.5 0,1 1,-45.0 0" />
+
+    <!-- Outer brushed titanium housing -->
+    <path android:pathData="M54,54m-22.0,0a22.0,22.0 0,1 1,44.0 0a22.0,22.0 0,1 1,-44.0 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="37"
+                android:startY="37"
+                android:endX="71"
+                android:endY="71">
+                <item android:color="#FF5C6D88" android:offset="0.0" />
+                <item android:color="#FF2B3649" android:offset="0.45" />
+                <item android:color="#FF151C28" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Crisp outer machined rim highlight -->
     <path
-        android:fillColor="@color/ic_launcher_background"
-        android:pathData="M54,52m-10,0a10,10 0 1 0 20,0a10,10 0 1 0 -20,0" />
+        android:fillColor="#00000000"
+        android:strokeWidth="0.65"
+        android:pathData="M54,54m-21.65,0a21.65,21.65 0,1 1,43.3 0a21.65,21.65 0,1 1,-43.3 0">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="36"
+                android:startY="36"
+                android:endX="72"
+                android:endY="72">
+                <item android:color="#DDCBD5E1" android:offset="0.0" />
+                <item android:color="#70475569" android:offset="0.55" />
+                <item android:color="#9C1E293B" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Recessed channel 1 -->
     <path
-        android:fillColor="@color/ic_launcher_background"
-        android:pathData="M46,33h16v3h-16z" />
+        android:fillColor="#FF05080F"
+        android:pathData="M54,54m-19.5,0a19.5,19.5 0,1 1,39.0 0a19.5,19.5 0,1 1,-39.0 0" />
+
+    <!-- Mid machined gunmetal collar -->
+    <path android:pathData="M54,54m-18.3,0a18.3,18.3 0,1 1,36.6 0a18.3,18.3 0,1 1,-36.6 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="39"
+                android:startY="39"
+                android:endX="69"
+                android:endY="69">
+                <item android:color="#FF475872" android:offset="0.0" />
+                <item android:color="#FF222C3E" android:offset="0.50" />
+                <item android:color="#FF131924" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Inner lens seat -->
+    <path
+        android:fillColor="#FF04070E"
+        android:pathData="M54,54m-15.9,0a15.9,15.9 0,1 1,31.8 0a15.9,15.9 0,1 1,-31.8 0" />
+
+    <!-- Multi-coated cobalt-sapphire optical glass -->
+    <path android:pathData="M54,54m-14.8,0a14.8,14.8 0,1 1,29.6 0a14.8,14.8 0,1 1,-29.6 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="52.5"
+                android:centerY="52.5"
+                android:gradientRadius="16.0">
+                <item android:color="#FF0F2A6B" android:offset="0.0" />
+                <item android:color="#FF1D4ED8" android:offset="0.54" />
+                <item android:color="#FF2563EB" android:offset="0.82" />
+                <item android:color="#FF38BDF8" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Anti-reflective cyan-sapphire lower-right sweep -->
+    <path android:pathData="M54,54m-14.8,0a14.8,14.8 0,1 1,29.6 0a14.8,14.8 0,1 1,-29.6 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="42"
+                android:startY="42"
+                android:endX="66"
+                android:endY="66">
+                <item android:color="#2E60A5FA" android:offset="0.0" />
+                <item android:color="#001D4ED8" android:offset="0.52" />
+                <item android:color="#9C38BDF8" android:offset="0.88" />
+                <item android:color="#D47DD3FC" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Subtle upper-left coated glass dome reflection arc -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#3BE0F2FE"
+        android:strokeWidth="2.1"
+        android:strokeLineCap="round"
+        android:pathData="M43.0,50.5 A11.8,11.8 0 0,1 51.2,42.5" />
+
+    <!-- Inner telephoto optical element -->
+    <path
+        android:fillColor="#960E2359"
+        android:strokeColor="#5260A5FA"
+        android:strokeWidth="0.4"
+        android:pathData="M54,54m-11.1,0a11.1,11.1 0,1 1,22.2 0a11.1,11.1 0,1 1,-22.2 0" />
+
+    <!-- Deep glossy obsidian sensor pupil -->
+    <path
+        android:fillColor="#FF071433"
+        android:pathData="M54,54m-7.7,0a7.7,7.7 0,1 1,15.4 0a7.7,7.7 0,1 1,-15.4 0" />
+    <path
+        android:fillColor="#FF02050B"
+        android:pathData="M54,54m-6.8,0a6.8,6.8 0,1 1,13.6 0a6.8,6.8 0,1 1,-13.6 0" />
+
+    <!-- Primary diagonal white specular crescent -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F4FFFFFF"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:pathData="M49.4,51.6 A5.2,5.2 0 0,1 51.6,49.4" />
+
+    <!-- Secondary cyan internal reflection arc -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#AD7DD3FC"
+        android:strokeWidth="0.65"
+        android:strokeLineCap="round"
+        android:pathData="M58.2,55.9 A4.9,4.9 0 0,1 55.9,58.2" />
+
+    <!-- Crisp emerald live tally indicator strictly inside 66dp safe circle -->
+    <path
+        android:fillColor="#99050911"
+        android:pathData="M72.0,36.0m-3.1,0a3.1,3.1 0,1 1,6.2 0a3.1,3.1 0,1 1,-6.2 0" />
+    <path android:pathData="M72.0,36.0m-2.7,0a2.7,2.7 0,1 1,5.4 0a2.7,2.7 0,1 1,-5.4 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="70.0"
+                android:startY="34.0"
+                android:endX="74.0"
+                android:endY="38.0">
+                <item android:color="#FF34D399" android:offset="0.0" />
+                <item android:color="#FF22C55E" android:offset="0.5" />
+                <item android:color="#FF16A34A" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:fillColor="#72DCFCE7"
+        android:pathData="M71.2,35.2m-0.65,0a0.65,0.65 0,1 1,1.3 0a0.65,0.65 0,1 1,-1.3 0" />
 </vector>
