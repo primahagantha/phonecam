@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.1] - 2026-11-27
+
+### Changed
+- **Full Optical Studio Logo Redesign & Cross-Platform Icon Sync**:
+  - Redesigned the PhoneCam brand mark as a precision concentric optical studio lens inside a matte obsidian squircle with sapphire-cobalt multi-coated glass and an emerald live tally dot, generated via reproducible `scripts/generate-icons.py` (`assets/logo.svg`, `assets/logo.png` 1024px, `assets/playstore-icon-512.png`, multi-size Windows `assets/icon.ico` & `dist/unpacked/icon.ico` 16–256px).
+  - Synced Android launcher icons with dedicated Adaptive Icon VectorDrawables (`ic_launcher_background.xml`, `ic_launcher_foreground.xml` inside the `66/108dp` safe zone, Android 13+ `ic_launcher_monochrome.xml`, `ic_launcher_round.xml`) plus legacy `mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}` PNGs.
+  - Added Windows `.exe` embedded resource icon support (`crates/phonecam-app/app.rc` + `build.rs`) and refreshed `assets/hero-showcase.png` & `README.md`.
+
+---
+
 ## [1.5.0] - 2026-11-27
 
 ### Added
